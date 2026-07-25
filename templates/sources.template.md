@@ -17,18 +17,39 @@ This is the **ground truth** half of a two-file system. Everything asserted in `
 
 Real answers carry details that identify or locate a real person. **Reduce precision as you log**, never as a later cleanup pass — this file is the retrieval corpus, so anything exact written here can be surfaced to the public by the bot.
 
-| Seen in source | Logged as |
-|---|---|
-| "flight to Italy on 15 July" | "flight to Italy `[~mid-July]`" |
-| exact address, venue, neighbourhood | city, or "home" / "a café near their place" |
-| school / employer names | "their university", "the studio they worked at" |
-| full names of third parties | first name only, or "a friend" |
-| phone numbers, emails, handles, booking or flight numbers | omit entirely |
-| exact age tied to an exact year | approximate |
-
 **A bracketed value is always a fuzzed replacement, never an original** — `[~mid-July]` marks a detail deliberately reduced. Never write the precise value anywhere, including in ignored files; those still get pasted, backed up, and shared.
 
-This bends the verbatim rule on purpose: **keep the phrasing, reduce the specifics.** Phrasing is voice data and stays untouched; a date is not voice data. When a detail matters to the character but is too precise to log safely, ask rather than guessing how much to blur.
+This bends the verbatim rule on purpose: **keep the phrasing, reduce the specifics.** Phrasing is voice data and stays untouched; a date is not voice data.
+
+## Redaction policy — set per creator
+
+The defaults below are deliberately conservative. **This is the creator's call, not the author's.** They may loosen any row — but only they can, and it has to be recorded here with a date. Never loosen a row by inference, by convenience, or because a detail seems harmless.
+
+Unset, unclear, or mid-discussion → **use the default.** Fail safe.
+
+| Category | Default | This instance | Approved by / when |
+|---|---|---|---|
+| Dates | fuzz to period — `[~mid-July]`, `[~2023]` | default | — |
+| Locations | city level; no address, venue, or neighbourhood | default | — |
+| School / employer names | generalised — "their university" | default | — |
+| Third-party full names | first name only, or "a friend" | default | — |
+| Contact details, handles, booking or flight numbers | omit entirely, always | default | — |
+| Age | approximate, not tied to an exact year | default | — |
+| Family details | generalised; no names | default | — |
+| Health / medical | omit unless the creator explicitly opts in | default | — |
+
+To loosen a row, replace `default` with what's allowed and fill in the approval column:
+
+```
+| Dates | fuzz to period | exact dates OK for public/professional events only | creator, 2026-03-04 |
+```
+
+Two things worth keeping in mind when a creator loosens something:
+
+- **Precision compounds.** Individually harmless details — a city, a school, a birth month, a workplace — combine into an identification. A row loosened in isolation may be safe; three loosened rows may not be.
+- **This is reversible only going forward.** Once precise data is logged, embedded, and answered with, it has been published. Removing it later doesn't unpublish it. When unsure, log conservatively — precision can always be added when the creator confirms, but it cannot be recalled.
+
+If a detail matters to the character but is too precise to log safely, ask instead of guessing how much to blur.
 
 At runtime this file is the retrieval corpus: entries get chunked and embedded, and the relevant ones are pulled in to answer a given question. `character.md` is what sits in the system prompt.
 
