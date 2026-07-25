@@ -1,0 +1,37 @@
+# ---------------------------------------------------------------
+# DENY BY DEFAULT.
+#
+# Nothing in this repo is tracked unless it is explicitly allowed
+# below. A new file is untracked until someone opts it in, so
+# forgetting to update this file can never leak a creator's data.
+#
+# Adding a new source dir later? Add "!src/**" style lines below.
+# ---------------------------------------------------------------
+
+# 1. Ignore everything...
+*
+
+# 2. ...but descend into directories so the allows below can match.
+!*/
+
+# 3. Explicitly allowed: project scaffolding and generic templates only.
+!.gitignore
+!README.md
+!CLAUDE.md
+!templates/**
+
+# ---------------------------------------------------------------
+# 4. HARD BLOCK — filled-in creator data. Never tracked, no matter
+#    what gets allowed above. This is the line that matters.
+# ---------------------------------------------------------------
+data/
+*.private.md
+*.local.md
+conversation.txt
+
+# Anything that looks like a filled-in instance, wherever it lands
+character_bible.md
+sources.md
+character.md
+!templates/character.template.md
+!templates/sources.template.md
