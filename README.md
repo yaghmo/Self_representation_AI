@@ -2,7 +2,7 @@
 
 A portfolio page for a content creator — links, socials, media — with a chatbot that answers audience questions as an AI representation of the creator, grounded in a character profile they write themselves.
 
-The design goal is **no invented life**. The bot answers from a documented source record or it says it doesn't know. It does not improvise a personality, and it does not fill gaps with plausible-sounding fiction.
+The design goal is **one author**. The creator defines the character — factual about themselves, invented, or any mix; that's their call. Everything downstream only transcribes. The bot answers from the documented source record or it says it doesn't know; it does not improvise a personality or fill gaps with plausible-sounding fiction, because invention there is authorship it doesn't have.
 
 ## Status
 
@@ -12,10 +12,12 @@ Character-authoring format is defined. No application code yet — stack and fea
 
 Two files per creator, and the dependency only runs one way.
 
-| File | Role | Runtime job |
-|---|---|---|
-| `sources.md` | Raw Q&A, append-only, verbatim. The only truth. | Chunked and embedded — the RAG corpus |
-| `character.md` | Readable profile derived from `sources.md`. Every statement cited. | Loaded into the system prompt |
+| File | Role |
+|---|---|
+| `sources.md` | Raw Q&A, append-only, verbatim. The only truth. |
+| `character.md` | Readable profile derived from `sources.md`. Every statement cited. |
+
+Both are plain markdown with no dependency on how inference is run — the format is deliberately runtime-agnostic.
 
 Every claim in `character.md` carries a cite (`[S-004]`) pointing at the source entry behind it. A statement with no cite is a bug. That's what makes the "no invented life" rule enforceable rather than aspirational — and it's why an unanswered question stays visibly unanswered instead of quietly becoming a guess.
 

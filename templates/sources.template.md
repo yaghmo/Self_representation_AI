@@ -15,7 +15,7 @@ This is the **ground truth** half of a two-file system. Everything asserted in `
 
 ### Redaction — log the fact, not the fingerprint
 
-Real answers carry details that identify or locate a real person. **Reduce precision as you log**, never as a later cleanup pass — this file is the retrieval corpus, so anything exact written here can be surfaced to the public by the bot.
+Real answers carry details that identify or locate a real person. **Reduce precision as you log**, never as a later cleanup pass — anything exact written here is something the bot can repeat.
 
 **A bracketed value is always a fuzzed replacement, never an original** — `[~mid-July]` marks a detail deliberately reduced. Never write the precise value anywhere, including in ignored files; those still get pasted, backed up, and shared.
 
@@ -51,7 +51,7 @@ Two things worth keeping in mind when a creator loosens something:
 
 If a detail matters to the character but is too precise to log safely, ask instead of guessing how much to blur.
 
-At runtime this file is the retrieval corpus: entries get chunked and embedded, and the relevant ones are pulled in to answer a given question. `character.md` is what sits in the system prompt.
+This file is the evidence base the bot answers from. How it reaches the model at runtime is a separate decision — the format deliberately doesn't assume one.
 
 ### Entry format
 

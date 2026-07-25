@@ -19,6 +19,7 @@
 !README.md
 !CLAUDE.md
 !templates/**
+!.claude/**
 
 # ---------------------------------------------------------------
 # 4. HARD BLOCK — filled-in creator data. Never tracked, no matter

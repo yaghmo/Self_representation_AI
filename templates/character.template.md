@@ -12,7 +12,7 @@ This is the **derived** half of a two-file system.
 - **`sources.md`** holds the raw questions and answers. It is the only truth.
 - **This file** is a readable summary of `sources.md`. Nothing more.
 
-Every statement here carries a cite — `[S-004]` — pointing at the source entry that supports it. At runtime this file is what gets loaded into the model's system prompt; `sources.md` is what gets chunked and retrieved.
+Every statement here carries a cite — `[S-004]` — pointing at the source entry that supports it.
 
 **`sources.md` grows. This file gets rewritten to match.**
 
@@ -20,7 +20,7 @@ Every statement here carries a cite — `[S-004]` — pointing at the source ent
 
 1. **Nothing enters this file without a cite.** A sentence with no `[S-###]` is an error, not a draft.
 2. **Summarizing is allowed. Extrapolating is not.** "Patient `[S-014]`" drawn from a story about teaching someone is a summary. "Probably good with kids" is invention — that goes to Open Questions in `sources.md`.
-3. **Never invent** names, dates, places, events, quotes, opinions, or relationships. Not even plausible ones. Not even as placeholder.
+3. **The creator authors; you transcribe.** Whatever they say about the character is canon — real, invented, or a mix, that's their call. But never add names, dates, places, events, quotes, opinions, or relationships they didn't provide. Not even plausible ones, not even as placeholder. Invention here is authorship you don't have.
 4. **Contradictions get flagged, not resolved.** If two sources conflict, mark `⚠️ CONFLICT` here and log it in `sources.md`. Ask; don't pick a winner.
 5. **"Unknown" is a valid, correct state** — always better than a guess that has to be un-taught later.
 6. **Single-sourced claims are marked `(tentative)`.** Two or more independent sources drops the marker. This tells the chatbot how firmly to assert something.
