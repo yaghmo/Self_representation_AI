@@ -9,10 +9,25 @@ Takes raw conversation and turns it into cited character data. This is the **onl
 
 ## Input
 
-One of:
-- Text pasted directly after `/add`
-- A file path (e.g. `/add data/conversation-3.txt`)
-- Nothing — then ask which material to ingest. Do not guess.
+Two shapes, handled differently:
+
+**1. Conversation / transcript** — a chat log, an answered question set, a screenshot transcribed to text. Extract from it (steps 3–4). Pasted after `/add`, or as a file path (`/add data/conversation-3.txt`).
+
+**2. Straight information** — the creator stating facts about the character directly: *"She has a younger brother and hates coriander."* **Do not extract, infer, or embellish.** Log it as written, `Type: creator statement`. This is pure authorship — the strongest evidence type there is, above a direct answer, because it is the creator speaking about the character rather than in character.
+
+```
+### S-0NN
+- **Date:** <today>
+- **Type:** creator statement
+- **Tags:** family, preferences
+- **Q:** — (stated directly by the creator)
+- **A:** "She has a younger brother and hates coriander."
+- **Feeds:** §5 Preferences, §7 Relationships
+```
+
+Split one statement into several entries only when it covers unrelated things that feed different sections. Never split it into finer claims than the creator wrote — that's inventing distinctions.
+
+Given nothing at all, ask which material to ingest. Do not guess.
 
 ## The one rule everything serves
 
@@ -135,8 +150,9 @@ Only the **creator's** side becomes entries. The other party's messages are cont
 
 | Kind | `Type:` | What it is |
 |---|---|---|
-| Something she said about the character | `direct answer` | Her authorship. Strongest evidence. |
-| Something visible in *how* she wrote | `observed event` | Your read of her behaviour. Weaker — inference about her, not authorship by her. |
+| The creator stating a fact about the character | `creator statement` | Pure authorship. Strongest evidence there is. |
+| Something she said in character or in answer | `direct answer` | Her authorship, in her voice. |
+| Something visible in *how* she wrote | `observed event` | Your read of her behaviour. Weakest — inference about her, not authorship by her. |
 
 Run **Test 1** on every candidate.
 
