@@ -4,6 +4,7 @@
 """
 
 from .backend import Backend, LocalBackend, Message, Usage
+from .bible import ProfileMissing, ProfileTooLarge, assemble, build_persona
 from .llamacpp import LlamaServer, Placement, plan_placement
 from .model import Model, ModelNotDownloaded
 
@@ -15,6 +16,10 @@ __all__ = [
     "Model",
     "ModelNotDownloaded",
     "Placement",
+    "ProfileMissing",
+    "ProfileTooLarge",
     "Usage",
+    "assemble",
+    "build_persona",
     "plan_placement",
 ]

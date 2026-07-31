@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Callable
 
-from .backend import tokenize_url
+from .backend import Message, tokenize_url
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROFILE_PATH = REPO_ROOT / "data" / "character.md"
@@ -70,6 +71,66 @@ def estimate_tokens(text: str) -> int:
     """Rough count for when no server is up to ask. Off by 10-20%, which is why
     it is never used to decide whether a prompt fits — only to display."""
     return len(text) // 4
+
+
+class ProfileTooLarge(RuntimeError):
+    pass
+
+
+# Framing only. The behavioural rules are the creator's and live in the profile
+# itself (§10 Interaction Rules, and Hard constraints). The honesty line is
+# CLAUDE.md's fixed bot rule, not something invented here.
+FRAMING = (
+    "You are the person described in the profile below. Answer as her, in her "
+    "voice, using her phrasing.\n"
+    "If you are asked something the profile does not cover, say so plainly, in "
+    "voice. Never invent a memory, an opinion, an event, or a relationship to "
+    "fill a gap.\n\n"
+)
+
+
+def build_persona(path: Path | None = None) -> str:
+    return FRAMING + strip_cites(slice_profile(load_profile(path)))
+
+
+def assemble(
+    history: list[Message],
+    context_tokens: int,
+    count: Callable[[str], int] = estimate_tokens,
+    reserve_tokens: int = 1024,
+    persona: str | None = None,
+) -> list[Message]:
+    """The system prompt plus as much recent conversation as fits.
+
+    `count` is injected so this stays a pure function: the service passes the
+    backend's exact tokeniser, the self-check passes the estimator.
+    """
+    persona = build_persona() if persona is None else persona
+    budget = context_tokens - reserve_tokens
+    persona_tokens = count(persona)
+
+    if persona_tokens >= budget:
+        raise ProfileTooLarge(
+            f"the profile is {persona_tokens} tokens and the budget is {budget} "
+            f"({context_tokens} context minus {reserve_tokens} reserved for the "
+            "reply). Raise the context in the stack config, or shorten the "
+            "profile with /rebuild. The persona is never truncated — a prompt "
+            "that loses the hard constraints is a bot that fabricates."
+        )
+
+    # Newest first, keeping turns until the budget is spent, then put them back
+    # in order. Oldest context is the cheapest thing to lose.
+    remaining = budget - persona_tokens
+    kept: list[Message] = []
+    for message in reversed(history):
+        cost = count(message.content)
+        if cost > remaining:
+            break
+        remaining -= cost
+        kept.append(message)
+    kept.reverse()
+
+    return [Message("system", persona), *kept]
 
 
 def _self_check() -> None:
@@ -127,6 +188,38 @@ def _self_check() -> None:
     # the real helper it uses
     assert tokenize_url("http://127.0.0.1:8080/v1") == "http://127.0.0.1:8080/tokenize"
     assert tokenize_url("http://127.0.0.1:8080") == "http://127.0.0.1:8080/tokenize"
+
+    from .backend import Message
+
+    # A caller-supplied persona stands in for build_persona()'s output, so it
+    # carries the same framing prefix a real one would (~117 tokens by the
+    # estimator).
+    persona = FRAMING + "PERSONA " + "x " * 100
+    history = [Message("user", "q " * 50), Message("assistant", "a " * 50)] * 6
+
+    # Fits: system prompt first, every turn kept.
+    out = assemble(history, context_tokens=4096, persona=persona)
+    assert out[0].role == "system"
+    assert out[0].content.startswith("You are")
+    assert "PERSONA" in out[0].content
+    assert len(out) == len(history) + 1
+
+    # Too small for the persona alone: refuse, do not truncate.
+    try:
+        assemble(history, context_tokens=100, persona=persona)
+    except ProfileTooLarge as exc:
+        assert "100" in str(exc), str(exc)
+    else:
+        raise AssertionError("expected ProfileTooLarge")
+
+    # Persona fits but history does not: oldest turns dropped, system survives.
+    # (reserve_tokens defaults to 1024, so context_tokens must clear that
+    # before the persona has room to spare, with less left over than the
+    # full 300-token history needs.)
+    trimmed = assemble(history, context_tokens=1300, persona=persona)
+    assert trimmed[0].role == "system"
+    assert len(trimmed) < len(history) + 1
+    assert trimmed[-1].content == history[-1].content, "newest turn must survive"
 
     print("bible self-check: ok")
 
