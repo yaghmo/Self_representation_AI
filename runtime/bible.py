@@ -77,6 +77,17 @@ class ProfileTooLarge(RuntimeError):
     pass
 
 
+class MessageTooLarge(RuntimeError):
+    """The newest turn alone doesn't fit in what's left after the persona.
+
+    Distinct from `ProfileTooLarge` on purpose: this failure is about the
+    user's message, not the profile, and the message should say so rather
+    than pointing someone at /rebuild for a problem that isn't there.
+    """
+
+    pass
+
+
 # Framing only. The behavioural rules are the creator's and live in the profile
 # itself (§10 Interaction Rules, and Hard constraints). The honesty line is
 # CLAUDE.md's fixed bot rule, not something invented here.
@@ -121,6 +132,19 @@ def assemble(
     # Newest first, keeping turns until the budget is spent, then put them back
     # in order. Oldest context is the cheapest thing to lose.
     remaining = budget - persona_tokens
+
+    # The newest turn is the one question this reply is actually for. If it
+    # doesn't fit, dropping it would send the persona into the void and get
+    # an answer to no question — silently. Refuse instead.
+    if history:
+        newest_cost = count(history[-1].content)
+        if newest_cost > remaining:
+            raise MessageTooLarge(
+                f"the latest message is {newest_cost} tokens and only {remaining} "
+                "remain after the persona. The message is too long to answer, not "
+                "the profile — shorten it and retry."
+            )
+
     kept: list[Message] = []
     for message in reversed(history):
         cost = count(message.content)
@@ -189,12 +213,11 @@ def _self_check() -> None:
     assert tokenize_url("http://127.0.0.1:8080/v1") == "http://127.0.0.1:8080/tokenize"
     assert tokenize_url("http://127.0.0.1:8080") == "http://127.0.0.1:8080/tokenize"
 
-    from .backend import Message
-
     # A caller-supplied persona stands in for build_persona()'s output, so it
     # carries the same framing prefix a real one would (~117 tokens by the
     # estimator).
     persona = FRAMING + "PERSONA " + "x " * 100
+    persona_tokens = estimate_tokens(persona)
     history = [Message("user", "q " * 50), Message("assistant", "a " * 50)] * 6
 
     # Fits: system prompt first, every turn kept.
@@ -204,13 +227,38 @@ def _self_check() -> None:
     assert "PERSONA" in out[0].content
     assert len(out) == len(history) + 1
 
-    # Too small for the persona alone: refuse, do not truncate.
+    # Too small for the persona alone: refuse, do not truncate. The budget
+    # must be positive-but-insufficient, not negative — a negative budget
+    # would pass the `persona_tokens >= budget` check for the wrong reason,
+    # since any token count is >= a negative number regardless of the logic
+    # being tested. Assert on the actual numbers the exception reports, not
+    # a substring that would match by coincidence.
+    small_budget = 50
     try:
-        assemble(history, context_tokens=100, persona=persona)
+        assemble(history, context_tokens=1024 + small_budget, persona=persona)
     except ProfileTooLarge as exc:
-        assert "100" in str(exc), str(exc)
+        assert str(persona_tokens) in str(exc), str(exc)
+        assert str(small_budget) in str(exc), str(exc)
     else:
         raise AssertionError("expected ProfileTooLarge")
+
+    # Newest turn alone does not fit after the persona: refuse loudly rather
+    # than silently drop it and send the persona into the void with no
+    # question attached.
+    lonely = [Message("user", "q " * 50)]
+    newest_tokens = estimate_tokens(lonely[0].content)
+    short_remaining = newest_tokens - 1  # one token short, on purpose
+    try:
+        assemble(
+            lonely,
+            context_tokens=1024 + persona_tokens + short_remaining,
+            persona=persona,
+        )
+    except MessageTooLarge as exc:
+        assert str(newest_tokens) in str(exc), str(exc)
+        assert str(short_remaining) in str(exc), str(exc)
+    else:
+        raise AssertionError("expected MessageTooLarge")
 
     # Persona fits but history does not: oldest turns dropped, system survives.
     # (reserve_tokens defaults to 1024, so context_tokens must clear that
