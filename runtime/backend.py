@@ -184,6 +184,21 @@ class LocalBackend:
         except Exception as exc:
             return False, str(exc)
 
+    def count_tokens(self, text: str) -> int:
+        """Exact count from the server that will run the prompt.
+
+        /tokenize lives at the server root, not under /v1, so the suffix comes
+        off. Raises rather than guessing: a caller deciding whether a prompt
+        fits must not silently fall back to a chars/4 estimate.
+        """
+        root = self.base_url.rstrip("/")
+        if root.endswith("/v1"):
+            root = root[: -len("/v1")]
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(f"{root}/tokenize", json={"content": text})
+            response.raise_for_status()
+        return len(response.json().get("tokens", []))
+
 
 def from_role_config(role: dict) -> Backend:
     """Build a backend from the `roles.llm` block of a stack config."""
