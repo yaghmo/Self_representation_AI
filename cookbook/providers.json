@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "Providers are data. Only two adapters exist in code — 'openai' (any endpoint",
+    "speaking the OpenAI schema) and 'anthropic'. Adding OpenAI proper, Groq,",
+    "DeepSeek, OpenRouter or Gemini's compat endpoint is an entry here, not a",
+    "code change.",
+    "",
+    "Keys are read from the environment. Never write a key into this file or into",
+    "config/stack.json."
+  ],
+  "providers": [
+    {
+      "id": "anthropic",
+      "label": "Anthropic",
+      "adapter": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "base_url": "https://api.anthropic.com",
+      "default_model": "claude-sonnet-5",
+      "context_tokens": 200000,
+      "free_tier": "none — paid from the first token",
+      "notes": "Own message schema, hence its own adapter."
+    },
+    {
+      "id": "nvidia",
+      "label": "NVIDIA NIM (build.nvidia.com)",
+      "adapter": "openai",
+      "api_key_env": "NVIDIA_API_KEY",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "default_model": "meta/llama-3.3-70b-instruct",
+      "context_tokens": 128000,
+      "free_tier": "~1000 credits with the free Developer Program, no card, ~40 RPM",
+      "notes": "OpenAI-compatible, so it costs no extra adapter. Verify the credit figure on NVIDIA's own pricing page before depending on it."
+    },
+    {
+      "id": "custom",
+      "label": "Custom OpenAI-compatible endpoint",
+      "adapter": "openai",
+      "api_key_env": "LLM_API_KEY",
+      "base_url": "",
+      "default_model": "",
+      "context_tokens": 32768,
+      "free_tier": "",
+      "notes": "Set base_url and default_model when selecting this. Covers OpenRouter, Groq, DeepSeek, Together, or a llama.cpp server on another machine."
+    }
+  ]
+}

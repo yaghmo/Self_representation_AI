@@ -1,0 +1,449 @@
+{
+  "_comment": [
+    "Hand-curated. Not scraped, deliberately: the number that decides a fit is real",
+    "memory at a given quant including KV cache, and that is not in anyone's model",
+    "metadata. It has to be computed or measured.",
+    "",
+    "'repo' is the model's home. 'download' is where the weights actually come from,",
+    "and for a quantised LLM those are different repos \u2014 pulling the home repo gets",
+    "fp16 safetensors, several times the size the fitter budgeted.",
+    "",
+    "'figures' says how much to trust weights_bytes and kv:",
+    "  estimated \u2014 derived from parameter counts and quant ratios",
+    "  hub       \u2014 real file sizes and real config.json geometry (run refresh.py)",
+    "  measured  \u2014 loaded on this machine and read off nvidia-smi",
+    "",
+    "quality is a 0-100 judgment call, comparable only within a role."
+  ],
+  "models": [
+    {
+      "id": "qwen3-1.7b-instruct-q4km",
+      "role": "llm",
+      "repo": "Qwen/Qwen3-1.7B",
+      "quant": "Q8_0",
+      "weights_bytes": 1834426016,
+      "runtime_overhead_bytes": 268435456,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "max_context": 32768,
+      "kv": {
+        "layers": 28,
+        "kv_heads": 8,
+        "head_dim": 128
+      },
+      "quality": 40,
+      "download": {
+        "repo": "Qwen/Qwen3-1.7B-GGUF",
+        "file": "Qwen3-1.7B-Q8_0.gguf",
+        "total_bytes": 1834426016
+      },
+      "notes": "Last resort. Fits almost anything; persona voice will be thin. Official GGUF repo ships Q8_0 only \u2014 no Q4_K_M exists, so this one is heavier than its size class suggests. Emits tool calls but drops arguments under pressure - fine for the user surface, a poor admin agent.",
+      "figures": "hub",
+      "tool_calling": "native"
+    },
+    {
+      "id": "qwen3-4b-instruct-q4km",
+      "role": "llm",
+      "repo": "Qwen/Qwen3-4B",
+      "quant": "Q4_K_M",
+      "weights_bytes": 2497280256,
+      "runtime_overhead_bytes": 335544320,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "max_context": 32768,
+      "kv": {
+        "layers": 36,
+        "kv_heads": 8,
+        "head_dim": 128
+      },
+      "quality": 60,
+      "download": {
+        "repo": "Qwen/Qwen3-4B-GGUF",
+        "file": "Qwen3-4B-Q4_K_M.gguf",
+        "total_bytes": 2497280256
+      },
+      "notes": "Good floor for a persona bot on 6-8GB cards.",
+      "figures": "hub",
+      "tool_calling": "native"
+    },
+    {
+      "id": "qwen3-8b-instruct-q4km",
+      "role": "llm",
+      "repo": "Qwen/Qwen3-8B",
+      "quant": "Q4_K_M",
+      "weights_bytes": 5027783488,
+      "runtime_overhead_bytes": 402653184,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "max_context": 32768,
+      "kv": {
+        "layers": 36,
+        "kv_heads": 8,
+        "head_dim": 128
+      },
+      "quality": 76,
+      "download": {
+        "repo": "Qwen/Qwen3-8B-GGUF",
+        "file": "Qwen3-8B-Q4_K_M.gguf",
+        "total_bytes": 5027783488
+      },
+      "notes": "Strong default when 8GB+ of VRAM is free.",
+      "figures": "hub",
+      "tool_calling": "native"
+    },
+    {
+      "id": "qwen3-14b-instruct-q4km",
+      "role": "llm",
+      "repo": "Qwen/Qwen3-14B",
+      "quant": "Q4_K_M",
+      "weights_bytes": 9001752960,
+      "runtime_overhead_bytes": 536870912,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "max_context": 32768,
+      "kv": {
+        "layers": 40,
+        "kv_heads": 8,
+        "head_dim": 128
+      },
+      "quality": 84,
+      "download": {
+        "repo": "Qwen/Qwen3-14B-GGUF",
+        "file": "Qwen3-14B-Q4_K_M.gguf",
+        "total_bytes": 9001752960
+      },
+      "notes": "Wants a 16GB card once TTS is resident alongside it.",
+      "figures": "hub",
+      "tool_calling": "native"
+    },
+    {
+      "id": "llama-3.1-8b-instruct-q4km",
+      "role": "llm",
+      "repo": "meta-llama/Llama-3.1-8B-Instruct",
+      "quant": "Q4_K_M",
+      "weights_bytes": 4920739232,
+      "runtime_overhead_bytes": 402653184,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "max_context": 32768,
+      "kv": {
+        "layers": 32,
+        "kv_heads": 8,
+        "head_dim": 128
+      },
+      "quality": 72,
+      "download": {
+        "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+        "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        "total_bytes": 4920739232
+      },
+      "notes": "Home repo is gated; the GGUF mirror is not.",
+      "figures": "hub",
+      "tool_calling": "native"
+    },
+    {
+      "id": "mistral-7b-instruct-v03-q4km",
+      "role": "llm",
+      "repo": "mistralai/Mistral-7B-Instruct-v0.3",
+      "quant": "Q4_K_M",
+      "weights_bytes": 4372812000,
+      "runtime_overhead_bytes": 402653184,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "max_context": 32768,
+      "kv": {
+        "layers": 32,
+        "kv_heads": 8,
+        "head_dim": 128
+      },
+      "quality": 66,
+      "download": {
+        "repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+        "file": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+        "total_bytes": 4372812000
+      },
+      "notes": "Cheap KV cache, ages well at long context.",
+      "figures": "hub",
+      "tool_calling": "native"
+    },
+    {
+      "id": "gemma-3-4b-it-q4km",
+      "role": "llm",
+      "repo": "google/gemma-3-4b-it",
+      "quant": "Q4_K_M",
+      "weights_bytes": 2489894016,
+      "runtime_overhead_bytes": 335544320,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "max_context": 32768,
+      "kv": {
+        "layers": 34,
+        "kv_heads": 4,
+        "head_dim": 256
+      },
+      "quality": 62,
+      "download": {
+        "repo": "unsloth/gemma-3-4b-it-GGUF",
+        "file": "gemma-3-4b-it-Q4_K_M.gguf",
+        "total_bytes": 2489894016
+      },
+      "notes": "Warmer conversational register than Qwen at the same size. Home repo is gated:manual; the GGUF mirror is not. No tool-calling tokens in its template, only prompted JSON, so it is barred from the admin surface.",
+      "figures": "hub",
+      "tool_calling": "prompted"
+    },
+    {
+      "id": "gemma-3-12b-it-q4km",
+      "role": "llm",
+      "repo": "google/gemma-3-12b-it",
+      "quant": "Q4_K_M",
+      "weights_bytes": 7300778336,
+      "runtime_overhead_bytes": 536870912,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "max_context": 32768,
+      "kv": {
+        "layers": 48,
+        "kv_heads": 8,
+        "head_dim": 256
+      },
+      "quality": 82,
+      "download": {
+        "repo": "unsloth/gemma-3-12b-it-GGUF",
+        "file": "gemma-3-12b-it-Q4_K_M.gguf",
+        "total_bytes": 7300778336
+      },
+      "notes": "Heavy KV cache \u2014 the 256 head_dim costs real memory at 32k. No tool-calling tokens in its template, only prompted JSON, so it is barred from the admin surface.",
+      "figures": "hub",
+      "tool_calling": "prompted"
+    },
+    {
+      "id": "multilingual-e5-small",
+      "role": "embedding",
+      "repo": "intfloat/multilingual-e5-small",
+      "quant": "fp32",
+      "weights_bytes": 510376821,
+      "runtime_overhead_bytes": 209715200,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "quality": 62,
+      "download": {
+        "repo": "intfloat/multilingual-e5-small",
+        "allow_patterns": [
+          "*.json",
+          "*.txt",
+          "*.md",
+          "model.safetensors",
+          "sentencepiece.bpe.model",
+          "1_Pooling/*"
+        ],
+        "total_bytes": 510376821
+      },
+      "notes": "Cheap enough to leave on the CPU permanently. Sensible default.",
+      "figures": "hub"
+    },
+    {
+      "id": "multilingual-e5-base",
+      "role": "embedding",
+      "repo": "intfloat/multilingual-e5-base",
+      "quant": "fp32",
+      "weights_bytes": 1151618424,
+      "runtime_overhead_bytes": 268435456,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "quality": 72,
+      "download": {
+        "repo": "intfloat/multilingual-e5-base",
+        "allow_patterns": [
+          "*.json",
+          "*.txt",
+          "*.md",
+          "model.safetensors",
+          "sentencepiece.bpe.model",
+          "1_Pooling/*"
+        ],
+        "total_bytes": 1151618424
+      },
+      "notes": "",
+      "figures": "hub"
+    },
+    {
+      "id": "multilingual-e5-large",
+      "role": "embedding",
+      "repo": "intfloat/multilingual-e5-large",
+      "quant": "fp32",
+      "weights_bytes": 2279009182,
+      "runtime_overhead_bytes": 402653184,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "quality": 82,
+      "download": {
+        "repo": "intfloat/multilingual-e5-large",
+        "allow_patterns": [
+          "*.json",
+          "*.txt",
+          "*.md",
+          "model.safetensors",
+          "sentencepiece.bpe.model",
+          "1_Pooling/*"
+        ],
+        "total_bytes": 2279009182
+      },
+      "notes": "",
+      "figures": "hub"
+    },
+    {
+      "id": "bge-m3",
+      "role": "embedding",
+      "repo": "BAAI/bge-m3",
+      "quant": "fp32",
+      "weights_bytes": 2293315801,
+      "runtime_overhead_bytes": 402653184,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "quality": 85,
+      "download": {
+        "repo": "BAAI/bge-m3",
+        "allow_patterns": [
+          "pytorch_model.bin",
+          "*.json",
+          "sentencepiece.bpe.model",
+          "1_Pooling/*"
+        ],
+        "ignore_patterns": [
+          "onnx/*",
+          "imgs/*"
+        ],
+        "total_bytes": 2293315801
+      },
+      "notes": "Best retrieval of the set; 8k input window suits long source entries. No safetensors in this repo \u2014 weights are pytorch_model.bin. Repo also carries a full ONNX copy, excluded here.",
+      "figures": "hub"
+    },
+    {
+      "id": "xtts-v2",
+      "role": "tts",
+      "repo": "coqui/XTTS-v2",
+      "quant": "fp32",
+      "weights_bytes": 2086568992,
+      "runtime_overhead_bytes": 671088640,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "cloning": true,
+      "quality": 78,
+      "download": {
+        "repo": "coqui/XTTS-v2",
+        "allow_patterns": [
+          "*.json",
+          "*.pth",
+          "*.txt",
+          "vocab.json"
+        ],
+        "total_bytes": 2086568992
+      },
+      "notes": "Few-second reference clip. Coqui is unmaintained \u2014 check the licence.",
+      "figures": "hub"
+    },
+    {
+      "id": "f5-tts-base",
+      "role": "tts",
+      "repo": "SWivid/F5-TTS",
+      "quant": "fp32",
+      "weights_bytes": 1348449561,
+      "runtime_overhead_bytes": 536870912,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "cloning": true,
+      "quality": 82,
+      "download": {
+        "repo": "SWivid/F5-TTS",
+        "allow_patterns": [
+          "F5TTS_v1_Base/*.safetensors",
+          "F5TTS_v1_Base/*.txt",
+          "*.json"
+        ],
+        "total_bytes": 1348449561
+      },
+      "notes": "Strong zero-shot cloning, actively maintained.",
+      "figures": "hub"
+    },
+    {
+      "id": "chatterbox",
+      "role": "tts",
+      "repo": "ResembleAI/chatterbox",
+      "quant": "fp32",
+      "weights_bytes": 3191966992,
+      "runtime_overhead_bytes": 671088640,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "cloning": true,
+      "quality": 84,
+      "download": {
+        "repo": "ResembleAI/chatterbox",
+        "allow_patterns": [
+          "t3_cfg.safetensors",
+          "s3gen.safetensors",
+          "ve.safetensors",
+          "conds.pt",
+          "tokenizer.json"
+        ],
+        "total_bytes": 3191966992
+      },
+      "notes": "MIT licence, emotion control. Heaviest of the three. Repo holds four alternative checkpoints \u2014 English base only here; the 23-language t3_mtl23ls variants are another 2GB each.",
+      "figures": "hub"
+    },
+    {
+      "id": "kokoro-82m",
+      "role": "tts",
+      "repo": "hexgrad/Kokoro-82M",
+      "quant": "fp32",
+      "weights_bytes": 355479286,
+      "runtime_overhead_bytes": 134217728,
+      "devices": [
+        "gpu",
+        "cpu"
+      ],
+      "cloning": false,
+      "quality": 70,
+      "download": {
+        "repo": "hexgrad/Kokoro-82M",
+        "allow_patterns": [
+          "*.pth",
+          "*.json",
+          "voices/*.pt"
+        ],
+        "total_bytes": 355479286
+      },
+      "notes": "No cloning \u2014 fixed voices only. Tiny and fast on CPU; the fallback when nothing else fits.",
+      "figures": "hub"
+    }
+  ]
+}

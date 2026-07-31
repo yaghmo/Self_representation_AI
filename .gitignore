@@ -21,6 +21,11 @@
 !templates/**
 !.claude/**
 
+# Application code. Generic — holds no creator data, so it is tracked.
+!cookbook/**
+!runtime/**
+!service/**
+
 # ---------------------------------------------------------------
 # 4. HARD BLOCK — filled-in creator data. Never tracked, no matter
 #    what gets allowed above. This is the line that matters.
@@ -29,6 +34,26 @@ data/
 *.private.md
 *.local.md
 conversation.txt
+
+# Secrets and machine-specific generated config. Blocked even inside
+# cookbook/, which section 3 allows wholesale.
+.env
+.env.*
+!.env.example
+config/
+**/stack.json
+
+# Build noise that section 3's wholesale allow would otherwise pick up.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Model weights. Tens of GB of binaries — never in git, whatever else changes.
+models/
+
+# Third-party binaries (llama.cpp release zips and their extracted contents).
+vendor/
 
 # Anything that looks like a filled-in instance, wherever it lands
 character_bible.md
