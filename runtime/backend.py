@@ -17,9 +17,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Iterator, Protocol
 
+import httpx
+
 from service.logging_config import get_logger
 
 logger = get_logger("runtime.backend")
+
+DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
 
 
 @dataclass
@@ -86,13 +90,11 @@ class LocalBackend:
         return payload
 
     def complete(self, messages: list[Message], **kwargs) -> str:
-        import httpx
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         started = time.monotonic()
         logger.debug("POST %s (%d messages, stream=False)", url, len(messages))
-        timeout = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
 
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             response = client.post(url, json=self._payload(messages, False, **kwargs))
             response.raise_for_status()
             data = response.json()
@@ -125,15 +127,13 @@ class LocalBackend:
         return content
 
     def stream(self, messages: list[Message], **kwargs) -> Iterator[str]:
-        import httpx
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         self.last_reasoning = ""
         started = time.monotonic()
         chunks = 0
         logger.debug("POST %s (%d messages, stream=True)", url, len(messages))
-        timeout = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
 
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             with client.stream("POST", url, json=self._payload(messages, True, **kwargs)) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():
@@ -175,7 +175,6 @@ class LocalBackend:
         )
 
     def health(self) -> tuple[bool, str]:
-        import httpx
         try:
             with httpx.Client(timeout=5.0) as client:
                 response = client.get(f"{self.base_url.rstrip('/')}/models")

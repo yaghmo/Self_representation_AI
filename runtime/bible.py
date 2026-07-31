@@ -95,7 +95,7 @@ def _self_check() -> None:
         "- **Three words:** alpha `[S-003, S-023, S-024]`, beta `[S-014]`\n"
         "- Something single-sourced (tentative) `[S-099]`\n"
         "- Bracket-less cite form `S-055` must also strip\n"
-        "- Slash-separated cites `S-031`/`S-032` must strip together\n"
+        "- Slash-separated cites `S-997`/`S-998` must strip together\n"
         "- Voice text `zzz` must survive, file ref `sources.md` must survive\n"
         "- Redaction marker `[~placeholder-date]` must survive\n"
         "## Changelog\n"
