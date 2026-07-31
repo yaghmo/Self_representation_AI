@@ -15,20 +15,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .backend import tokenize_url
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROFILE_PATH = REPO_ROOT / "data" / "character.md"
-
-
-def tokenize_url(base_url: str) -> str:
-    """Derive the /tokenize endpoint URL from a base_url that may include /v1.
-
-    llama-server exposes /tokenize at the server root, not under /v1, so the
-    suffix must be stripped before calling.
-    """
-    root = base_url.rstrip("/")
-    if root.endswith("/v1"):
-        root = root[: -len("/v1")]
-    return f"{root}/tokenize"
 
 
 class ProfileMissing(FileNotFoundError):
@@ -37,9 +27,9 @@ class ProfileMissing(FileNotFoundError):
 PROFILE_START = "# CHARACTER"
 PROFILE_END = "## Changelog"
 
-# Cites come in several shapes: `S-004`, `[S-004]`, `[S-004, S-007]`, `S-031`/`S-032`, etc.
+# Cites come in several shapes: `S-778`, `[S-778]`, `[S-778, S-779]`, `S-997`/`S-998`, etc.
 # Match backtick-wrapped citations with or without brackets, or bracketed
-# citations with or without backticks. Slash-separated multiples like `S-031`/`S-032`
+# citations with or without backticks. Slash-separated multiples like `S-997`/`S-998`
 # are consumed as a unit. Other backtick spans must survive: the profile also
 # backticks quoted speech, file references, and the bracketed markers for fuzzed details.
 CITE = re.compile(
@@ -92,9 +82,9 @@ def _self_check() -> None:
         "Meta instructions the model must never see.\n"
         "# CHARACTER\n"
         "## 0. At a Glance\n"
-        "- **Three words:** alpha `[S-003, S-023, S-024]`, beta `[S-014]`\n"
-        "- Something single-sourced (tentative) `[S-099]`\n"
-        "- Bracket-less cite form `S-055` must also strip\n"
+        "- **Three words:** alpha `[S-777, S-778, S-779]`, beta `[S-780]`\n"
+        "- Something single-sourced (tentative) `[S-781]`\n"
+        "- Bracket-less cite form `S-888` must also strip\n"
         "- Slash-separated cites `S-997`/`S-998` must strip together\n"
         "- Voice text `zzz` must survive, file ref `sources.md` must survive\n"
         "- Redaction marker `[~placeholder-date]` must survive\n"

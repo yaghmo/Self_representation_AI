@@ -26,6 +26,18 @@ logger = get_logger("runtime.backend")
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
 
 
+def tokenize_url(base_url: str) -> str:
+    """Derive the /tokenize endpoint URL from a base_url that may include /v1.
+
+    llama-server exposes /tokenize at the server root, not under /v1, so the
+    suffix must be stripped before calling.
+    """
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    return f"{root}/tokenize"
+
+
 @dataclass
 class Message:
     role: str  # system | user | assistant
@@ -191,9 +203,6 @@ class LocalBackend:
         off. Raises rather than guessing: a caller deciding whether a prompt
         fits must not silently fall back to a chars/4 estimate.
         """
-        import httpx
-        from .bible import tokenize_url
-
         url = tokenize_url(self.base_url)
         with httpx.Client(timeout=30.0) as client:
             response = client.post(url, json={"content": text})
