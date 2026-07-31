@@ -19,18 +19,33 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PROFILE_PATH = REPO_ROOT / "data" / "character.md"
 
 
+def tokenize_url(base_url: str) -> str:
+    """Derive the /tokenize endpoint URL from a base_url that may include /v1.
+
+    llama-server exposes /tokenize at the server root, not under /v1, so the
+    suffix must be stripped before calling.
+    """
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    return f"{root}/tokenize"
+
+
 class ProfileMissing(FileNotFoundError):
     pass
 
 PROFILE_START = "# CHARACTER"
 PROFILE_END = "## Changelog"
 
-# Cites come in several shapes: `S-004`, `[S-004]`, `[S-004, S-007]`, etc.
+# Cites come in several shapes: `S-004`, `[S-004]`, `[S-004, S-007]`, `S-031`/`S-032`, etc.
 # Match backtick-wrapped citations with or without brackets, or bracketed
-# citations with or without backticks. Other backtick spans must survive: the
-# profile also backticks quoted speech, file references, and the bracketed
-# markers that stand in for deliberately fuzzed details.
-CITE = re.compile(r"[ \t]*`S-[^`]*`|[ \t]*`?\[S-[^\]]*\]`?")
+# citations with or without backticks. Slash-separated multiples like `S-031`/`S-032`
+# are consumed as a unit. Other backtick spans must survive: the profile also
+# backticks quoted speech, file references, and the bracketed markers for fuzzed details.
+CITE = re.compile(
+    r"[ \t]*`S-[^`]*`([ \t]*/[ \t]*`S-[^`]*`)*"  # bracket-less, with slash separation
+    r"|[ \t]*`?\[S-[^\]]*\]`?"  # bracketed with optional backticks
+)
 
 
 def load_profile(path: Path | None = None) -> str:
@@ -80,6 +95,7 @@ def _self_check() -> None:
         "- **Three words:** alpha `[S-003, S-023, S-024]`, beta `[S-014]`\n"
         "- Something single-sourced (tentative) `[S-099]`\n"
         "- Bracket-less cite form `S-055` must also strip\n"
+        "- Slash-separated cites `S-031`/`S-032` must strip together\n"
         "- Voice text `zzz` must survive, file ref `sources.md` must survive\n"
         "- Redaction marker `[~placeholder-date]` must survive\n"
         "## Changelog\n"
@@ -98,26 +114,29 @@ def _self_check() -> None:
     # Legitimate spans must survive
     assert "(tentative)" in stripped, "tentative markers must survive"
     assert "alpha," in stripped, stripped
+    assert "must strip together" in stripped, "slash-separated cites must be removed entirely"
     assert "`zzz`" in stripped, "voice text must survive"
     assert "`sources.md`" in stripped, "file refs must survive"
     assert "`[~placeholder-date]`" in stripped, "redaction markers must survive"
 
-    # Verify against real profile
-    real_stripped = strip_cites(slice_profile(load_profile()))
-    assert "[S-" not in real_stripped, f"Real profile: [S- citation leaked"
-    assert "`S-" not in real_stripped, f"Real profile: `S- citation leaked"
+    # Verify against real profile — gracefully skip if file doesn't exist
+    try:
+        real_stripped = strip_cites(slice_profile(load_profile()))
+        assert "[S-" not in real_stripped, f"Real profile: [S- citation leaked"
+        assert "`S-" not in real_stripped, f"Real profile: `S- citation leaked"
+    except ProfileMissing:
+        # File not yet created on fresh clone or before first /add.
+        # Fixture assertions above are the actual regression tests.
+        pass
 
     assert estimate_tokens("") == 0
     assert estimate_tokens("a" * 400) == 100
     assert estimate_tokens(sliced) > 0
 
-    # Verify LocalBackend.count_tokens URL derivation logic
-    base_url_v1 = "http://127.0.0.1:8080/v1"
-    root = base_url_v1.rstrip("/")
-    if root.endswith("/v1"):
-        root = root[: -len("/v1")]
-    assert root == "http://127.0.0.1:8080", f"Expected root URL without /v1, got {root}"
-    assert f"{root}/tokenize" == "http://127.0.0.1:8080/tokenize"
+    # Verify LocalBackend.count_tokens URL derivation logic by exercising
+    # the real helper it uses
+    assert tokenize_url("http://127.0.0.1:8080/v1") == "http://127.0.0.1:8080/tokenize"
+    assert tokenize_url("http://127.0.0.1:8080") == "http://127.0.0.1:8080/tokenize"
 
     print("bible self-check: ok")
 
