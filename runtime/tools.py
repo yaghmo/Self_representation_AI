@@ -29,6 +29,11 @@ ENTRY = re.compile(r"^### (S-\d+)", re.MULTILINE)
 SEARCH_LIMIT = 5
 SOURCE_LOG_HEADING = "source log"
 BACKUP_DIR = ".backups"
+# A profile section can run to 2,000 tokens. Two of those fill a small model's
+# window before it has done anything, and the loop then dies of old age rather
+# than of the task being hard. Truncation is visible, so the model can narrow
+# rather than assume it saw everything.
+MAX_RESULT_CHARS = 3000
 
 
 class StaleProposal(RuntimeError):
@@ -649,6 +654,13 @@ def run_tool(name: str, arguments: dict) -> str | Proposal:
         return f"{name} failed: {exc}"
     if dropped and isinstance(result, str):
         result = f"(ignored unknown arguments: {', '.join(dropped)})\n{result}"
+    if isinstance(result, str) and len(result) > MAX_RESULT_CHARS:
+        cut = len(result) - MAX_RESULT_CHARS
+        result = (
+            result[:MAX_RESULT_CHARS]
+            + f"\n\n[truncated — {cut} more characters. Search for the specific "
+            "line instead of reading the whole section.]"
+        )
     return result
 
 

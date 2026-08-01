@@ -228,7 +228,28 @@ def assemble(
         kept.append(message)
     kept.reverse()
 
-    return [Message("system", persona), *kept]
+    return [Message("system", persona), *_whole_tool_pairs(kept)]
+
+
+def _whole_tool_pairs(kept: list[Message]) -> list[Message]:
+    """Drop tool results whose call was trimmed away.
+
+    Trimming takes the oldest turns first, which can cut an assistant turn
+    while keeping the `tool` message answering it. llama-server rejects that
+    outright — a result addressed to a call that is not in the conversation.
+    An orphaned result is also meaningless to the model, so dropping it costs
+    nothing and keeps the request valid.
+    """
+    answered: set[str] = set()
+    for message in kept:
+        for call in message.tool_calls or []:
+            if call.get("id"):
+                answered.add(call["id"])
+    return [
+        message
+        for message in kept
+        if message.role != "tool" or message.tool_call_id in answered
+    ]
 
 
 def _self_check() -> None:
@@ -351,6 +372,29 @@ def _self_check() -> None:
     assert trimmed[0].role == "system"
     assert len(trimmed) < len(history) + 1
     assert trimmed[-1].content == history[-1].content, "newest turn must survive"
+
+    # A tool result whose call was trimmed away must go with it. llama-server
+    # rejects a result addressed to a call that is not in the conversation, so
+    # an orphan here is a 400 on the next agent turn.
+    call = {"id": "call_1", "type": "function", "function": {"name": "noop", "arguments": "{}"}}
+    agent_history = [
+        Message("assistant", "x " * 400, tool_calls=[call]),
+        Message("tool", "result text", tool_call_id="call_1"),
+        Message("user", "and now?"),
+    ]
+    kept = assemble(agent_history, context_tokens=1300, persona=persona)
+    assert not any(m.role == "assistant" for m in kept), "the big call turn should be trimmed"
+    assert not any(m.role == "tool" for m in kept), "an orphaned tool result must be dropped"
+
+    # Whole pairs survive together when they fit.
+    intact = assemble(agent_history[1:], context_tokens=4096, persona=persona)
+    assert not any(m.role == "tool" for m in intact), "still orphaned, still dropped"
+    paired = assemble(
+        [Message("assistant", "short", tool_calls=[call]), *agent_history[1:]],
+        context_tokens=4096,
+        persona=persona,
+    )
+    assert [m.role for m in paired] == ["system", "assistant", "tool", "user"], paired
 
     print("bible self-check: ok")
 

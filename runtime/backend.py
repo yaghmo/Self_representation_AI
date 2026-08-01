@@ -128,6 +128,10 @@ class LocalBackend:
 
         with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             response = client.post(url, json=payload)
+            if response.is_error:
+                # llama-server explains itself in the body — the status alone
+                # cannot tell "context exceeded" from "malformed tool history".
+                logger.error("llama-server %d: %s", response.status_code, response.text[:2000])
             response.raise_for_status()
             data = response.json()
 
@@ -173,6 +177,11 @@ class LocalBackend:
 
         with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             with client.stream("POST", url, json=stream_payload) as response:
+                if response.is_error:
+                    response.read()
+                    logger.error(
+                        "llama-server %d: %s", response.status_code, response.text[:2000]
+                    )
                 response.raise_for_status()
                 for line in response.iter_lines():
                     if not line or not line.startswith("data:"):

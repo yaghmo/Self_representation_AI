@@ -77,6 +77,12 @@ def run(
     be visible.
     """
     history = list(messages)
+    # What it has already looked at. A small model asked to edit a profile
+    # will happily read every section in the file, one turn each, and run out
+    # of turns before it writes anything — re-reading is free to ask for and
+    # expensive to answer, so the second identical call gets a nudge instead
+    # of the payload.
+    seen: dict[tuple[str, str], int] = {}
 
     for iteration in range(max_iterations):
         logger.info("turn %d/%d, %d messages in history", iteration + 1, max_iterations, len(history))
@@ -121,6 +127,19 @@ def run(
                 continue
 
             log_payload(logger, f"tool {name} <<", arguments)
+            signature = (name, json.dumps(arguments, sort_keys=True, default=str))
+            seen[signature] = seen.get(signature, 0) + 1
+            if seen[signature] > 1:
+                repeat = (
+                    f"you already called {name} with these arguments earlier in "
+                    "this conversation — the answer has not changed. Use what it "
+                    "returned and take the next step, or write the edit."
+                )
+                logger.warning("repeat call to %s — nudged instead of answered", name)
+                history.append(_result_message(call_id, repeat))
+                yield Step("tool_result", text=repeat, name=name)
+                continue
+
             outcome = run_tool(name, arguments)
             logger.info(
                 "tool %s >> %s",
@@ -233,6 +252,23 @@ def _self_check() -> None:
 
             steps = list(run(not_an_object, [Message("user", "hi")]))
             assert "must be a JSON object" in steps[1].text, steps[1]
+
+            # Asking the same question twice gets a nudge, not the payload
+            # again — re-reading is how a small model spends eight turns
+            # without writing anything.
+            def rereads(messages, tools_schema):
+                if len(messages) < 6:
+                    return {
+                        "content": "",
+                        "tool_calls": [call("search_sources", '{"query": "alpha"}')],
+                    }
+                return {"content": "moved on", "tool_calls": []}
+
+            steps = list(run(rereads, [Message("user", "hi")]))
+            results = [s.text for s in steps if s.kind == "tool_result"]
+            assert "alpha answer" in results[0], results[0]
+            assert "already called" in results[1], results[1]
+            assert steps[-1].text == "moved on"
 
             # A model that never answers is stopped rather than left to spin.
             def never_stops(messages, tools_schema):
