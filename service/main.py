@@ -76,11 +76,39 @@ class ChatResponse(BaseModel):
 
 
 class LoadRequest(BaseModel):
-    surface: str = Field(default="user", pattern="^(user|admin)$")
+    surface: str | None = Field(default=None, pattern="^(user|admin)$")
     port: int = Field(default=8080, ge=1024, le=65535)
 
 
 # -------------------------------------------------------------------- model --
+
+
+def _surface(requested: str | None = None) -> str:
+    """Which surface this process serves. The deployment's answer, not the caller's.
+
+    The split exists to keep the audience away from the admin side — the agent
+    that runs /add and /rebuild, and the stack that holds `sources.md`. A
+    surface the client can name is a surface a fan can name, so it comes from
+    SURFACE in the environment and a request that disagrees is refused.
+
+    Nothing routes tools off this yet, because there is no tool loop yet. That
+    is the point of closing it now: when the loop lands, the thing it keys off
+    is already out of the client's reach.
+    """
+    configured = os.environ.get("SURFACE", "user")
+    if requested is None or requested == configured:
+        return configured
+    if os.environ.get("ALLOW_SURFACE_OVERRIDE"):
+        return requested
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"this service is deployed as the {configured!r} surface; the "
+            f"client asked for {requested!r}. The surface is set by SURFACE in "
+            "the environment. Set ALLOW_SURFACE_OVERRIDE=1 to switch it from a "
+            "request in development."
+        ),
+    )
 
 
 def _get_model(surface: str = "user", port: int = 8080) -> Model:
@@ -154,9 +182,11 @@ def health() -> dict:
 
 
 @app.get("/model")
-def model_status(surface: str = "user") -> dict:
+def model_status(surface: str | None = None) -> dict:
+    # Outside the try: the guard's own 400 must not be swallowed by the 500 arm.
+    wanted = _surface(surface)
     try:
-        return _get_model(surface).status()
+        return _get_model(wanted).status()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -166,8 +196,9 @@ def model_status(surface: str = "user") -> dict:
 
 @app.post("/model/load")
 def model_load(request: LoadRequest) -> dict:
+    wanted = _surface(request.surface)
     try:
-        model = _get_model(request.surface, request.port)
+        model = _get_model(wanted, request.port)
         if model.loaded:
             logger.info("load requested but %s is already loaded", model.name)
             return {"status": "already-loaded", **model.status()}
@@ -291,6 +322,15 @@ def _self_check() -> None:
         del os.environ["ALLOW_SYSTEM_PROMPT_OVERRIDE"]
     assert response.status_code == 200, (response.status_code, response.text)
     assert seen["messages"][0].content == "you are a pirate", seen["messages"][0]
+
+    # The surface belongs to the deployment. A client asking for the admin
+    # stack on a fan-facing service is refused — and refused as a 400, not
+    # swallowed into the 500 arm of the endpoint's own error handling.
+    response = client.post("/model/load", json={"surface": "admin"})
+    assert response.status_code == 400, (response.status_code, response.text)
+    assert "deployed as" in response.json()["detail"], response.text
+    response = client.get("/model", params={"surface": "admin"})
+    assert response.status_code == 400, (response.status_code, response.text)
 
     # An ordinary turn gets the file-derived persona prepended, cites stripped.
     # Skipped on a clone with no data/ — the 424 is the correct answer there.
