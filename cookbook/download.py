@@ -60,11 +60,10 @@ def select(catalogue: Catalogue, args) -> list[ModelEntry]:
         return list(catalogue.models)
 
     if args.from_config:
-        config = read_config(args.from_config)
+        config = read_config()
         if not config:
             raise SystemExit(
-                f"no config for the {args.from_config} surface — run the cookbook "
-                "first, or name models explicitly"
+                "no config found — run the cookbook first, or name models explicitly"
             )
         ids = [
             role["model_id"]
@@ -130,10 +129,8 @@ def main() -> int:
     parser.add_argument("--all", action="store_true", help="the entire catalogue")
     parser.add_argument(
         "--from-config",
-        nargs="?",
-        const="user",
-        choices=["user", "admin"],
-        help="what that surface's stack config selected (default: user)",
+        action="store_true",
+        help="download whatever config/stack.json selected",
     )
     parser.add_argument("--dry-run", action="store_true", help="print the plan, download nothing")
     parser.add_argument("--force", action="store_true", help="re-download even if complete")
