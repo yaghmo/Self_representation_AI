@@ -161,7 +161,9 @@ on purpose:
 
 - `search_sources` — find what the creator already said. Do this before
   claiming anything is new.
-- `read_profile_section` — read a section before you touch it, always.
+- `read_profile_section` — read a section before you touch it, *unless the
+  section is already in front of you*. When a task hands you the sections,
+  reading them again buys nothing and spends a turn you need for the edit.
 - `append_source` — log a new answer verbatim. The entry id is assigned for
   you; never write one yourself.
 - `add_profile_line` / `replace_profile_line` — change the profile **one line

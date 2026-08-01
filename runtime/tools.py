@@ -682,15 +682,20 @@ TOOL_SCHEMAS: list[dict] = [
     },
 ]
 
-# The profile half of the procedure, with `append_source` deliberately absent.
-# The entry is already logged by the time this runs, and the system prompt —
-# the /add skill — opens by telling the model to log one. A prompt cannot
-# outrank a prompt; a missing tool can. Nothing in this list can write to
-# sources.md at all.
+# The profile half of the procedure: two tools, both of which write a line.
+#
+# Everything else is absent for the same reason. `append_source` is gone
+# because the entry is already logged and the system prompt opens by saying to
+# log one. `read_profile_section` and `search_sources` are gone because the
+# task already carries the entry and the sections it feeds — offered the tool,
+# the model re-reads what it was just handed until it runs out of turns, and
+# the instruction it is following there ("read the section first") is one we
+# wrote. A prompt cannot outrank a prompt; a missing tool can.
+FOLLOWUP_TOOL_NAMES = {"add_profile_line", "replace_profile_line"}
 FOLLOWUP_SCHEMAS: list[dict] = [
     schema
     for schema in TOOL_SCHEMAS
-    if schema["function"]["name"] != "append_source"
+    if schema["function"]["name"] in FOLLOWUP_TOOL_NAMES
 ]
 
 READ_TOOLS = {"search_sources": search_sources, "read_profile_section": read_profile_section}
@@ -1070,10 +1075,11 @@ def _self_check() -> None:
         else:
             raise AssertionError("expected ValueError for an answer already logged")
 
-        # append_source is not offered during the follow-up phase.
+        # The follow-up phase offers writes and nothing else. The entry and the
+        # sections come with the task, so a read tool is only a way to spend
+        # the turn budget re-reading what is already in the prompt.
         followup_names = {s["function"]["name"] for s in FOLLOWUP_SCHEMAS}
-        assert "append_source" not in followup_names, followup_names
-        assert "add_profile_line" in followup_names, followup_names
+        assert followup_names == {"add_profile_line", "replace_profile_line"}, followup_names
 
         # ---- table sections -------------------------------------------------
         # The profile cites two ways, and section 1 is a table. A bullet
