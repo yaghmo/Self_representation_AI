@@ -307,6 +307,21 @@ def append_source(
     """
     path = path or SOURCES_PATH
     old = path.read_text(encoding="utf-8")
+    # The corpus is append-only, so a duplicate is permanent and doubles the
+    # weight of whatever it says. A model that has just read an entry will
+    # cheerfully log it back — three identical copies of one answer is a real
+    # run, not a hypothetical.
+    normalised = " ".join(answer.split()).strip().lower()
+    for existing in _entries(old):
+        for line in existing.splitlines():
+            body = line.strip().lstrip("-").strip()
+            if body.lower().startswith("**a:**"):
+                if " ".join(body[6:].split()).strip().strip('"').lower() == normalised.strip('"'):
+                    raise ValueError(
+                        f"that answer is already logged as {entry_id_of(existing)} — "
+                        "the corpus is append-only, so nothing needs re-logging. "
+                        "Use the existing entry's id."
+                    )
     entry_id = next_source_id(old)
     given = date.strip()
     stamped = datetime.now().strftime("%Y-%m-%d") if given.lower() in ("", "unknown") else given
@@ -633,6 +648,17 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+]
+
+# The profile half of the procedure, with `append_source` deliberately absent.
+# The entry is already logged by the time this runs, and the system prompt —
+# the /add skill — opens by telling the model to log one. A prompt cannot
+# outrank a prompt; a missing tool can. Nothing in this list can write to
+# sources.md at all.
+FOLLOWUP_SCHEMAS: list[dict] = [
+    schema
+    for schema in TOOL_SCHEMAS
+    if schema["function"]["name"] != "append_source"
 ]
 
 READ_TOOLS = {"search_sources": search_sources, "read_profile_section": read_profile_section}
@@ -992,6 +1018,30 @@ def _self_check() -> None:
             path=sources,
         )
         assert entry_feeds(nowhere.after) == [], nowhere.after
+
+        # The same answer twice is refused. The corpus is append-only, so a
+        # duplicate is permanent and silently doubles the weight of whatever
+        # it claims — and a model that has just read an entry will re-log it.
+        logged.apply()
+        try:
+            append_source(
+                answer="  Zeta   ANSWER ",  # same words, different spacing and case
+                question="q6 again",
+                entry_type="direct answer",
+                tags=["zeta"],
+                date="2026-01-08",
+                feeds=["6. Voice"],
+                path=sources,
+            )
+        except ValueError as exc:
+            assert "S-005" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected ValueError for an answer already logged")
+
+        # append_source is not offered during the follow-up phase.
+        followup_names = {s["function"]["name"] for s in FOLLOWUP_SCHEMAS}
+        assert "append_source" not in followup_names, followup_names
+        assert "add_profile_line" in followup_names, followup_names
 
         # ---- table sections -------------------------------------------------
         # The profile cites two ways, and section 1 is a table. A bullet

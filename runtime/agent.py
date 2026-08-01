@@ -23,6 +23,7 @@ from service.logging_config import get_logger, log_payload
 
 from .backend import Message
 from .tools import (
+    FOLLOWUP_SCHEMAS,
     TOOL_SCHEMAS,
     Proposal,
     entry_feeds,
@@ -117,6 +118,7 @@ def run(
     post: Callable[[list[Message], list[dict]], dict],
     messages: list[Message],
     max_iterations: int = MAX_ITERATIONS,
+    tools: list[dict] | None = None,
 ) -> Iterator[Step]:
     """Drive the model until it answers, proposes a write, or runs out of turns.
 
@@ -127,6 +129,13 @@ def run(
     hide that decision inside the loop, which is exactly the thing that has to
     be visible.
     """
+    tools = TOOL_SCHEMAS if tools is None else tools
+    # Offered and dispatchable are the same set. A model that names a tool it
+    # was not given gets told so rather than having it run — otherwise the
+    # restriction is a suggestion, and the whole point of restricting is that
+    # a suggestion is what already failed.
+    allowed = {schema["function"]["name"] for schema in tools}
+
     history = list(messages)
     # What it has already looked at. A small model asked to edit a profile
     # will happily read every section in the file, one turn each, and run out
@@ -137,7 +146,7 @@ def run(
 
     for iteration in range(max_iterations):
         logger.info("turn %d/%d, %d messages in history", iteration + 1, max_iterations, len(history))
-        reply = post(history, TOOL_SCHEMAS)
+        reply = post(history, tools)
         tool_calls = reply.get("tool_calls") or []
 
         if not tool_calls:
@@ -178,6 +187,17 @@ def run(
                 continue
 
             log_payload(logger, f"tool {name} <<", arguments)
+
+            if name not in allowed:
+                refusal = (
+                    f"{name} is not available for this task. You have: "
+                    f"{', '.join(sorted(allowed))}."
+                )
+                logger.warning("refused out-of-scope tool %s", name)
+                history.append(_result_message(call_id, refusal))
+                yield Step("tool_result", text=refusal, name=name)
+                continue
+
             signature = (name, json.dumps(arguments, sort_keys=True, default=str))
             seen[signature] = seen.get(signature, 0) + 1
             if seen[signature] > 1:
@@ -282,8 +302,13 @@ def _self_check() -> None:
                     return {"content": "", "tool_calls": [call("nope", "{}")]}
                 return {"content": "recovered", "tool_calls": []}
 
+            # An invented name never reaches the dispatcher — it fails the
+            # offered-set check first, which also tells the model what it does
+            # have. Either way it is a result, not an exception: the model gets
+            # a chance to correct itself.
             steps = list(run(bad_tool, [Message("user", "hi")]))
-            assert "no such tool" in steps[1].text, steps[1]
+            assert "not available for this task" in steps[1].text, steps[1]
+            assert "search_sources" in steps[1].text, steps[1]
             assert steps[-1].text == "recovered"
 
             # Malformed JSON arguments are a result too, not a crash.
@@ -376,6 +401,24 @@ def _self_check() -> None:
 
             steps = list(run(after_apply, continued))
             assert [s.kind for s in steps] == ["answer"], steps
+
+            # A tool outside the offered set is refused, not dispatched. In the
+            # follow-up phase the entry is already logged, and the system
+            # prompt still opens by saying to log one — so the loop must be
+            # able to say no to a call the prompt invited.
+            def logs_again(messages, tools_schema):
+                if len(messages) < 3:
+                    return {
+                        "content": "",
+                        "tool_calls": [call("append_source", '{"answer": "x", "feeds": []}')],
+                    }
+                return {"content": "fine", "tool_calls": []}
+
+            steps = list(run(logs_again, [Message("user", "hi")], tools=FOLLOWUP_SCHEMAS))
+            assert "not available for this task" in steps[1].text, steps[1]
+            assert "add_profile_line" in steps[1].text, steps[1]
+            assert sources.read_text(encoding="utf-8") == corpus, "a refused tool writes nothing"
+            assert steps[-1].text == "fine"
 
             # The follow-up task is built from the entry alone: its id, the
             # sections its Feeds line names, and how those sections read now.

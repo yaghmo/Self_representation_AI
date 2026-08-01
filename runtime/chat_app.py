@@ -24,7 +24,9 @@ import streamlit as st
 from runtime.agent import followup, resumed, run as run_agent
 from runtime.backend import Message
 from runtime.tools import (
+    FOLLOWUP_SCHEMAS,
     SOURCES_PATH,
+    TOOL_SCHEMAS,
     StaleProposal,
     entry_id_of,
     list_backups,
@@ -276,6 +278,7 @@ if prompt or resume:
         # was waiting on is stale the moment the conversation moves on.
         st.session_state.pop("pending_step", None)
         st.session_state.pop("pending", None)
+        st.session_state.pop("followup_active", None)
         st.session_state["history"].append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -311,23 +314,32 @@ if prompt or resume:
 
         entry = st.session_state.pop("followup_entry", None) if resume else None
         paused = st.session_state.pop("pending_step", None) if resume else None
+        tools = TOOL_SCHEMAS
         if entry:
             # Start clean. The entry carries its own id and the sections it
             # feeds, so the follow-up needs none of the chat that produced it —
             # and stays the same size however long that chat was.
             st.session_state.pop("resume_note", None)
             history = followup(entry)
+            # No append_source in this phase: the entry is logged, and the
+            # system prompt opens by telling the model to log one.
+            tools = FOLLOWUP_SCHEMAS
+            st.session_state["followup_active"] = True
             st.caption(f"Updating the profile from {entry_id_of(entry)}")
         elif paused is not None:
             # Continue the paused turn: the model's own tool call is still in
             # that history, and this closes it with what the creator decided.
             history = resumed(paused, st.session_state.pop("resume_note", "applied"))
+            # Applying one line of a follow-up resumes the follow-up — the
+            # phase, and its tool set, have not changed.
+            if st.session_state.get("followup_active"):
+                tools = FOLLOWUP_SCHEMAS
         else:
             history = [Message(m["role"], m["content"]) for m in st.session_state["history"]]
         reply = ""
         with st.chat_message("assistant"):
             try:
-                for step in run_agent(post_turn, history):
+                for step in run_agent(post_turn, history, tools=tools):
                     if step.kind == "tool_call":
                         st.caption(f"{step.name}({step.text})")
                     elif step.kind == "tool_result":
