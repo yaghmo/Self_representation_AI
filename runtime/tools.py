@@ -283,18 +283,21 @@ def append_source(
 
     The id comes from the file, never from the model: an id the model picks is
     an id it can collide, skip, or reuse, and every cite in the profile points
-    at one. `date` should be the literal string "unknown" rather than a
-    guess when the creator's answer doesn't fix a date — an invented value
-    is a fact the model made up, not one the creator gave.
+    at one. An empty or `"unknown"` date falls back to today's date: the
+    field records when the answer was logged, and it is being logged now —
+    that is a fact the clock knows, not one the model invented. A date the
+    creator gives for the material itself still wins over the fallback.
     """
     path = path or SOURCES_PATH
     old = path.read_text(encoding="utf-8")
     entry_id = next_source_id(old)
+    given = date.strip()
+    stamped = datetime.now().strftime("%Y-%m-%d") if given.lower() in ("", "unknown") else given
     tag_str = ", ".join(t.strip() for t in tags if t.strip()) or "unknown"
     feed_str = ", ".join(f.strip() for f in feeds if f.strip()) or "—"
     block = (
         f"\n### {entry_id}\n"
-        f"- **Date:** {date.strip() or 'unknown'}\n"
+        f"- **Date:** {stamped}\n"
         f"- **Type:** {entry_type.strip()}\n"
         f"- **Tags:** {tag_str}\n"
         f"- **Q:** {question.strip()}\n"
@@ -397,8 +400,8 @@ TOOL_SCHEMAS: list[dict] = [
                         "description": (
                             "YYYY-MM-DD the answer was given, fuzzed per the "
                             "redaction policy if needed. Use the literal string "
-                            "'unknown' if the date is genuinely not known — "
-                            "never invent one."
+                            "'unknown' if the date is not known — today's date "
+                            "is filled in for you. Never guess a date."
                         ),
                     },
                     "feeds": {
@@ -620,6 +623,11 @@ def _self_check() -> None:
             path=sources,
         )
         assert "S-004" in p1.diff and "S-004" in p2.diff, "both built from the same snapshot"
+        # p2 asked for "unknown": the entry is being logged now, so the clock
+        # fills it in rather than the file carrying a permanent unknown.
+        today = datetime.now().strftime("%Y-%m-%d")
+        assert f"- **Date:** {today}" in p2.after, p2.after
+        assert "- **Date:** 2026-01-04" in p1.after, "a given date must survive as given"
         p1.apply()
         try:
             p2.apply()
