@@ -311,14 +311,114 @@ def append_source(
     )
 
 
+CITE = re.compile(r"\[S-\d+")
+
+
+def _guard_cites(old_text: str, new_text: str) -> None:
+    """Refuse a write that silently drops a cite.
+
+    Every statement in the profile carries the entry it came from, and that
+    link is the only thing making the profile checkable against the record.
+    A model rewriting prose drops cites without noticing — this turns that
+    into a refusal it can read and correct, rather than a diff someone has to
+    catch by eye at 1am.
+    """
+    lost = sorted(set(CITE.findall(old_text)) - set(CITE.findall(new_text)))
+    if lost:
+        missing = ", ".join(f"{c}]" for c in lost)
+        raise ValueError(
+            f"this edit drops {missing} — every statement keeps the cite it came "
+            "from. Reproduce the cites, or edit a different line."
+        )
+
+
+def _section_lines(text: str, heading: str) -> tuple[str, int, int, list[str]]:
+    name, start, end = _find_section(text, heading)
+    return name, start, end, text[start:end].splitlines()
+
+
+def add_profile_line(heading: str, line: str, path: Path | None = None) -> Proposal:
+    """Add one bullet to one section. Everything else stays byte-identical.
+
+    The whole write path is one line wide on purpose. A tool that takes a
+    section makes the model reproduce a document it can only half remember,
+    and what comes back is fluent, plausible, and missing the cites. A tool
+    that takes a line cannot lose what it never asked for.
+    """
+    path = path or PROFILE_PATH
+    old = path.read_text(encoding="utf-8")
+    body = line.strip()
+    if "\n" in body:
+        raise ValueError("one line per call — call this again for the next line")
+    if not CITE.search(body):
+        raise ValueError(
+            "every line in the profile carries a cite like [S-042]. Add the "
+            "entry this comes from, or log the answer with append_source first."
+        )
+    name, start, end, lines = _section_lines(old, heading)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    lines.append(body)
+    new_section = "\n".join(lines) + "\n\n"
+    new = old[:start] + new_section + old[end:]
+    return _propose(
+        path, old, new, f"add a line to {name!r}", before="", after=body
+    )
+
+
+def replace_profile_line(
+    heading: str, find: str, line: str, path: Path | None = None
+) -> Proposal:
+    """Replace the one line in a section containing `find`.
+
+    Matching more than one line is a refusal, not a guess: the lines in a
+    section are statements about a person, and rewriting the wrong one is
+    indistinguishable from inventing a fact.
+    """
+    path = path or PROFILE_PATH
+    old = path.read_text(encoding="utf-8")
+    body = line.strip()
+    if "\n" in body:
+        raise ValueError("one line per call — call this again for the next line")
+    name, start, end, lines = _section_lines(old, heading)
+    needle = find.strip().lower()
+    if not needle:
+        raise ValueError("`find` must name the line to replace")
+    hits = [i for i, existing in enumerate(lines) if needle in existing.lower()]
+    if not hits:
+        raise KeyError(f"no line in {name!r} contains {find!r}")
+    if len(hits) > 1:
+        matched = " | ".join(lines[i].strip()[:60] for i in hits)
+        raise KeyError(f"{find!r} matches {len(hits)} lines in {name!r}: {matched}. Be exact.")
+    index = hits[0]
+    _guard_cites(lines[index], body)
+    previous = lines[index]
+    lines[index] = body
+    new = old[:start] + "\n".join(lines) + old[end:]
+    return _propose(
+        path, old, new, f"rewrite one line in {name!r}", before=previous.strip(), after=body
+    )
+
+
 def replace_profile_section(heading: str, text: str, path: Path | None = None) -> Proposal:
-    """Replace exactly one `## ` section. Nothing outside it can move."""
+    """Replace exactly one `## ` section. Nothing outside it can move.
+
+    Not offered to the agent — see `TOOL_SCHEMAS`. It stays for a rebuild,
+    where a human or a long-context pass is authoring the whole section and
+    the cite guard is a backstop rather than the only line of defence.
+    """
     path = path or PROFILE_PATH
     old = path.read_text(encoding="utf-8")
     name, start, end = _find_section(old, heading)
     body = text.strip()
-    if not body.startswith("## "):
+    # A demoted heading (`### 4. Foo`) would otherwise get a second `## `
+    # prepended, leaving the file with two headings for one section.
+    first, _, rest = body.partition("\n")
+    if first.lstrip("#").strip().lower() == name.lower():
+        body = f"## {name}\n{rest.lstrip()}"
+    elif not body.startswith("## "):
         body = f"## {name}\n{body}"
+    _guard_cites(old[start:end], body)
     new = old[:start] + body.rstrip() + "\n\n" + old[end:]
     return _propose(
         path,
@@ -417,26 +517,78 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "replace_profile_section",
+            "name": "add_profile_line",
             "description": (
-                "Propose replacing one profile section with new text. Read the "
-                "section first. Every statement needs a cite. The creator must "
-                "approve before anything is written."
+                "Propose adding ONE line to a profile section. Read the section "
+                "first so you do not repeat something already there. The line "
+                "must carry the cite of the entry it comes from, e.g. "
+                "'- **Lives in:** Berlin [S-075]'. Everything else in the file "
+                "stays exactly as it is. The creator must approve."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "heading": {"type": "string"},
-                    "text": {"type": "string"},
+                    "heading": {
+                        "type": "string",
+                        "description": "Section heading, exactly as listed in the system prompt.",
+                    },
+                    "line": {
+                        "type": "string",
+                        "description": (
+                            "The single line to add, including its [S-###] cite. "
+                            "Match the bullet style already used in that section."
+                        ),
+                    },
                 },
-                "required": ["heading", "text"],
+                "required": ["heading", "line"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "replace_profile_line",
+            "description": (
+                "Propose rewriting ONE existing line in a profile section. Read "
+                "the section first. `find` must identify exactly one line — if "
+                "it matches several the call is refused. Keep every [S-###] cite "
+                "the old line carried; add the new one alongside. The creator "
+                "must approve."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "heading": {
+                        "type": "string",
+                        "description": "Section heading, exactly as listed in the system prompt.",
+                    },
+                    "find": {
+                        "type": "string",
+                        "description": (
+                            "Distinctive text from the line to replace, e.g. "
+                            "'Where she's from'."
+                        ),
+                    },
+                    "line": {
+                        "type": "string",
+                        "description": "The full replacement line, cites included.",
+                    },
+                },
+                "required": ["heading", "find", "line"],
             },
         },
     },
 ]
 
 READ_TOOLS = {"search_sources": search_sources, "read_profile_section": read_profile_section}
-WRITE_TOOLS = {"append_source": append_source, "replace_profile_section": replace_profile_section}
+# `replace_profile_section` is deliberately absent: the agent writes one line at
+# a time. A section-shaped tool asks the model to reproduce a document, and what
+# comes back is fluent, plausible, and stripped of its cites.
+WRITE_TOOLS = {
+    "append_source": append_source,
+    "add_profile_line": add_profile_line,
+    "replace_profile_line": replace_profile_line,
+}
 
 # name -> declared argument names, from TOOL_SCHEMAS. `path` is deliberately
 # absent from every schema even though every handler accepts it — see
@@ -469,6 +621,10 @@ def run_tool(name: str, arguments: dict) -> str | Proposal:
         return f"bad arguments for {name}: {exc}"
     except KeyError as exc:
         return str(exc).strip('"')
+    except ValueError as exc:
+        # A refused write. The message is written to be read by the model, so
+        # it comes back unwrapped — it is an instruction, not an error report.
+        return str(exc)
     except OSError as exc:
         return f"{name} could not read the file: {exc}"
     except Exception as exc:  # a handler must never kill the loop
@@ -680,6 +836,75 @@ def _self_check() -> None:
         assert "meta nobody should touch" in rewritten, "meta preamble must survive untouched"
         assert "## Changelog" in rewritten, "the changelog must survive"
         assert "- v1" in rewritten, "changelog body must survive untouched"
+
+        # ---- the line-level write path -------------------------------------
+        # The failure this replaced: a small model handed a section rewrites it
+        # from memory, and the cites do not survive the round trip.
+        target.write_text(profile, encoding="utf-8")
+
+        # Adding a line leaves every other byte alone.
+        proposal = add_profile_line("6. Voice", "- new claim [S-009]", path=target)
+        proposal.apply()
+        grown = target.read_text(encoding="utf-8")
+        assert "- old line" in grown, "adding a line must not disturb the ones there"
+        assert "- new claim [S-009]" in grown, grown
+        assert "## 10. Interaction Rules" in grown, "other sections must not move"
+
+        # A line with no cite is refused: an uncited statement is the bug the
+        # whole citation system exists to make visible.
+        try:
+            add_profile_line("6. Voice", "- unsourced claim", path=target)
+        except ValueError as exc:
+            assert "cite" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected ValueError for a line with no cite")
+
+        # Replacing a line keeps the cites the old line carried.
+        proposal = replace_profile_line(
+            "6. Voice", "new claim", "- sharper claim [S-009] [S-011]", path=target
+        )
+        assert proposal.before == "- new claim [S-009]", proposal.before
+        proposal.apply()
+        edited = target.read_text(encoding="utf-8")
+        assert "- sharper claim [S-009] [S-011]" in edited
+        assert "- old line" in edited, "the other line must survive untouched"
+
+        # Dropping a cite is refused, whichever tool asks.
+        try:
+            replace_profile_line("6. Voice", "sharper claim", "- vaguer claim", path=target)
+        except ValueError as exc:
+            assert "S-009" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected ValueError when a cite is dropped")
+
+        # `find` that matches more than one line is a refusal, not a guess.
+        add_profile_line("6. Voice", "- claim two [S-012]", path=target).apply()
+        try:
+            replace_profile_line("6. Voice", "claim", "- merged [S-009] [S-012]", path=target)
+        except KeyError as exc:
+            assert "matches" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected KeyError for an ambiguous find")
+
+        # The whole-section path keeps the same guard, and a demoted heading is
+        # normalised rather than leaving two headings for one section.
+        try:
+            replace_profile_section("6. Voice", "### 6. Voice\n- wiped", path=target)
+        except ValueError as exc:
+            assert "S-009" in str(exc), str(exc)
+        else:
+            raise AssertionError("section replace must refuse silent cite loss too")
+        kept = "### 6. Voice\n- old line\n- sharper claim [S-009] [S-011]\n- claim two [S-012]"
+        rewritten_section = replace_profile_section("6. Voice", kept, path=target)
+        assert "### 6. Voice" not in rewritten_section.new_text, "heading must be normalised"
+        assert rewritten_section.new_text.count("## 6. Voice") == 1, rewritten_section.new_text
+
+        # The agent is not offered the section tool at all.
+        assert "replace_profile_section" not in TOOL_PROPERTIES
+        assert set(TOOL_PROPERTIES) == set(READ_TOOLS) | set(WRITE_TOOLS)
+        assert run_tool("replace_profile_section", {}).startswith("no such tool")
+
+        target.write_text(profile, encoding="utf-8")
 
         # An unknown section is refused rather than appended as a new one.
         try:

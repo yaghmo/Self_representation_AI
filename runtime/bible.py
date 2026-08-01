@@ -146,7 +146,36 @@ def build_procedure(path: Path | None = None) -> str:
         + "\n\n## Sections in the profile you are editing\n\n"
         + section_index(path)
         + "\n"
+        + HOW_YOU_EDIT
     )
+
+
+# The procedure above was written for an editor that rewrites whole files. The
+# tools here do not, and a model that assumes they do produces a section-sized
+# edit that loses every cite it did not happen to remember.
+HOW_YOU_EDIT = """
+## How you edit here
+
+You do not rewrite files or sections. You have four tools and they are narrow
+on purpose:
+
+- `search_sources` — find what the creator already said. Do this before
+  claiming anything is new.
+- `read_profile_section` — read a section before you touch it, always.
+- `append_source` — log a new answer verbatim. The entry id is assigned for
+  you; never write one yourself.
+- `add_profile_line` / `replace_profile_line` — change the profile **one line
+  at a time**. Every line carries the `[S-###]` cite it came from. A line
+  without a cite is refused, and so is an edit that drops a cite an existing
+  line carried.
+
+Work one step at a time and say what you are doing. Add the line to the
+sections the entry's `Feeds:` names — not the section that seems related.
+If a fact belongs in three sections, that is three calls.
+
+Never restate an existing line from memory: read it, then edit it. Quotes are
+the creator's own words and are copied exactly or left alone.
+"""
 
 
 def assemble(
