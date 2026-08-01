@@ -43,27 +43,34 @@ The same model swings 8 GB across that range — more than the gap between two
 model sizes. Any fitter that treats a model as one number is wrong before it
 starts.
 
-This matters here specifically because the bible is **~23k tokens**. Holding it
-whole means a 32k context, which means a large KV cache, which may mean a
-smaller model. That tradeoff is exposed as a slider rather than decided for you.
+This matters here specifically because the profile is **~8k tokens** — the
+agent reads `sources.md` through tools rather than holding it in context, so
+that number no longer counts toward what a chat stack has to buy. Holding the
+profile whole means a context long enough to cover it plus the conversation
+reserve; below that, retrieval. That tradeoff is exposed as a slider rather
+than decided for you.
 
-## Two surfaces
+## One stack, an agent flag
 
-A stack is chosen *for a surface*, and the two are not interchangeable.
+There used to be two surfaces and two config files. There is one stack now,
+written to a single `config/stack.json`, and a checkbox in the cookbook sets
+its `agent` boolean.
 
-**User** — fans talking to the character. Retrieval, then one model call. No
-tools, no loop. Any model in the catalogue is eligible.
+**Chat mode** (`agent: false`) — fans talking to the character. Retrieval,
+then one model call. No tools, no loop.
 
-**Admin** — the creator editing the bible through an agent loop. The model must
-emit tool calls a runtime can actually parse, so only entries marked
-`tool_calling: "native"` qualify. `"prompted"` means the model can be coaxed
-into JSON but has no tool tokens in its chat template — fine for chat, not for
-an agent whose failure mode is silently corrupting `sources.md`. TTS defaults
-off here: the agent edits text and has no voice.
+**Agent mode** (`agent: true`) — the creator editing the bible through a tool
+loop. The model must emit tool calls a runtime can actually parse.
 
-Each surface writes its own config — `config/stack.user.json` and
-`config/stack.admin.json` — because a single file would mean each choice
-destroying the other.
+Same models serve either mode, because the flag flips without re-fitting — a
+stack fitted for chat today has to still be able to serve agent mode tomorrow
+without visiting the cookbook again. So the LLM role is filtered to
+`tool_calling: "native"` regardless of which mode you're fitting for, not just
+when the checkbox is on. The cost: `"prompted"` models — coaxable into JSON,
+but with no tool tokens in their chat template — never make the catalogue for
+the LLM role, even for a chat-only stack that will never call a tool. Fine for
+chat, but it does mean chat mode doesn't get first pick of the whole catalogue
+any more.
 
 ## Two modes
 
