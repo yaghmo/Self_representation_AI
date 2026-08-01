@@ -104,6 +104,51 @@ def build_persona(path: Path | None = None) -> str:
     return FRAMING + strip_cites(slice_profile(load_profile(path)))
 
 
+PROCEDURE_PATH = REPO_ROOT / ".claude" / "skills" / "add" / "SKILL.md"
+
+
+class ProcedureMissing(FileNotFoundError):
+    pass
+
+
+def section_index_from(text: str) -> str:
+    """The profile's `## ` headings, one per line.
+
+    Split from `section_index()` so it can be tested against a fixture without
+    touching `data/`. Everything before `# CHARACTER` explains the file to
+    humans and the changelog is bookkeeping — neither is a section the agent
+    should be editing, and `slice_profile` has already removed both.
+    """
+    body = slice_profile(text)
+    return "\n".join(line for line in body.splitlines() if line.startswith("## "))
+
+
+def section_index(path: Path | None = None) -> str:
+    return section_index_from(load_profile(path))
+
+
+def build_procedure(path: Path | None = None) -> str:
+    """The admin system prompt: the /add procedure, plus what sections exist.
+
+    Read live rather than baked into a constant, so the index cannot drift from
+    the file — and so the agent spends no tool call asking what it could have
+    been told for sixty tokens.
+    """
+    try:
+        procedure = PROCEDURE_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ProcedureMissing(
+            f"{PROCEDURE_PATH} does not exist — agent mode has no procedure to "
+            "follow. Restore the /add skill, or turn agent mode off."
+        ) from exc
+    return (
+        procedure
+        + "\n\n## Sections in the profile you are editing\n\n"
+        + section_index(path)
+        + "\n"
+    )
+
+
 def assemble(
     history: list[Message],
     context_tokens: int,
@@ -193,6 +238,15 @@ def _self_check() -> None:
     assert "`zzz`" in stripped, "voice text must survive"
     assert "`sources.md`" in stripped, "file refs must survive"
     assert "`[~placeholder-date]`" in stripped, "redaction markers must survive"
+
+    # The section index is the headings and nothing else — it goes in the
+    # admin prompt so the model knows what sections exist without spending a
+    # tool call to ask.
+    index = section_index_from(sample)
+    assert "## 0. At a Glance" in index, index
+    assert "## Changelog" not in index, "bookkeeping is not a section to edit"
+    assert "How this file works" not in index, "meta instructions are not either"
+    assert "alpha" not in index, "the index is headings only, never bodies"
 
     # Verify against real profile — gracefully skip if file doesn't exist
     try:
