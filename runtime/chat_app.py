@@ -25,13 +25,6 @@ SERVICE_URL = os.environ.get("SERVICE_URL", "http://127.0.0.1:8000")
 
 st.set_page_config(page_title="Chat test", layout="wide")
 
-DEFAULT_SYSTEM = (
-    "You are an AI representation of a character. Answer in her voice.\n"
-    "If you are asked something you have not been told, say you do not know. "
-    "Never invent a memory, an opinion, or an event to fill a gap."
-)
-
-
 def get(path: str, **params):
     with httpx.Client(timeout=15.0) as client:
         return client.get(f"{SERVICE_URL}{path}", params=params)
@@ -127,13 +120,26 @@ with st.sidebar:
 
 st.title("Chat test")
 
-system_prompt = st.text_area(
-    "System prompt",
-    value=st.session_state.get("system_prompt", DEFAULT_SYSTEM),
-    height=110,
-    help="The bible is not wired in yet. This is the entire context the model gets.",
-)
-st.session_state["system_prompt"] = system_prompt
+override_allowed = bool(os.environ.get("ALLOW_SYSTEM_PROMPT_OVERRIDE"))
+system_prompt = None
+
+if override_allowed:
+    st.warning(
+        "ALLOW_SYSTEM_PROMPT_OVERRIDE is set — this page can replace the "
+        "character. Unset it to test what a deployment actually serves."
+    )
+    system_prompt = st.text_area(
+        "System prompt override (debug)",
+        value=st.session_state.get("system_prompt", ""),
+        height=110,
+        help="Leave empty to use the assembled profile.",
+    )
+    st.session_state["system_prompt"] = system_prompt
+else:
+    st.caption(
+        "Persona is assembled server-side from data/character.md. "
+        "The service rejects client-supplied system prompts."
+    )
 
 if "history" not in st.session_state:
     st.session_state["history"] = []
@@ -160,8 +166,12 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    messages = list(st.session_state["history"])
+    if override_allowed and system_prompt:
+        messages.insert(0, {"role": "system", "content": system_prompt})
+
     payload = {
-        "messages": [{"role": "system", "content": system_prompt}, *st.session_state["history"]],
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "thinking": thinking,
