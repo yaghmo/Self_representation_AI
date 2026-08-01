@@ -21,6 +21,10 @@ import time
 import httpx
 import streamlit as st
 
+from runtime.agent import run as run_agent
+from runtime.backend import Message
+from runtime.tools import StaleProposal
+
 SERVICE_URL = os.environ.get("SERVICE_URL", "http://127.0.0.1:8000")
 
 st.set_page_config(page_title="Chat test", layout="wide")
@@ -42,6 +46,58 @@ def stream_reply(payload: dict):
             for piece in response.iter_text():
                 if piece:
                     yield piece
+
+
+@st.dialog("Confirm this change", width="large")
+def confirm_dialog(proposal) -> None:
+    """Nothing reaches disk until this returns through Apply.
+
+    `data/` is gitignored — there is no undo but the snapshot `apply()` takes,
+    and no author but the creator. So the write pauses here.
+    """
+    st.caption(f"{proposal.summary} — nothing has been written yet.")
+
+    before, after = st.columns(2)
+    with before:
+        st.markdown("**Before**")
+        if proposal.before:
+            st.code(proposal.before, language="markdown")
+        else:
+            st.caption("_new — nothing is being replaced_")
+    with after:
+        st.markdown("**After**")
+        st.code(proposal.after, language="markdown")
+
+    with st.expander("Unified diff"):
+        st.code(proposal.diff, language="diff")
+
+    left, right = st.columns(2)
+    if left.button("Apply", type="primary", width="stretch"):
+        try:
+            path = proposal.apply()
+        except StaleProposal as exc:
+            # The file moved under the proposal. Never merge, never overwrite —
+            # the creator re-asks and the agent re-reads.
+            st.session_state["pending"] = None
+            st.session_state["history"].append(
+                {"role": "user", "content": f"[not applied: {exc}]"}
+            )
+            st.rerun()
+        st.session_state["pending"] = None
+        st.session_state["history"].append(
+            {"role": "user", "content": f"[applied: {proposal.summary}]"}
+        )
+        st.session_state["applied_note"] = f"Wrote {path} (snapshot in data/.backups/)"
+        st.rerun()
+    if right.button("Decline", width="stretch"):
+        st.session_state["pending"] = None
+        st.session_state["history"].append(
+            {
+                "role": "user",
+                "content": f"[declined: {proposal.summary} — do not retry it]",
+            }
+        )
+        st.rerun()
 
 
 # ---------------------------------------------------------------- sidebar ---
@@ -175,34 +231,82 @@ if prompt:
         "thinking": thinking,
     }
 
-    with st.chat_message("assistant"):
-        started = time.time()
-        try:
-            if use_stream:
-                reply = st.write_stream(stream_reply(payload))
-                stats = None
-            else:
-                with st.spinner("generating"):
-                    response = post("/chat", payload)
-                response.raise_for_status()
-                stats = response.json()
-                reply = stats["content"]
-                st.markdown(reply)
-                if stats.get("reasoning"):
-                    with st.expander("reasoning"):
-                        st.markdown(stats["reasoning"])
-        except Exception as exc:
-            st.error(f"{type(exc).__name__}: {exc}")
-            st.stop()
-
-        elapsed = time.time() - started
-        if stats and stats.get("completion_tokens"):
-            rate = stats["completion_tokens"] / elapsed if elapsed else 0
-            st.caption(
-                f"{stats['completion_tokens']} tokens in {elapsed:.1f}s "
-                f"({rate:.1f} tok/s) · prompt {stats['prompt_tokens']}"
+    if bool(status.get("agent")):
+        def post_turn(turn_messages, tools):
+            response = post(
+                "/chat",
+                {
+                    "messages": [m.as_dict() for m in turn_messages],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "thinking": thinking,
+                    "tools": tools,
+                },
             )
-        else:
-            st.caption(f"{elapsed:.1f}s")
+            response.raise_for_status()
+            return response.json()
 
-    st.session_state["history"].append({"role": "assistant", "content": reply})
+        history = [Message(m["role"], m["content"]) for m in st.session_state["history"]]
+        reply = ""
+        with st.chat_message("assistant"):
+            try:
+                for step in run_agent(post_turn, history):
+                    if step.kind == "tool_call":
+                        st.caption(f"{step.name}({step.text})")
+                    elif step.kind == "tool_result":
+                        with st.expander(f"{step.name} result"):
+                            st.code(step.text)
+                    elif step.kind == "proposal":
+                        st.warning(step.text)
+                        st.code(step.proposal.diff, language="diff")
+                        st.session_state["pending"] = step.proposal
+                    elif step.kind == "answer":
+                        reply = step.text
+                        st.markdown(reply)
+                    elif step.kind == "stopped":
+                        reply = step.text
+                        st.error(reply)
+            except Exception as exc:
+                st.error(f"{type(exc).__name__}: {exc}")
+                st.stop()
+        if reply:
+            st.session_state["history"].append({"role": "assistant", "content": reply})
+    else:
+        with st.chat_message("assistant"):
+            started = time.time()
+            try:
+                if use_stream:
+                    reply = st.write_stream(stream_reply(payload))
+                    stats = None
+                else:
+                    with st.spinner("generating"):
+                        response = post("/chat", payload)
+                    response.raise_for_status()
+                    stats = response.json()
+                    reply = stats["content"]
+                    st.markdown(reply)
+                    if stats.get("reasoning"):
+                        with st.expander("reasoning"):
+                            st.markdown(stats["reasoning"])
+            except Exception as exc:
+                st.error(f"{type(exc).__name__}: {exc}")
+                st.stop()
+
+            elapsed = time.time() - started
+            if stats and stats.get("completion_tokens"):
+                rate = stats["completion_tokens"] / elapsed if elapsed else 0
+                st.caption(
+                    f"{stats['completion_tokens']} tokens in {elapsed:.1f}s "
+                    f"({rate:.1f} tok/s) · prompt {stats['prompt_tokens']}"
+                )
+            else:
+                st.caption(f"{elapsed:.1f}s")
+
+        st.session_state["history"].append({"role": "assistant", "content": reply})
+
+if st.session_state.get("applied_note"):
+    st.success(st.session_state.pop("applied_note"))
+
+pending = st.session_state.get("pending")
+if pending is not None:
+    confirm_dialog(pending)
