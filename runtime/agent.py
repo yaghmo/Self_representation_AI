@@ -33,10 +33,29 @@ class Step:
     text: str = ""
     name: str = ""
     proposal: Proposal | None = None
+    # Set on a `proposal` step. The loop stops there, and resuming means
+    # answering *this* call id with what the creator decided. Without the id
+    # and the history behind it, the next turn starts from a transcript in
+    # which the model never called a tool — so it calls it again, and the
+    # entry gets logged twice.
+    call_id: str = ""
+    history: list[Message] | None = None
 
 
 def _result_message(call_id: str, text: str) -> Message:
     return Message("tool", text, tool_call_id=call_id)
+
+
+def resumed(step: Step, outcome: str) -> list[Message]:
+    """The history to hand back to `run` once the creator has decided.
+
+    The paused turn ends with an assistant message holding a tool call that
+    nothing answered. Resuming without closing it leaves the model looking at
+    its own unanswered call — so it repeats it, and the write happens twice.
+    """
+    if step.history is None:
+        raise ValueError("only a proposal step can be resumed")
+    return [*step.history, _result_message(step.call_id, outcome)]
 
 
 def run(
@@ -91,7 +110,14 @@ def run(
             if isinstance(outcome, Proposal):
                 # Stop here. The creator applies or rejects, then the caller
                 # resumes by calling run() again with the result appended.
-                yield Step("proposal", name=name, proposal=outcome, text=outcome.summary)
+                yield Step(
+                    "proposal",
+                    name=name,
+                    proposal=outcome,
+                    text=outcome.summary,
+                    call_id=call_id,
+                    history=list(history),
+                )
                 return
 
             history.append(_result_message(call_id, outcome))
@@ -224,6 +250,24 @@ def _self_check() -> None:
             assert pause.kind == "proposal", pause
             assert pause.proposal is not None and pause.proposal.diff
             assert sources.read_text(encoding="utf-8") == corpus, "a proposal writes nothing"
+
+            # Resuming closes the tool call the pause left open. A model that
+            # comes back to an unanswered call of its own repeats it — which is
+            # how one answer gets logged as two entries.
+            assert pause.call_id == "c1", pause.call_id
+            continued = resumed(pause, "applied")
+            assert continued[-1].as_dict() == {
+                "role": "tool", "content": "applied", "tool_call_id": "c1"
+            }, continued[-1]
+            assistant = [m for m in continued if m.role == "assistant"]
+            assert assistant and assistant[-1].tool_calls, "the call itself must survive the pause"
+
+            def after_apply(messages, tools_schema):
+                assert messages[-1].role == "tool", "the loop must resume with the result"
+                return {"content": "logged", "tool_calls": []}
+
+            steps = list(run(after_apply, continued))
+            assert [s.kind for s in steps] == ["answer"], steps
         finally:
             tools.SOURCES_PATH = real_sources
 

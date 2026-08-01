@@ -21,7 +21,7 @@ import time
 import httpx
 import streamlit as st
 
-from runtime.agent import run as run_agent
+from runtime.agent import resumed, run as run_agent
 from runtime.backend import Message
 from runtime.tools import StaleProposal, list_backups, restore_backup
 
@@ -71,6 +71,20 @@ def confirm_dialog(proposal) -> None:
     with st.expander("Unified diff"):
         st.code(proposal.diff, language="diff")
 
+    def resolved(note: str, shown: str) -> None:
+        """Close the paused tool call with `note`, and show `shown` in the chat.
+
+        `note` goes back as the tool result, so the model reads the outcome of
+        the call it actually made — a write that reports itself as a fresh
+        user turn is one the model cannot tell apart from a request to write
+        again, and that is how one answer becomes two entries.
+        """
+        st.session_state["pending"] = None
+        st.session_state["resume"] = True
+        st.session_state["resume_note"] = note
+        st.session_state["history"].append({"role": "user", "content": shown})
+        st.rerun()
+
     left, right = st.columns(2)
     if left.button("Apply", type="primary", width="stretch"):
         try:
@@ -78,29 +92,17 @@ def confirm_dialog(proposal) -> None:
         except StaleProposal as exc:
             # The file moved under the proposal. Never merge, never overwrite —
             # the creator re-asks and the agent re-reads.
-            st.session_state["pending"] = None
-            st.session_state["resume"] = True
-            st.session_state["history"].append(
-                {"role": "user", "content": f"[not applied: {exc}]"}
-            )
-            st.rerun()
-        st.session_state["pending"] = None
-        st.session_state["resume"] = True
-        st.session_state["history"].append(
-            {"role": "user", "content": f"[applied: {proposal.summary}]"}
-        )
+            resolved(f"not applied — {exc}", f"[not applied: {exc}]")
         st.session_state["applied_note"] = f"Wrote {path} (snapshot in data/.backups/)"
-        st.rerun()
-    if right.button("Decline", width="stretch"):
-        st.session_state["pending"] = None
-        st.session_state["resume"] = True
-        st.session_state["history"].append(
-            {
-                "role": "user",
-                "content": f"[declined: {proposal.summary} — do not retry it]",
-            }
+        resolved(
+            f"applied — {proposal.summary}. This write is done; do not repeat it.",
+            f"[applied: {proposal.summary}]",
         )
-        st.rerun()
+    if right.button("Decline", width="stretch"):
+        resolved(
+            f"declined by the creator — {proposal.summary}. Do not retry it.",
+            f"[declined: {proposal.summary}]",
+        )
 
 
 # ---------------------------------------------------------------- sidebar ---
@@ -254,6 +256,10 @@ if prompt or resume:
         st.stop()
 
     if prompt:
+        # Typing instead of deciding abandons the paused turn — the proposal it
+        # was waiting on is stale the moment the conversation moves on.
+        st.session_state.pop("pending_step", None)
+        st.session_state.pop("pending", None)
         st.session_state["history"].append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -284,7 +290,13 @@ if prompt or resume:
             response.raise_for_status()
             return response.json()
 
-        history = [Message(m["role"], m["content"]) for m in st.session_state["history"]]
+        paused = st.session_state.pop("pending_step", None) if resume else None
+        if paused is not None:
+            # Continue the paused turn: the model's own tool call is still in
+            # that history, and this closes it with what the creator decided.
+            history = resumed(paused, st.session_state.pop("resume_note", "applied"))
+        else:
+            history = [Message(m["role"], m["content"]) for m in st.session_state["history"]]
         reply = ""
         with st.chat_message("assistant"):
             try:
@@ -298,6 +310,7 @@ if prompt or resume:
                         st.warning(step.text)
                         st.code(step.proposal.diff, language="diff")
                         st.session_state["pending"] = step.proposal
+                        st.session_state["pending_step"] = step
                     elif step.kind == "answer":
                         reply = step.text
                         st.markdown(reply)

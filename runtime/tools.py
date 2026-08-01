@@ -311,7 +311,10 @@ def append_source(
     )
 
 
-CITE = re.compile(r"\[S-\d+")
+# The profile cites two ways: `[S-004]` in prose, `` `S-002` `` in the table
+# cells. Matching only the bracketed form let a table row be rewritten with its
+# cite silently dropped, which is the exact loss the guard exists to stop.
+CITE = re.compile(r"S-\d+")
 
 
 def _guard_cites(old_text: str, new_text: str) -> None:
@@ -325,11 +328,16 @@ def _guard_cites(old_text: str, new_text: str) -> None:
     """
     lost = sorted(set(CITE.findall(old_text)) - set(CITE.findall(new_text)))
     if lost:
-        missing = ", ".join(f"{c}]" for c in lost)
+        missing = ", ".join(lost)
         raise ValueError(
             f"this edit drops {missing} — every statement keeps the cite it came "
             "from. Reproduce the cites, or edit a different line."
         )
+
+
+def _is_table(lines: list[str]) -> bool:
+    """Two or more `|` rows means the section is a table, not a bullet list."""
+    return sum(1 for line in lines if line.lstrip().startswith("|")) >= 2
 
 
 def _section_lines(text: str, heading: str) -> tuple[str, int, int, list[str]]:
@@ -356,6 +364,11 @@ def add_profile_line(heading: str, line: str, path: Path | None = None) -> Propo
             "entry this comes from, or log the answer with append_source first."
         )
     name, start, end, lines = _section_lines(old, heading)
+    if _is_table(lines) and not body.startswith("|"):
+        raise ValueError(
+            f"{name!r} is a table — add a row, not a bullet: "
+            "| Field | value | `S-###` |"
+        )
     while lines and not lines[-1].strip():
         lines.pop()
     lines.append(body)
@@ -391,8 +404,13 @@ def replace_profile_line(
         matched = " | ".join(lines[i].strip()[:60] for i in hits)
         raise KeyError(f"{find!r} matches {len(hits)} lines in {name!r}: {matched}. Be exact.")
     index = hits[0]
-    _guard_cites(lines[index], body)
     previous = lines[index]
+    # A table row rewritten as a bullet ends the table and orphans every row
+    # under it. Keep the shape the line already had.
+    if previous.lstrip().startswith("|") != body.startswith("|"):
+        wanted = "a table row (| … | … |)" if previous.lstrip().startswith("|") else "a bullet"
+        raise ValueError(f"that line is {wanted} — the replacement has to be one too")
+    _guard_cites(previous, body)
     lines[index] = body
     new = old[:start] + "\n".join(lines) + old[end:]
     return _propose(
@@ -898,6 +916,66 @@ def _self_check() -> None:
         rewritten_section = replace_profile_section("6. Voice", kept, path=target)
         assert "### 6. Voice" not in rewritten_section.new_text, "heading must be normalised"
         assert rewritten_section.new_text.count("## 6. Voice") == 1, rewritten_section.new_text
+
+        # ---- table sections -------------------------------------------------
+        # The profile cites two ways, and section 1 is a table. A bullet
+        # written over a table row ends the table and orphans the rows under
+        # it — and a backtick cite is still a cite.
+        table = root / "table.md"
+        table.write_text(
+            "# CHARACTER\n"
+            "## 1. Core Identity\n"
+            "| Field | Value | Sources |\n"
+            "|---|---|---|\n"
+            "| Origin | Not named. Local culture is *\"judgy\"* | `S-002` |\n"
+            "| Role | Placeholder | `S-055` |\n\n"
+            "## 6. Voice\n- old line [S-001]\n",
+            encoding="utf-8",
+        )
+
+        # A bullet may not replace a table row.
+        try:
+            replace_profile_line(
+                "1. Core Identity", "Origin", "- **Origin:** Germany [S-075]", path=table
+            )
+        except ValueError as exc:
+            assert "table row" in str(exc), str(exc)
+        else:
+            raise AssertionError("a bullet must not replace a table row")
+
+        # A row that drops the backtick cite is refused just like a prose one.
+        try:
+            replace_profile_line(
+                "1. Core Identity", "Origin", "| Origin | Germany | |", path=table
+            )
+        except ValueError as exc:
+            assert "S-002" in str(exc), str(exc)
+        else:
+            raise AssertionError("a backtick cite must count as a cite")
+
+        # Keeping the old cite and adding the new one is the correct edit.
+        proposal = replace_profile_line(
+            "1. Core Identity",
+            "Origin",
+            "| Origin | Germany | `S-002, S-075` |",
+            path=table,
+        )
+        proposal.apply()
+        assert "| Origin | Germany | `S-002, S-075` |" in table.read_text(encoding="utf-8")
+
+        # Adding to a table section takes a row, not a bullet.
+        try:
+            add_profile_line("1. Core Identity", "- **Languages:** German [S-075]", path=table)
+        except ValueError as exc:
+            assert "table" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected ValueError for a bullet added to a table")
+        add_profile_line(
+            "1. Core Identity", "| Languages | German | `S-075` |", path=table
+        ).apply()
+        grown_table = table.read_text(encoding="utf-8")
+        assert "| Languages | German | `S-075` |" in grown_table
+        assert "## 6. Voice" in grown_table, "the next section must not move"
 
         # The agent is not offered the section tool at all.
         assert "replace_profile_section" not in TOOL_PROPERTIES
