@@ -21,9 +21,15 @@ import time
 import httpx
 import streamlit as st
 
-from runtime.agent import resumed, run as run_agent
+from runtime.agent import followup, resumed, run as run_agent
 from runtime.backend import Message
-from runtime.tools import StaleProposal, list_backups, restore_backup
+from runtime.tools import (
+    SOURCES_PATH,
+    StaleProposal,
+    entry_id_of,
+    list_backups,
+    restore_backup,
+)
 from service.logging_config import setup_logging
 
 SERVICE_URL = os.environ.get("SERVICE_URL", "http://127.0.0.1:8000")
@@ -99,6 +105,11 @@ def confirm_dialog(proposal) -> None:
             # the creator re-asks and the agent re-reads.
             resolved(f"not applied — {exc}", f"[not applied: {exc}]")
         st.session_state["applied_note"] = f"Wrote {path} (snapshot in data/.backups/)"
+        # A logged entry is only half the procedure. The entry itself names the
+        # sections it feeds, so the second half needs the entry — not the
+        # conversation that produced it.
+        if path.name == SOURCES_PATH.name and entry_id_of(proposal.after):
+            st.session_state["followup_entry"] = proposal.after
         resolved(
             f"applied — {proposal.summary}. This write is done; do not repeat it.",
             f"[applied: {proposal.summary}]",
@@ -298,8 +309,16 @@ if prompt or resume:
             response.raise_for_status()
             return response.json()
 
+        entry = st.session_state.pop("followup_entry", None) if resume else None
         paused = st.session_state.pop("pending_step", None) if resume else None
-        if paused is not None:
+        if entry:
+            # Start clean. The entry carries its own id and the sections it
+            # feeds, so the follow-up needs none of the chat that produced it —
+            # and stays the same size however long that chat was.
+            st.session_state.pop("resume_note", None)
+            history = followup(entry)
+            st.caption(f"Updating the profile from {entry_id_of(entry)}")
+        elif paused is not None:
             # Continue the paused turn: the model's own tool call is still in
             # that history, and this closes it with what the creator decided.
             history = resumed(paused, st.session_state.pop("resume_note", "applied"))

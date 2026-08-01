@@ -22,7 +22,14 @@ from typing import Callable, Iterator
 from service.logging_config import get_logger, log_payload
 
 from .backend import Message
-from .tools import TOOL_SCHEMAS, Proposal, run_tool
+from .tools import (
+    TOOL_SCHEMAS,
+    Proposal,
+    entry_feeds,
+    entry_id_of,
+    read_profile_section,
+    run_tool,
+)
 
 logger = get_logger("runtime.agent")
 
@@ -48,6 +55,50 @@ class Step:
 
 def _result_message(call_id: str, text: str) -> Message:
     return Message("tool", text, tool_call_id=call_id)
+
+
+def followup(entry: str, read_section: Callable[[str], str] = read_profile_section) -> list[Message]:
+    """The task that follows a logged entry: put it in the profile.
+
+    A fresh, bounded conversation rather than a continuation of the chat. The
+    entry names the sections it feeds and carries its own id, so everything
+    the work needs is in this one message — which means the task is the same
+    size on turn thirty as on turn one, and the model is not re-deriving what
+    it is doing from a transcript it half remembers.
+    """
+    entry_id = entry_id_of(entry) or "the entry above"
+    sections = entry_feeds(entry)
+    if not sections:
+        return [
+            Message(
+                "user",
+                f"{entry}\n\nThis entry names no sections in its Feeds line, so "
+                "there is nothing to add to the profile. Say so and stop.",
+            )
+        ]
+
+    current = []
+    for name in sections:
+        try:
+            current.append(read_section(name))
+        except Exception as exc:  # a missing section is a fact, not a crash
+            current.append(f"## {name}\n[could not read this section: {exc}]")
+
+    joined = "\n\n".join(current)
+    return [
+        Message(
+            "user",
+            f"This entry was just logged:\n\n{entry}\n\n"
+            f"It feeds {len(sections)} section(s): {', '.join(sections)}.\n"
+            f"Here they are as they stand:\n\n{joined}\n\n"
+            f"Add what {entry_id} says to each of those sections, one "
+            "`add_profile_line` or `replace_profile_line` call at a time, each "
+            f"line carrying the cite {entry_id}. Match the shape already used "
+            "in the section — a bullet where there are bullets, a row where "
+            "there is a table. If a section already says this, skip it and say "
+            "why. When every section is done, say what you changed and stop.",
+        )
+    ]
 
 
 def resumed(step: Step, outcome: str) -> list[Message]:
@@ -325,6 +376,43 @@ def _self_check() -> None:
 
             steps = list(run(after_apply, continued))
             assert [s.kind for s in steps] == ["answer"], steps
+
+            # The follow-up task is built from the entry alone: its id, the
+            # sections its Feeds line names, and how those sections read now.
+            # No chat history, so it is the same size on turn thirty as on one.
+            entry = (
+                "### S-042\n"
+                "- **Date:** 2026-01-09\n"
+                "- **Q:** placeholder question\n"
+                "- **A:** placeholder answer\n"
+                "- **Feeds:** 0. At a Glance, 6. Voice\n"
+            )
+            asked: list[str] = []
+
+            def fake_section(name: str) -> str:
+                asked.append(name)
+                return f"## {name}\n- existing line [S-001]\n"
+
+            task = followup(entry, read_section=fake_section)
+            assert asked == ["0. At a Glance", "6. Voice"], asked
+            assert len(task) == 1 and task[0].role == "user", task
+            body = task[0].content
+            assert "S-042" in body and "placeholder answer" in body, body
+            assert "existing line [S-001]" in body, "the sections must come in with the task"
+            assert "at a time" in body, body
+
+            # An entry feeding nothing says so rather than sending the model
+            # looking for somewhere to put it.
+            nowhere = followup("### S-043\n- **Feeds:** —\n", read_section=fake_section)
+            assert "nothing to add" in nowhere[0].content, nowhere[0].content
+
+            # A section that cannot be read is reported, not raised — the other
+            # sections in the same entry still get their line.
+            def broken(name: str) -> str:
+                raise KeyError(f"no section {name!r}")
+
+            degraded = followup(entry, read_section=broken)
+            assert "could not read this section" in degraded[0].content
         finally:
             tools.SOURCES_PATH = real_sources
 

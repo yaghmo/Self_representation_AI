@@ -232,12 +232,24 @@ def _find_section(text: str, heading: str) -> tuple[str, int, int]:
     More than one prefix match is a refusal, not a guess.
     """
     edit_start, edit_end = _editable_span(text)
-    wanted = heading.strip().lstrip("#").strip().lower()
+    wanted = heading.strip().lstrip("#").lstrip("§").strip().lower()
     editable = [(n, s, e) for n, s, e in _sections(text) if edit_start <= s < edit_end]
 
     for name, start, end in editable:
         if name.lower() == wanted:
             return name, start, end
+
+    # Sections are numbered, and every way of naming one carries the number:
+    # "§5 Preferences" from an entry's Feeds line, "5. Preferences & Texture"
+    # from the index, a bare "5" from a model being terse. The number is the
+    # part that never drifts, and it identifies the section exactly — "1" is
+    # `1.` and never `10.`.
+    numbered = re.match(r"(\d+)", wanted)
+    if numbered:
+        prefix = f"{numbered.group(1)}."
+        for name, start, end in editable:
+            if name.startswith(prefix):
+                return name, start, end
 
     prefix_matches = [(n, s, e) for n, s, e in editable if n.lower().startswith(wanted)]
     if len(prefix_matches) == 1:
@@ -421,6 +433,26 @@ def replace_profile_line(
     return _propose(
         path, old, new, f"rewrite one line in {name!r}", before=previous.strip(), after=body
     )
+
+
+def entry_id_of(entry: str) -> str:
+    """The `S-###` an entry block declares, or "" if it has none."""
+    found = ENTRY.search(entry)
+    return found.group(1) if found else ""
+
+
+def entry_feeds(entry: str) -> list[str]:
+    """The sections an entry's `Feeds:` line names.
+
+    The entry says where it belongs, so the follow-up work is fully specified
+    by the entry alone — no chat history, no diff against a snapshot.
+    """
+    for line in entry.splitlines():
+        stripped = line.strip().lstrip("-").strip()
+        if stripped.lower().startswith("**feeds:**"):
+            listed = stripped.split("**", 2)[-1].strip()
+            return [part.strip() for part in listed.split(",") if part.strip() and part.strip() != "—"]
+    return []
 
 
 def replace_profile_section(heading: str, text: str, path: Path | None = None) -> Proposal:
@@ -727,18 +759,25 @@ def _self_check() -> None:
         # An unambiguous prefix still resolves.
         assert "one" in read_profile_section("0", path=target)
 
-        # A bare-number heading that prefix-matches more than one real
-        # section (Critical 2: "1" matches both "1. Core Identity" and
-        # "10. Interaction Rules") must refuse, not silently pick one.
-        try:
-            read_profile_section("1", path=target)
-        except KeyError as exc:
-            assert "Core Identity" in str(exc), str(exc)
-            assert "Interaction Rules" in str(exc), str(exc)
-        else:
-            raise AssertionError("expected KeyError for an ambiguous prefix")
-        # The full heading for either candidate is unambiguous and works.
+        # A bare number is the section with that number — "1" is `1.` and
+        # never `10.`, which is what makes it safe to accept at all.
+        assert "placeholder identity" in read_profile_section("1", path=target)
+        assert "hard constraint" in read_profile_section("10", path=target)
         assert "hard constraint" in read_profile_section("10. Interaction Rules", path=target)
+
+        # The `§5 Preferences` form an entry's Feeds line uses resolves too:
+        # the wording drifts between the entry and the heading, the number
+        # does not.
+        assert "placeholder identity" in read_profile_section("§1 Core Identity", path=target)
+
+        # A non-numeric heading that prefix-matches more than one section is
+        # still a refusal rather than a guess.
+        try:
+            read_profile_section("I", path=target)
+        except KeyError as exc:
+            assert "no section" in str(exc) or "matches" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected KeyError for a heading matching nothing")
 
         # Meta preamble and changelog are unreachable, not merely hidden from
         # the section index (Important 6).
@@ -928,6 +967,31 @@ def _self_check() -> None:
         rewritten_section = replace_profile_section("6. Voice", kept, path=target)
         assert "### 6. Voice" not in rewritten_section.new_text, "heading must be normalised"
         assert rewritten_section.new_text.count("## 6. Voice") == 1, rewritten_section.new_text
+
+        # An entry describes its own follow-up work: which id, which sections.
+        logged = append_source(
+            answer="zeta answer",
+            question="q6",
+            entry_type="direct answer",
+            tags=["zeta"],
+            date="2026-01-06",
+            feeds=["0. At a Glance", "6. Voice"],
+            path=sources,
+        )
+        assert entry_id_of(logged.after) == "S-005", logged.after
+        assert entry_feeds(logged.after) == ["0. At a Glance", "6. Voice"], logged.after
+        # An entry that feeds nothing writes the em-dash placeholder, which is
+        # an absence rather than a section named "—".
+        nowhere = append_source(
+            answer="eta answer",
+            question="q7",
+            entry_type="direct answer",
+            tags=["eta"],
+            date="2026-01-07",
+            feeds=[],
+            path=sources,
+        )
+        assert entry_feeds(nowhere.after) == [], nowhere.after
 
         # ---- table sections -------------------------------------------------
         # The profile cites two ways, and section 1 is a table. A bullet
