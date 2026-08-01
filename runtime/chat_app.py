@@ -23,7 +23,7 @@ import streamlit as st
 
 from runtime.agent import run as run_agent
 from runtime.backend import Message
-from runtime.tools import StaleProposal
+from runtime.tools import StaleProposal, list_backups, restore_backup
 
 SERVICE_URL = os.environ.get("SERVICE_URL", "http://127.0.0.1:8000")
 
@@ -79,11 +79,13 @@ def confirm_dialog(proposal) -> None:
             # The file moved under the proposal. Never merge, never overwrite —
             # the creator re-asks and the agent re-reads.
             st.session_state["pending"] = None
+            st.session_state["resume"] = True
             st.session_state["history"].append(
                 {"role": "user", "content": f"[not applied: {exc}]"}
             )
             st.rerun()
         st.session_state["pending"] = None
+        st.session_state["resume"] = True
         st.session_state["history"].append(
             {"role": "user", "content": f"[applied: {proposal.summary}]"}
         )
@@ -91,6 +93,7 @@ def confirm_dialog(proposal) -> None:
         st.rerun()
     if right.button("Decline", width="stretch"):
         st.session_state["pending"] = None
+        st.session_state["resume"] = True
         st.session_state["history"].append(
             {
                 "role": "user",
@@ -170,6 +173,34 @@ with st.sidebar:
     if st.session_state.get("load_seconds"):
         st.caption(f"loaded in {st.session_state['load_seconds']:.1f}s")
 
+    # Undo lives here, not in the tool list. Sources are append-only, so the
+    # agent has no way to remove an entry and should not be given one — asked
+    # to retract, the right move is a superseding entry or this button.
+    if status.get("agent"):
+        st.divider()
+        st.header("Snapshots")
+        snapshots = list_backups()
+        if not snapshots:
+            st.caption("No snapshots yet — one is taken before every write.")
+        else:
+            choice = st.selectbox(
+                "Roll a file back",
+                snapshots,
+                format_func=lambda p: p.name,
+                help=(
+                    "Restores that snapshot over the live file. The text being "
+                    "replaced is snapshotted first, so this is reversible too."
+                ),
+            )
+            if st.button("Restore", width="stretch"):
+                restored = restore_backup(choice)
+                st.session_state["history"] = []
+                st.session_state["applied_note"] = (
+                    f"Restored {restored} from {choice.name} — chat cleared, since "
+                    "the history described a file that no longer says that."
+                )
+                st.rerun()
+
 # ------------------------------------------------------------------- main ---
 
 st.title("Chat test")
@@ -211,14 +242,21 @@ for message in st.session_state["history"]:
 ready = bool(health.get("model_loaded"))
 prompt = st.chat_input("Say something" if ready else "Load the model first")
 
-if prompt:
+# Applying or declining a proposal hands the turn back to the agent: the /add
+# procedure does not end at the source entry, it ends with the profile sections
+# that entry feeds. Without this the loop stops at the write and the creator has
+# to prompt again to get the second half of a procedure already underway.
+resume = bool(st.session_state.pop("resume", False))
+
+if prompt or resume:
     if not ready:
         st.warning("Model is not loaded — press Load model in the sidebar.")
         st.stop()
 
-    st.session_state["history"].append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    if prompt:
+        st.session_state["history"].append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
     messages = list(st.session_state["history"])
     if override_allowed and system_prompt:
