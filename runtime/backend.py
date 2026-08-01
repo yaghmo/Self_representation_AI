@@ -19,7 +19,7 @@ from typing import Iterator, Protocol
 
 import httpx
 
-from service.logging_config import get_logger
+from service.logging_config import get_logger, log_payload
 
 logger = get_logger("runtime.backend")
 
@@ -120,11 +120,18 @@ class LocalBackend:
         started = time.monotonic()
         logger.debug("POST %s (%d messages, stream=False)", url, len(messages))
 
+        payload = self._payload(messages, False, **kwargs)
+        # Both sides of the wire, every call. When a local model emits a tool
+        # call as literal text instead of a structured one, this is the only
+        # place that shows it.
+        log_payload(logger, f"POST {url} <<", payload)
+
         with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
-            response = client.post(url, json=self._payload(messages, False, **kwargs))
+            response = client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
 
+        log_payload(logger, f"POST {url} >>", data)
         self._record_usage(data.get("usage"))
         message = data["choices"][0]["message"]
         self.last_reasoning = message.get("reasoning_content") or ""
@@ -161,8 +168,11 @@ class LocalBackend:
         chunks = 0
         logger.debug("POST %s (%d messages, stream=True)", url, len(messages))
 
+        stream_payload = self._payload(messages, True, **kwargs)
+        log_payload(logger, f"POST {url} << (stream)", stream_payload)
+
         with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
-            with client.stream("POST", url, json=self._payload(messages, True, **kwargs)) as response:
+            with client.stream("POST", url, json=stream_payload) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():
                     if not line or not line.startswith("data:"):

@@ -24,8 +24,13 @@ import streamlit as st
 from runtime.agent import resumed, run as run_agent
 from runtime.backend import Message
 from runtime.tools import StaleProposal, list_backups, restore_backup
+from service.logging_config import setup_logging
 
 SERVICE_URL = os.environ.get("SERVICE_URL", "http://127.0.0.1:8000")
+
+# The loop runs in this process, so the tool calls and their results land in
+# logs/chat.log while the model's own traffic lands in logs/service.log.
+logger = setup_logging("chat")
 
 st.set_page_config(page_title="Chat test", layout="wide")
 
@@ -277,6 +282,9 @@ if prompt or resume:
 
     if bool(status.get("agent")):
         def post_turn(turn_messages, tools):
+            logger.info(
+                "turn: %s", " | ".join(f"{m.role}:{len(m.content)}c" for m in turn_messages)
+            )
             response = post(
                 "/chat",
                 {

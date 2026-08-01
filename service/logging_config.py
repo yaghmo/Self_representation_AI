@@ -53,7 +53,10 @@ def setup_logging(name: str = "app", level: str | None = None) -> logging.Logger
         stderr.setFormatter(logging.Formatter(FORMAT, DATE_FORMAT))
         root.addHandler(stderr)
 
-        log_dir = os.environ.get("LOG_DIR")
+        # Defaults to on. The thing you need when a local model misbehaves is
+        # the exact bytes it was sent and sent back, and that is never the run
+        # you thought to enable logging for. LOG_DIR="" turns it off.
+        log_dir = os.environ.get("LOG_DIR", "logs")
         if log_dir:
             directory = Path(log_dir)
             directory.mkdir(parents=True, exist_ok=True)
@@ -73,3 +76,37 @@ def setup_logging(name: str = "app", level: str | None = None) -> logging.Logger
 def get_logger(name: str) -> logging.Logger:
     """For modules that should not decide global configuration."""
     return logging.getLogger(name)
+
+
+def clip(value, limit: int = 2000):
+    """Recursively shorten long strings so one dump cannot bury the log.
+
+    The system prompt is thousands of tokens and identical every turn; the
+    model's own output is the part worth reading, and it is short.
+    """
+    if isinstance(value, str):
+        return value if len(value) <= limit else f"{value[:limit]}… [+{len(value) - limit} chars]"
+    if isinstance(value, dict):
+        return {k: clip(v, limit) for k, v in value.items()}
+    if isinstance(value, list):
+        return [clip(v, limit) for v in value]
+    return value
+
+
+def log_payload(logger: logging.Logger, label: str, payload, limit: int = 2000) -> None:
+    """Dump a request or reply body, pretty-printed and clipped.
+
+    Deliberately one line per key rather than one long line: this gets read by
+    eye, and pasted into a chat with someone who is going to read it by eye too.
+
+    These files hold the creator's own material — `logs/` is gitignored along
+    with everything else that is not explicitly allowed, and it should stay
+    that way.
+    """
+    import json
+
+    try:
+        body = json.dumps(clip(payload, limit), indent=2, ensure_ascii=False)
+    except (TypeError, ValueError):
+        body = repr(payload)[:limit]
+    logger.info("%s\n%s", label, body)

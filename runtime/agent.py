@@ -19,8 +19,12 @@ import json
 from dataclasses import dataclass
 from typing import Callable, Iterator
 
+from service.logging_config import get_logger, log_payload
+
 from .backend import Message
 from .tools import TOOL_SCHEMAS, Proposal, run_tool
+
+logger = get_logger("runtime.agent")
 
 MAX_ITERATIONS = 8
 
@@ -74,12 +78,23 @@ def run(
     """
     history = list(messages)
 
-    for _ in range(max_iterations):
+    for iteration in range(max_iterations):
+        logger.info("turn %d/%d, %d messages in history", iteration + 1, max_iterations, len(history))
         reply = post(history, TOOL_SCHEMAS)
         tool_calls = reply.get("tool_calls") or []
 
         if not tool_calls:
-            yield Step("answer", text=reply.get("content", ""))
+            content = reply.get("content", "")
+            # A model that writes `<tool_call>` into its answer meant to call
+            # one and the template did not parse it. Worth saying out loud —
+            # from the loop's side it is indistinguishable from a plain reply.
+            if "tool_call" in content:
+                logger.warning(
+                    "reply contains tool-call markup but no parsed call — "
+                    "the chat template did not turn it into one:\n%s",
+                    content[:1000],
+                )
+            yield Step("answer", text=content)
             return
 
         history.append(Message("assistant", reply.get("content", ""), tool_calls=tool_calls))
@@ -105,7 +120,13 @@ def run(
                 yield Step("tool_result", text=text, name=name)
                 continue
 
+            log_payload(logger, f"tool {name} <<", arguments)
             outcome = run_tool(name, arguments)
+            logger.info(
+                "tool %s >> %s",
+                name,
+                outcome.summary if isinstance(outcome, Proposal) else str(outcome)[:1000],
+            )
 
             if isinstance(outcome, Proposal):
                 # Stop here. The creator applies or rejects, then the caller

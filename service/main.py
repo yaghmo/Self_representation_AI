@@ -39,7 +39,7 @@ from runtime.bible import (
     build_procedure,
 )
 from runtime.model import Model, ModelNotDownloaded
-from service.logging_config import setup_logging
+from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
 
@@ -259,6 +259,17 @@ def model_unload() -> dict:
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     model = _require_loaded()
+    log_payload(
+        logger,
+        "POST /chat <<",
+        {
+            "messages": [m.model_dump() for m in request.messages],
+            "tools": [t.get("function", {}).get("name") for t in (request.tools or [])],
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+            "thinking": request.thinking,
+        },
+    )
     messages = _prompt_for(model, request)
     try:
         content = model.chat(
@@ -273,6 +284,15 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     backend = model._backend
+    log_payload(
+        logger,
+        "POST /chat >>",
+        {
+            "content": content,
+            "reasoning": getattr(backend, "last_reasoning", ""),
+            "tool_calls": getattr(backend, "last_tool_calls", []) or [],
+        },
+    )
     return ChatResponse(
         content=content,
         reasoning=getattr(backend, "last_reasoning", ""),
