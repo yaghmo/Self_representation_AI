@@ -40,11 +40,21 @@ def tokenize_url(base_url: str) -> str:
 
 @dataclass
 class Message:
-    role: str  # system | user | assistant
+    role: str  # system | user | assistant | tool
     content: str
+    # Set on an assistant turn that called tools, and on the tool result that
+    # answers one. Optional because every fan-side message has neither, and a
+    # null key on a plain turn is rejected by llama-server.
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
 
     def as_dict(self) -> dict:
-        return {"role": self.role, "content": self.content}
+        out: dict = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            out["tool_calls"] = self.tool_calls
+        if self.tool_call_id:
+            out["tool_call_id"] = self.tool_call_id
+        return out
 
 
 @dataclass
@@ -83,6 +93,7 @@ class LocalBackend:
     thinking: bool = False
     last_usage: Usage = field(default_factory=Usage)
     last_reasoning: str = ""
+    last_tool_calls: list[dict] = field(default_factory=list)
 
     def _payload(self, messages: list[Message], stream: bool, **kwargs) -> dict:
         payload = {
@@ -99,6 +110,9 @@ class LocalBackend:
         for key in ("top_p", "top_k", "repeat_penalty", "stop", "seed"):
             if key in kwargs:
                 payload[key] = kwargs[key]
+        if kwargs.get("tools"):
+            payload["tools"] = kwargs["tools"]
+            payload["tool_choice"] = kwargs.get("tool_choice", "auto")
         return payload
 
     def complete(self, messages: list[Message], **kwargs) -> str:
@@ -114,6 +128,7 @@ class LocalBackend:
         self._record_usage(data.get("usage"))
         message = data["choices"][0]["message"]
         self.last_reasoning = message.get("reasoning_content") or ""
+        self.last_tool_calls = message.get("tool_calls") or []
         content = message.get("content") or ""
         elapsed = time.monotonic() - started
 
@@ -126,7 +141,7 @@ class LocalBackend:
             ", reasoning suppressed" if not content and self.last_reasoning else "",
         )
 
-        if not content and self.last_reasoning:
+        if not content and not self.last_tool_calls and self.last_reasoning:
             logger.warning(
                 "model produced only reasoning (%d chars) and no answer — "
                 "token budget exhausted mid-thought",
@@ -221,3 +236,36 @@ def from_role_config(role: dict) -> Backend:
         base_url=role.get("base_url", "http://127.0.0.1:8080/v1"),
         model=role.get("model_id", ""),
     )
+
+
+def _self_check() -> None:
+    # A plain message serialises as it always did — no null keys, because
+    # llama-server rejects a tool_calls: null on a user turn.
+    plain = Message("user", "hi")
+    assert plain.as_dict() == {"role": "user", "content": "hi"}, plain.as_dict()
+
+    # An assistant turn that called a tool carries the calls back verbatim:
+    # the model must see its own call in the history or the tool result is
+    # an answer to a question it never asked.
+    call = {"id": "call_1", "type": "function",
+            "function": {"name": "search_sources", "arguments": "{}"}}
+    assistant = Message("assistant", "", tool_calls=[call])
+    assert assistant.as_dict()["tool_calls"] == [call]
+
+    # A tool result is addressed to the call it answers.
+    result = Message("tool", "2 entries", tool_call_id="call_1")
+    assert result.as_dict() == {
+        "role": "tool", "content": "2 entries", "tool_call_id": "call_1"
+    }
+
+    # Tools reach the payload only when supplied.
+    backend = LocalBackend()
+    schema = [{"type": "function", "function": {"name": "noop", "parameters": {}}}]
+    assert "tools" not in backend._payload([plain], False)
+    assert backend._payload([plain], False, tools=schema)["tools"] == schema
+
+    print("backend self-check: ok")
+
+
+if __name__ == "__main__":
+    _self_check()
