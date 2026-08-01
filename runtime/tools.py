@@ -367,6 +367,24 @@ def _guard_cites(old_text: str, new_text: str) -> None:
         )
 
 
+def line_key(line: str) -> str:
+    """What a line is *about* — its field name, normalised.
+
+    `| Age / birthdate | ... |` and `- **Age / birthdate:** ...` both key on
+    "age / birthdate". A section holds one line per field, so this is what
+    tells an addition from an edit of something already there.
+    """
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        return cells[0].lower() if cells else ""
+    stripped = stripped.lstrip("-*").strip()
+    if stripped.startswith("**"):
+        label = stripped[2:].split("**", 1)[0]
+        return label.rstrip(":").strip().lower()
+    return ""
+
+
 def _is_table(lines: list[str]) -> bool:
     """Two or more `|` rows means the section is a table, not a bullet list."""
     return sum(1 for line in lines if line.lstrip().startswith("|")) >= 2
@@ -401,6 +419,20 @@ def add_profile_line(heading: str, line: str, path: Path | None = None) -> Propo
             f"{name!r} is a table — add a row, not a bullet: "
             "| Field | value | `S-###` |"
         )
+    # A section holds one line per field. Handed a section and told to add,
+    # a model will re-emit rows that are already there with the new cite
+    # attached — including the very row it was meant to change. Adding a
+    # second "Age" row does not answer the age; it just makes the profile
+    # contradict itself twice.
+    key = line_key(body)
+    if key:
+        clash = next((existing for existing in lines if line_key(existing) == key), None)
+        if clash is not None:
+            raise ValueError(
+                f"{name!r} already has a line for {key!r}:\n\n{clash.strip()}\n\n"
+                "Use replace_profile_line to change it, keeping the cites it "
+                "already carries and adding yours."
+            )
     while lines and not lines[-1].strip():
         lines.pop()
     lines.append(body)
@@ -1088,6 +1120,37 @@ def _self_check() -> None:
         )
         proposal.apply()
         assert "| Origin | Germany | `S-002, S-075` |" in table.read_text(encoding="utf-8")
+
+        # A field already in the section is an edit, not an addition. Handed
+        # the section text, a model re-emits rows that are already there with
+        # the new cite attached — including the row it was meant to change.
+        try:
+            add_profile_line(
+                "1. Core Identity", "| Origin | Germany | `S-075` |", path=table
+            )
+        except ValueError as exc:
+            assert "already has a line" in str(exc), str(exc)
+            assert "replace_profile_line" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected ValueError for a field already present")
+
+        # The same field named either way keys the same, so the rule holds
+        # across a table row and a bullet.
+        assert line_key("- **Age / birthdate:** unstated [S-001]") == "age / birthdate"
+        assert line_key("| Age / birthdate | x | `S-001` |") == "age / birthdate"
+
+        # Bullets clash on their bold label.
+        add_profile_line("6. Voice", "- **Register:** casual [S-001]", path=table).apply()
+        try:
+            add_profile_line("6. Voice", "- **Register:** formal [S-002]", path=table)
+        except ValueError as exc:
+            assert "'register'" in str(exc).lower(), str(exc)
+        else:
+            raise AssertionError("expected ValueError for a bold label already present")
+
+        # An unlabelled prose line has no field to clash on, so it still adds.
+        add_profile_line("6. Voice", "- another observation [S-003]", path=table).apply()
+        assert "- another observation [S-003]" in table.read_text(encoding="utf-8")
 
         # Adding to a table section takes a row, not a bullet.
         try:

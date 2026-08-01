@@ -92,12 +92,17 @@ def followup(entry: str, read_section: Callable[[str], str] = read_profile_secti
             f"This entry was just logged:\n\n{entry}\n\n"
             f"It feeds {len(sections)} section(s): {', '.join(sections)}.\n"
             f"Here they are as they stand:\n\n{joined}\n\n"
-            f"Add what {entry_id} says to each of those sections, one "
-            "`add_profile_line` or `replace_profile_line` call at a time, each "
-            f"line carrying the cite {entry_id}. Match the shape already used "
-            "in the section — a bullet where there are bullets, a row where "
-            "there is a table. If a section already says this, skip it and say "
-            "why. When every section is done, say what you changed and stop.",
+            f"Record what {entry_id} says in each of those sections, one call "
+            "at a time.\n\n"
+            "If the section already has a line for this field — an Age row, a "
+            "Nationality row, a **Family:** bullet — use `replace_profile_line` "
+            "on that line, keeping every cite it already carries and adding "
+            f"{entry_id}. Use `add_profile_line` only for a field that is not "
+            "there at all. Never copy a line that is already in the section: "
+            "leave the ones this entry does not change exactly as they are.\n\n"
+            f"Every line you write carries {entry_id}. Match the shape already "
+            "used — a row where there is a table, a bullet where there are "
+            "bullets. When the sections are done, say what you changed and stop.",
         )
     ]
 
