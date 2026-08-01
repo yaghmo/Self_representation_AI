@@ -22,11 +22,22 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .bible import PROFILE_PATH
+from .bible import PROFILE_END, PROFILE_PATH, PROFILE_START
 
 SOURCES_PATH = PROFILE_PATH.parent / "sources.md"
 ENTRY = re.compile(r"^### (S-\d+)", re.MULTILINE)
 SEARCH_LIMIT = 5
+SOURCE_LOG_HEADING = "source log"
+
+
+class StaleProposal(RuntimeError):
+    """The file changed on disk since this proposal was built.
+
+    Two proposals can be composed from the same snapshot in one turn — two
+    `append_source` calls both computing the same next id, say. Applying the
+    second on top of the first would silently erase the already-approved
+    first write. Refuse instead: never merge, never overwrite.
+    """
 
 
 @dataclass
@@ -48,8 +59,18 @@ class Proposal:
     # Empty `before` means the span is new.
     before: str = ""
     after: str = ""
+    # The full file text this proposal was built from. apply() re-reads and
+    # compares before writing — see StaleProposal.
+    old: str = ""
 
     def apply(self) -> Path:
+        current = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
+        if current != self.old:
+            raise StaleProposal(
+                f"{self.path.name} changed since this proposal was built — "
+                "read it again and re-propose rather than overwriting the "
+                "newer content."
+            )
         backups = self.path.parent / ".backups"
         backups.mkdir(exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -77,7 +98,7 @@ def _propose(
         )
     )
     return Proposal(
-        path=path, new_text=new, summary=summary, diff=diff, before=before, after=after
+        path=path, new_text=new, summary=summary, diff=diff, before=before, after=after, old=old
     )
 
 
@@ -120,12 +141,45 @@ def _sections(text: str) -> list[tuple[str, int, int]]:
     return spans
 
 
+def _editable_span(text: str) -> tuple[int, int]:
+    """Absolute offsets of the bot-facing span — the same boundary
+    `bible.slice_profile` uses, but unstripped, so section offsets stay
+    correct against the whole file (which is what actually gets rewritten).
+    """
+    start = text.find(PROFILE_START)
+    if start == -1:
+        raise ValueError(f"{PROFILE_START!r} not found — is this a character profile?")
+    end = text.find(PROFILE_END, start)
+    return start, end if end != -1 else len(text)
+
+
 def _find_section(text: str, heading: str) -> tuple[str, int, int]:
+    """Locate one `## ` section within the bot-facing span only. The meta
+    preamble (`## How this file works`) and the changelog are structurally
+    unreachable here, not merely absent from the section index in the prompt.
+
+    Exact match wins outright. A heading typed short (`"1"`) can prefix-match
+    more than one real heading (`"1. Core Identity"` and `"10. Interaction
+    Rules"`) — silently resolving to whichever is found first would risk
+    rewriting the wrong section, one of which may hold the hard constraints.
+    More than one prefix match is a refusal, not a guess.
+    """
+    edit_start, edit_end = _editable_span(text)
     wanted = heading.strip().lstrip("#").strip().lower()
-    for name, start, end in _sections(text):
-        if name.lower() == wanted or name.lower().startswith(wanted):
+    editable = [(n, s, e) for n, s, e in _sections(text) if edit_start <= s < edit_end]
+
+    for name, start, end in editable:
+        if name.lower() == wanted:
             return name, start, end
-    known = ", ".join(name for name, _, _ in _sections(text))
+
+    prefix_matches = [(n, s, e) for n, s, e in editable if n.lower().startswith(wanted)]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    if len(prefix_matches) > 1:
+        candidates = ", ".join(n for n, _, _ in prefix_matches)
+        raise KeyError(f"{heading!r} matches more than one section: {candidates}. Be exact.")
+
+    known = ", ".join(n for n, _, _ in editable)
     raise KeyError(f"no section {heading!r}. Sections are: {known}")
 
 
@@ -141,22 +195,52 @@ def next_source_id(text: str) -> str:
     return f"S-{max(numbers) + 1:03d}" if numbers else "S-001"
 
 
-def append_source(answer: str, feeds: list[str], path: Path | None = None) -> Proposal:
-    """Append one entry. There is no tool that edits or deletes an existing one.
+def _source_log_end(text: str) -> int:
+    """End offset of the `## Source log` section — immediately before the
+    next `## ` heading, or end of file if it's the last section (or absent
+    entirely, so the tool still works on a fresh corpus that hasn't grown
+    the heading yet)."""
+    for name, _, end in _sections(text):
+        if name.strip().lower() == SOURCE_LOG_HEADING:
+            return end
+    return len(text)
+
+
+def append_source(
+    answer: str,
+    question: str,
+    entry_type: str,
+    tags: list[str],
+    date: str,
+    feeds: list[str],
+    path: Path | None = None,
+) -> Proposal:
+    """Append one entry inside the `## Source log` section, in the field
+    order `templates/sources.template.md` defines. There is no tool that
+    edits or deletes an existing one.
 
     The id comes from the file, never from the model: an id the model picks is
     an id it can collide, skip, or reuse, and every cite in the profile points
-    at one.
+    at one. `date` should be the literal string "unknown" rather than a
+    guess when the creator's answer doesn't fix a date — an invented value
+    is a fact the model made up, not one the creator gave.
     """
     path = path or SOURCES_PATH
     old = path.read_text(encoding="utf-8")
     entry_id = next_source_id(old)
+    tag_str = ", ".join(t.strip() for t in tags if t.strip()) or "unknown"
+    feed_str = ", ".join(f.strip() for f in feeds if f.strip()) or "—"
     block = (
         f"\n### {entry_id}\n"
-        f"**A:** {answer.strip()}\n"
-        f"**Feeds:** {', '.join(feeds) if feeds else '—'}\n"
+        f"- **Date:** {date.strip() or 'unknown'}\n"
+        f"- **Type:** {entry_type.strip()}\n"
+        f"- **Tags:** {tag_str}\n"
+        f"- **Q:** {question.strip()}\n"
+        f"- **A:** {answer.strip()}\n"
+        f"- **Feeds:** {feed_str}\n"
     )
-    new = old.rstrip("\n") + "\n" + block
+    insert_at = _source_log_end(old)
+    new = old[:insert_at].rstrip("\n") + "\n" + block + old[insert_at:]
     return _propose(
         path, old, new, f"append {entry_id} to {path.name}", before="", after=block.strip()
     )
@@ -218,17 +302,50 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "append_source",
             "description": (
-                "Propose appending a new entry to the sources file, verbatim. "
-                "The entry id is assigned automatically. The creator must "
-                "approve before anything is written."
+                "Propose appending a new entry to the sources file, verbatim, "
+                "inside the Source log section. The entry id is assigned "
+                "automatically. The creator must approve before anything is "
+                "written."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "answer": {"type": "string"},
-                    "feeds": {"type": "array", "items": {"type": "string"}},
+                    "answer": {
+                        "type": "string",
+                        "description": "The creator's answer, verbatim — do not tidy the phrasing.",
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "The question as asked, verbatim.",
+                    },
+                    "entry_type": {
+                        "type": "string",
+                        "description": (
+                            "One of: direct answer | interview | public post | "
+                            "observed event | existing bio."
+                        ),
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Short topic tags, e.g. personality, fears.",
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": (
+                            "YYYY-MM-DD the answer was given, fuzzed per the "
+                            "redaction policy if needed. Use the literal string "
+                            "'unknown' if the date is genuinely not known — "
+                            "never invent one."
+                        ),
+                    },
+                    "feeds": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Profile sections this entry should feed, e.g. '6. Voice'.",
+                    },
                 },
-                "required": ["answer", "feeds"],
+                "required": ["answer", "question", "entry_type", "tags", "date", "feeds"],
             },
         },
     },
@@ -256,37 +373,86 @@ TOOL_SCHEMAS: list[dict] = [
 READ_TOOLS = {"search_sources": search_sources, "read_profile_section": read_profile_section}
 WRITE_TOOLS = {"append_source": append_source, "replace_profile_section": replace_profile_section}
 
+# name -> declared argument names, from TOOL_SCHEMAS. `path` is deliberately
+# absent from every schema even though every handler accepts it — see
+# run_tool.
+TOOL_PROPERTIES = {
+    schema["function"]["name"]: set(schema["function"]["parameters"]["properties"])
+    for schema in TOOL_SCHEMAS
+}
+
 
 def run_tool(name: str, arguments: dict) -> str | Proposal:
-    """Dispatch by name. Unknown names and bad arguments come back as text so
-    the model can correct itself rather than the loop dying."""
+    """Dispatch by name.
+
+    Arguments are filtered to the tool's declared schema before the handler
+    ever sees them: `path` is intentionally undeclared everywhere, so a model
+    that emits `{"path": "C:\\Windows\\win.ini"}` gets it silently dropped
+    rather than routed to `Path.read_text`. Unknown names, bad arguments, and
+    any handler exception all come back as text — a handler must never kill
+    the loop.
+    """
     handler = READ_TOOLS.get(name) or WRITE_TOOLS.get(name)
     if handler is None:
         return f"no such tool {name!r}. Available: {', '.join([*READ_TOOLS, *WRITE_TOOLS])}"
+    allowed = TOOL_PROPERTIES.get(name, set())
+    dropped = sorted(k for k in arguments if k not in allowed)
+    filtered = {k: v for k, v in arguments.items() if k in allowed}
     try:
-        return handler(**arguments)
+        result = handler(**filtered)
     except TypeError as exc:
         return f"bad arguments for {name}: {exc}"
     except KeyError as exc:
         return str(exc).strip('"')
     except OSError as exc:
         return f"{name} could not read the file: {exc}"
+    except Exception as exc:  # a handler must never kill the loop
+        return f"{name} failed: {exc}"
+    if dropped and isinstance(result, str):
+        result = f"(ignored unknown arguments: {', '.join(dropped)})\n{result}"
+    return result
 
 
 def _self_check() -> None:
     import tempfile
     from pathlib import Path
 
+    # A corpus shaped like the real file: a Source log section holding
+    # entries in the template's field order, followed by a trailing section
+    # (Open Questions) an append must never land after.
     corpus = (
         "# Sources\n\n"
-        "### S-001\n**Q:** placeholder question one\n**A:** alpha answer\n\n"
-        "### S-002\n**Q:** placeholder question two\n**A:** beta answer\n"
+        "## How this file works\nmeta about the file\n\n"
+        "## Source log\n\n"
+        "### S-001\n"
+        "- **Date:** 2026-01-01\n"
+        "- **Type:** direct answer\n"
+        "- **Tags:** alpha\n"
+        "- **Q:** placeholder question one\n"
+        "- **A:** alpha answer\n"
+        "- **Feeds:** 6. Voice\n\n"
+        "### S-002\n"
+        "- **Date:** 2026-01-02\n"
+        "- **Type:** direct answer\n"
+        "- **Tags:** beta\n"
+        "- **Q:** placeholder question two\n"
+        "- **A:** beta answer\n"
+        "- **Feeds:** 6. Voice\n\n"
+        "## Open Questions\n"
+        "- [ ] unanswered placeholder\n"
     )
+    # A profile with two headings that share a numeric prefix ("1." / "10."),
+    # so an ambiguous heading has something real to collide with, plus the
+    # meta preamble and changelog the tools must never reach.
     profile = (
-        "# Placeholder\n## How this file works\nmeta\n"
+        "# Placeholder\n"
+        "## How this file works\n"
+        "meta nobody should touch\n"
         "# CHARACTER\n"
         "## 0. At a Glance\n- one\n\n"
+        "## 1. Core Identity\n- placeholder identity\n\n"
         "## 6. Voice\n- old line\n\n"
+        "## 10. Interaction Rules\n- hard constraint placeholder\n\n"
         "## Changelog\n- v1\n"
     )
 
@@ -307,18 +473,98 @@ def _self_check() -> None:
         assert "old line" in section
         assert "At a Glance" not in section, "one section only"
 
-        # Append allocates the next id itself.
-        proposal = append_source("gamma answer", ["6. Voice"], path=sources)
+        # An unambiguous prefix still resolves.
+        assert "one" in read_profile_section("0", path=target)
+
+        # A bare-number heading that prefix-matches more than one real
+        # section (Critical 2: "1" matches both "1. Core Identity" and
+        # "10. Interaction Rules") must refuse, not silently pick one.
+        try:
+            read_profile_section("1", path=target)
+        except KeyError as exc:
+            assert "Core Identity" in str(exc), str(exc)
+            assert "Interaction Rules" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected KeyError for an ambiguous prefix")
+        # The full heading for either candidate is unambiguous and works.
+        assert "hard constraint" in read_profile_section("10. Interaction Rules", path=target)
+
+        # Meta preamble and changelog are unreachable, not merely hidden from
+        # the section index (Important 6).
+        for meta_heading in ("How this file works", "Changelog"):
+            try:
+                read_profile_section(meta_heading, path=target)
+            except KeyError:
+                pass
+            else:
+                raise AssertionError(f"{meta_heading!r} must be unreachable from the tool")
+        try:
+            replace_profile_section("Changelog", "- tampered", path=target)
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("the changelog must not be rewritable via the tool")
+
+        # Append allocates the next id itself and lands inside Source log,
+        # before the next heading — not at end-of-file (Critical 4) — using
+        # the full template field set, in template order (Important 5).
+        proposal = append_source(
+            answer="gamma answer",
+            question="placeholder question three",
+            entry_type="direct answer",
+            tags=["gamma", "voice"],
+            date="2026-01-03",
+            feeds=["6. Voice"],
+            path=sources,
+        )
         assert "S-003" in proposal.diff, proposal.diff
         assert proposal.before == "", "an appended entry has no before"
-        assert "gamma answer" in proposal.after, proposal.after
+        assert "- **Date:** 2026-01-03" in proposal.after, proposal.after
+        assert "- **Type:** direct answer" in proposal.after, proposal.after
+        assert "- **Tags:** gamma, voice" in proposal.after, proposal.after
+        assert "- **Q:** placeholder question three" in proposal.after, proposal.after
+        assert "- **A:** gamma answer" in proposal.after, proposal.after
+        assert "- **Feeds:** 6. Voice" in proposal.after, proposal.after
         assert sources.read_text(encoding="utf-8") == corpus, "nothing writes before apply"
 
         proposal.apply()
         after = sources.read_text(encoding="utf-8")
-        assert after.startswith(corpus), "existing entries must be byte-identical"
-        assert "S-003" in after
+        assert "### S-003" in after
+        assert after.index("### S-002") < after.index("### S-003") < after.index(
+            "## Open Questions"
+        ), "must land inside Source log, before the next heading"
+        assert "unanswered placeholder" in after, "trailing sections must survive untouched"
         assert len(list((root / ".backups").iterdir())) == 1, "apply snapshots first"
+
+        # Two proposals composed from the same snapshot (both would allocate
+        # S-004): applying the first must not let the second silently
+        # overwrite it (Critical 3).
+        p1 = append_source(
+            answer="delta answer",
+            question="q4",
+            entry_type="direct answer",
+            tags=["delta"],
+            date="2026-01-04",
+            feeds=["6. Voice"],
+            path=sources,
+        )
+        p2 = append_source(
+            answer="epsilon answer",
+            question="q5",
+            entry_type="direct answer",
+            tags=["epsilon"],
+            date="unknown",
+            feeds=["6. Voice"],
+            path=sources,
+        )
+        assert "S-004" in p1.diff and "S-004" in p2.diff, "both built from the same snapshot"
+        p1.apply()
+        try:
+            p2.apply()
+        except StaleProposal:
+            pass
+        else:
+            raise AssertionError("expected StaleProposal when the file moved under a pending proposal")
 
         # A section replace touches one section, and carries both sides so the
         # confirm dialog can show before beside after.
@@ -331,7 +577,11 @@ def _self_check() -> None:
         assert "- new line" in rewritten
         assert "- old line" not in rewritten
         assert "## 0. At a Glance\n- one" in rewritten, "other sections must not move"
+        assert "## 1. Core Identity" in rewritten, "other sections must not move"
+        assert "## 10. Interaction Rules" in rewritten, "other sections must not move"
+        assert "meta nobody should touch" in rewritten, "meta preamble must survive untouched"
         assert "## Changelog" in rewritten, "the changelog must survive"
+        assert "- v1" in rewritten, "changelog body must survive untouched"
 
         # An unknown section is refused rather than appended as a new one.
         try:
@@ -340,6 +590,31 @@ def _self_check() -> None:
             pass
         else:
             raise AssertionError("expected KeyError for an unknown section")
+
+        # run_tool: an undeclared argument (e.g. "path") must be dropped
+        # before the handler is called, never passed through (Critical 1).
+        # Point the module's own defaults at the fixtures for this block
+        # only, so a dropped "path" argument resolving to the default proves
+        # the drop happened rather than accidentally reading the real repo.
+        global SOURCES_PATH, PROFILE_PATH
+        real_sources_path, real_profile_path = SOURCES_PATH, PROFILE_PATH
+        SOURCES_PATH, PROFILE_PATH = sources, target
+        try:
+            result = run_tool(
+                "search_sources", {"query": "alpha", "path": "C:\\not\\a\\real\\path"}
+            )
+            assert isinstance(result, str), result
+            assert result.startswith("(ignored unknown arguments: path)"), result
+            assert "alpha answer" in result, result
+
+            # A handler exception of a type not already caught (AttributeError,
+            # from calling .strip() on a non-string heading) must still come
+            # back as text, not escape run_tool.
+            result = run_tool("read_profile_section", {"heading": 12345})
+            assert isinstance(result, str), "handler exceptions must never escape run_tool"
+            assert "read_profile_section" in result, result
+        finally:
+            SOURCES_PATH, PROFILE_PATH = real_sources_path, real_profile_path
 
     print("tools self-check: ok")
 
