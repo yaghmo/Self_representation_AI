@@ -178,6 +178,14 @@ class Model:
         assert self._backend is not None
         yield from self._backend.stream(messages, **kwargs)
 
+    def count_tokens(self, text: str) -> int:
+        """Exact count from the loaded backend, estimate when nothing is loaded."""
+        if self._backend is not None and hasattr(self._backend, "count_tokens"):
+            return self._backend.count_tokens(text)
+        from .bible import estimate_tokens
+
+        return estimate_tokens(text)
+
     # ---------------------------------------------------------------- state --
 
     def status(self) -> dict:

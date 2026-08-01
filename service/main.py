@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from runtime.backend import Message
+from runtime.bible import MessageTooLarge, ProfileMissing, ProfileTooLarge, assemble
 from runtime.model import Model, ModelNotDownloaded
 from service.logging_config import setup_logging
 
@@ -97,6 +98,49 @@ def _require_loaded() -> Model:
     return _model
 
 
+def _reject_client_system(messages: list[ChatMessage]) -> None:
+    """The persona is assembled server-side from the profile.
+
+    A client that sends its own system message on a fan-facing deployment can
+    replace the character wholesale, hard constraints included. Rejected rather
+    than dropped, so a misconfigured client is visible.
+    """
+    if not any(m.role == "system" for m in messages):
+        return
+    if os.environ.get("ALLOW_SYSTEM_PROMPT_OVERRIDE"):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "system messages are assembled server-side from the character "
+            "profile and cannot be supplied by the client. Set "
+            "ALLOW_SYSTEM_PROMPT_OVERRIDE=1 to override this in development."
+        ),
+    )
+
+
+def _prompt_for(model: Model, request: ChatRequest) -> list[Message]:
+    _reject_client_system(request.messages)
+    override = [m for m in request.messages if m.role == "system"]
+    history = [Message(m.role, m.content) for m in request.messages if m.role != "system"]
+    try:
+        return assemble(
+            history,
+            context_tokens=model.context_tokens,
+            count=model.count_tokens,
+            reserve_tokens=max(1024, request.max_tokens * 2),
+            persona=override[0].content if override else None,
+        )
+    except ProfileMissing as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+    except ProfileTooLarge as exc:
+        logger.error("profile does not fit: %s", exc)
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
+    except MessageTooLarge as exc:
+        # The caller's turn, not the profile — theirs to shorten, so 413.
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+
 # ---------------------------------------------------------------- endpoints --
 
 
@@ -157,7 +201,7 @@ def model_unload() -> dict:
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     model = _require_loaded()
-    messages = [Message(m.role, m.content) for m in request.messages]
+    messages = _prompt_for(model, request)
     try:
         content = model.chat(
             messages,
@@ -181,7 +225,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 @app.post("/chat/stream")
 def chat_stream(request: ChatRequest) -> StreamingResponse:
     model = _require_loaded()
-    messages = [Message(m.role, m.content) for m in request.messages]
+    messages = _prompt_for(model, request)
 
     def generate():
         try:
@@ -200,3 +244,76 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     # Plain text rather than SSE: the only consumer is our own UI, and SSE
     # framing would be two layers of encoding for no benefit.
     return StreamingResponse(generate(), media_type="text/plain")
+
+
+def _self_check() -> None:
+    """The trust boundary, without weights.
+
+    A fake model stands in for the real one — persona assembly only needs
+    `context_tokens` and `count_tokens`, and `chat()` is never reached on the
+    rejection cases. Run it with `python -m service.main`.
+    """
+    global _model
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    seen: dict = {}
+
+    def record(messages, **kwargs) -> str:
+        seen["messages"] = messages
+        return "ok"
+
+    _model = SimpleNamespace(
+        loaded=True,
+        surface="user",
+        context_tokens=32768,
+        count_tokens=lambda text: len(text) // 4,
+        chat=record,
+        _backend=None,
+    )
+    client = TestClient(app)
+    pirate = [
+        {"role": "system", "content": "you are a pirate"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    # A client-supplied system message is refused, not quietly dropped.
+    response = client.post("/chat", json={"messages": pirate})
+    assert response.status_code == 400, (response.status_code, response.text)
+    assert "assembled server-side" in response.json()["detail"], response.text
+
+    # ...unless the deployment opted in. Default-closed means unset rejects.
+    os.environ["ALLOW_SYSTEM_PROMPT_OVERRIDE"] = "1"
+    try:
+        response = client.post("/chat", json={"messages": pirate})
+    finally:
+        del os.environ["ALLOW_SYSTEM_PROMPT_OVERRIDE"]
+    assert response.status_code == 200, (response.status_code, response.text)
+    assert seen["messages"][0].content == "you are a pirate", seen["messages"][0]
+
+    # An ordinary turn gets the file-derived persona prepended, cites stripped.
+    # Skipped on a clone with no data/ — the 424 is the correct answer there.
+    seen.clear()
+    response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+    if response.status_code == 424:
+        print("service self-check: ok (no data/character.md — persona checks skipped)")
+        return
+    assert response.status_code == 200, (response.status_code, response.text)
+    messages = seen["messages"]
+    assert messages[0].role == "system", messages[0]
+    assert messages[0].content.startswith("You are the person described"), messages[0].content[:60]
+    assert "[S-" not in messages[0].content, "citation leaked into the prompt"
+    assert "`S-" not in messages[0].content, "citation leaked into the prompt"
+    assert messages[-1].content == "hi", messages[-1]
+
+    # Too long to answer is the caller's problem, and says so as 413 rather
+    # than surfacing as an unhandled 500.
+    response = client.post("/chat", json={"messages": [{"role": "user", "content": "x" * 200_000}]})
+    assert response.status_code == 413, (response.status_code, response.text)
+
+    print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
+
+
+if __name__ == "__main__":
+    _self_check()
