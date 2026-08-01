@@ -19,7 +19,6 @@ if __package__ in (None, ""):  # streamlit runs this as a script
 
 from cookbook.config import build_config, config_path, read_config, write_config
 from cookbook.fit import (
-    BIBLE_TOKENS,
     CONTEXT_CANDIDATES,
     CONVERSATION_RESERVE_TOKENS,
     DEFAULT_WHOLE_BIBLE_BONUS,
@@ -27,6 +26,7 @@ from cookbook.fit import (
     Placement,
     Selection,
     auto_fit,
+    bible_tokens,
     evaluate,
     largest_shortfall,
 )
@@ -278,9 +278,11 @@ with right:
             format_func=lambda n: f"{n:,}",
             disabled=bool(provider_id),
         )
+        needed = bible_tokens(surface)
         st.caption(
-            f"The bible is ~{BIBLE_TOKENS:,} tokens. It goes in whole above "
-            f"{BIBLE_TOKENS + CONVERSATION_RESERVE_TOKENS:,}; below that, retrieval."
+            f"The {surface} surface holds ~{needed:,} tokens of bible. It goes "
+            f"in whole above {needed + CONVERSATION_RESERVE_TOKENS:,}; below "
+            f"that, retrieval."
         )
 
         candidate = Selection(

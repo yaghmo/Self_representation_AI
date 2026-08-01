@@ -14,13 +14,43 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, Literal
 
 from .probe import Probe
 from .schema import GB, MB, Catalogue, Device, ModelEntry, Role, Surface, human_bytes
 
-# The bible as it stands: character.md ~8.4k + sources.md ~15k.
-BIBLE_TOKENS = 23_000
+# What each surface has to hold in context.
+#
+# The fan surface reads the profile only — `sources.md` is the creator's
+# unedited answers and stays admin-side. That halves the context the user stack
+# has to buy, and context is paid for in KV cache, which is paid for in model
+# size.
+#
+# Measured from the real files when they exist; the repo ships templates and
+# `data/` may be absent. Deliberately not imported from `runtime` — the cookbook
+# installs standalone and `runtime` already depends on it.
+DEFAULT_PROFILE_TOKENS = 8_000
+DEFAULT_SOURCES_TOKENS = 15_000
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+
+def bible_tokens(surface: Surface = "user") -> int:
+    """Tokens of bible the given surface must hold."""
+    profile = _measure(DATA_DIR / "character.md", DEFAULT_PROFILE_TOKENS)
+    if surface != "admin":
+        return profile
+    return profile + _measure(DATA_DIR / "sources.md", DEFAULT_SOURCES_TOKENS)
+
+
+def _measure(path: Path, fallback: int) -> int:
+    try:
+        return len(path.read_text(encoding="utf-8")) // 4
+    except OSError:
+        return fallback
+
+
 # Room left for the conversation and the model's reply once the bible is in.
 CONVERSATION_RESERVE_TOKENS = 4_000
 
@@ -155,8 +185,8 @@ class Fit:
         return "bricks — " + ", ".join(parts)
 
 
-def strategy_for(context_tokens: int) -> Strategy:
-    needed = BIBLE_TOKENS + CONVERSATION_RESERVE_TOKENS
+def strategy_for(context_tokens: int, surface: Surface = "user") -> Strategy:
+    needed = bible_tokens(surface) + CONVERSATION_RESERVE_TOKENS
     return "whole-bible" if context_tokens >= needed else "retrieval"
 
 
@@ -230,7 +260,7 @@ def evaluate(
         if api_backed
         else selection.context_tokens
     )
-    strategy = strategy_for(context_tokens)
+    strategy = strategy_for(context_tokens, selection.surface)
 
     score = (quality / weight_total if weight_total else 0.0)
     if strategy == "whole-bible":
