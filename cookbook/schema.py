@@ -20,12 +20,6 @@ MB = 1024**2
 Role = Literal["llm", "embedding", "tts"]
 Device = Literal["gpu", "cpu"]
 
-# Which side of the app a stack is being chosen for.
-#   user  — fans. Retrieval then one model call. No tools, no loop.
-#   admin — the creator. An agent loop with tools that edit the bible, so the
-#           model must be able to emit tool calls the runtime can parse.
-Surface = Literal["user", "admin"]
-
 # How a model does tool calling.
 #   native   — trained for it, with a chat template that emits structured calls
 #   prompted — only by asking for JSON in the prompt; parses until it doesn't
@@ -141,19 +135,20 @@ class Catalogue:
     providers: list[Provider] = field(default_factory=list)
 
     def by_role(self, role: Role) -> list[ModelEntry]:
-        return [m for m in self.models if m.role == role]
+        """Candidates for a role.
 
-    def for_surface(self, role: Role, surface: Surface) -> list[ModelEntry]:
-        """Candidates a surface can actually use.
-
-        Only the LLM role narrows: an admin agent that cannot emit a parseable
-        tool call is not an agent, it is a chatbot that describes what it would
-        have done. Everything else is identical across surfaces.
+        The LLM list is always narrowed to native tool calling. One stack has
+        to be able to serve agent mode, since the mode is a flag that flips
+        without re-fitting — and a model that cannot emit a parseable tool call
+        is not an agent, it is a chatbot describing what it would have done.
+        `"prompted"` models can be coaxed into JSON but have no tool tokens in
+        their chat template, which is fine for chat and not for an agent whose
+        failure mode is corrupting `sources.md`.
         """
-        options = self.by_role(role)
-        if role == "llm" and surface == "admin":
-            return [m for m in options if m.tool_calling == "native"]
-        return options
+        out = [m for m in self.models if m.role == role]
+        if role == "llm":
+            return [m for m in out if m.tool_calling == "native"]
+        return out
 
     def model(self, model_id: str) -> ModelEntry:
         for m in self.models:

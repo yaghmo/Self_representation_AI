@@ -2,7 +2,7 @@
 
 Deliberately thinner than it might be, because the sizing work already happened.
 The cookbook resolved real weights, real KV geometry, a memory budget that
-respects cgroup limits, and wrote the answer to `config/stack.<surface>.json`.
+respects cgroup limits, and wrote the answer to `config/stack.json`.
 Re-deriving any of that at load time would mean two sources of truth that
 disagree the first time one of them changes.
 
@@ -46,7 +46,7 @@ class Model:
     entry: ModelEntry | None            # None when the LLM is API-backed
     role_config: dict
     context_tokens: int
-    surface: str = "user"
+    agent: bool = False
     bible_strategy: str = "retrieval"
     port: int = 8080
 
@@ -60,14 +60,13 @@ class Model:
     @classmethod
     def from_config(
         cls,
-        surface: str = "user",
         catalogue: Catalogue | None = None,
         port: int = 8080,
     ) -> "Model":
-        config = read_config(surface)
+        config = read_config()
         if not config:
             raise FileNotFoundError(
-                f"{config_path(surface)} does not exist — run the cookbook and confirm a stack"
+                f"{config_path()} does not exist — run the cookbook and confirm a stack"
             )
         catalogue = catalogue or load_catalogue()
         role = config["roles"]["llm"]
@@ -76,7 +75,7 @@ class Model:
             entry=entry,
             role_config=role,
             context_tokens=config.get("context_tokens", 8192),
-            surface=config.get("surface", surface),
+            agent=config.get("agent", False),
             bible_strategy=config.get("bible_strategy", "retrieval"),
             port=port,
         )
@@ -191,7 +190,7 @@ class Model:
     def status(self) -> dict:
         state: dict = {
             "name": self.name,
-            "surface": self.surface,
+            "agent": self.agent,
             "source": "api" if self.is_api else "local",
             "context_tokens": self.context_tokens,
             "bible_strategy": self.bible_strategy,
@@ -233,5 +232,5 @@ class Model:
 if __name__ == "__main__":
     import json
 
-    model = Model.from_config("user")
+    model = Model.from_config()
     print(json.dumps(model.status(), indent=2))

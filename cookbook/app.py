@@ -125,47 +125,30 @@ elif catalogue.unverified:
 left, right = st.columns([1, 2])
 
 with left:
-    st.subheader("Surface")
-    surface_label = st.radio(
-        "Choosing a stack for",
-        ["User — chat only", "Admin — agent with tools"],
+    st.subheader("Mode")
+    agent = st.checkbox(
+        "Agent mode — tools enabled",
+        value=False,
         help=(
-            "The user surface is fans talking to the character: retrieval, then "
-            "one model call, no tools. The admin surface is you editing the "
-            "bible through an agent loop, which needs a model that emits tool "
-            "calls a runtime can parse."
+            "Off is the fan bot: persona, one model call, no tools. On is you "
+            "editing the bible through an agent loop. Same stack either way — "
+            "the flag flips without re-fitting, so every LLM in the list emits "
+            "native tool calls."
         ),
     )
-    surface = "admin" if surface_label.startswith("Admin") else "user"
-
-    if surface == "admin":
-        excluded = [
-            m.id
-            for m in catalogue.by_role("llm")
-            if m.tool_calling != "native"
-        ]
-        if excluded:
-            st.caption(
-                f"Excluded, no native tool calling: {', '.join(excluded)}"
-            )
 
     st.subheader("Roles")
     st.caption("Disabled roles cost nothing. Enabled ones enter the sum.")
     use_embedding = st.checkbox(
-        "Embedding (RAG over the bible)", value=True, key=f"emb-{surface}"
+        "Embedding (RAG over the bible)", value=True, key="emb"
     )
-    # The admin agent edits text through tools. Nothing speaks, so loading a
-    # voice model would just take VRAM from the model doing the thinking.
     use_tts = st.checkbox(
-        "TTS with voice cloning",
-        value=(surface == "user"),
-        key=f"tts-{surface}",
-        help=None if surface == "user" else "Off by default for admin — the agent has no voice.",
+        "TTS with voice cloning", value=True, key="tts"
     )
     require_cloning = True
     if use_tts:
         require_cloning = st.checkbox(
-            "Cloning required", value=True, key=f"clone-{surface}",
+            "Cloning required", value=True, key="clone",
             help="Off allows fixed-voice models like Kokoro, which are far smaller.",
         )
 
@@ -220,11 +203,10 @@ with right:
             roles=roles,
             llm_provider=provider_id,
             require_cloning=require_cloning,
-            surface=surface,
             whole_bible_bonus=whole_bible_bonus,
         )
         if not results:
-            st.error(largest_shortfall(catalogue, budget, roles, require_cloning, surface))
+            st.error(largest_shortfall(catalogue, budget, roles, require_cloning))
         else:
             rows = []
             for index, fit in enumerate(results):
@@ -254,7 +236,7 @@ with right:
         for role in roles:
             if role == "llm" and provider_id:
                 continue
-            options = catalogue.for_surface(role, surface)
+            options = catalogue.by_role(role)
             if role == "tts" and require_cloning:
                 options = [m for m in options if m.cloning]
             model_id = st.selectbox(
@@ -278,18 +260,16 @@ with right:
             format_func=lambda n: f"{n:,}",
             disabled=bool(provider_id),
         )
-        needed = bible_tokens(surface)
+        needed = bible_tokens()
         st.caption(
-            f"The {surface} surface holds ~{needed:,} tokens of bible. It goes "
-            f"in whole above {needed + CONVERSATION_RESERVE_TOKENS:,}; below "
-            f"that, retrieval."
+            f"The profile is ~{needed:,} tokens. It goes in whole above "
+            f"{needed + CONVERSATION_RESERVE_TOKENS:,}; below that, retrieval."
         )
 
         candidate = Selection(
             context_tokens=context,
             placements=placements,
             llm_provider=provider_id,
-            surface=surface,
         )
         fit = evaluate(candidate, catalogue, budget, whole_bible_bonus)
 
@@ -320,23 +300,23 @@ st.divider()
 if chosen_fit is not None and chosen_fit.ok:
     st.subheader("Confirm")
     st.write(
-        f"Surface: **{surface}** · bible strategy: **{chosen_fit.strategy}** · "
-        f"context **{chosen_fit.selection.context_tokens:,}** tokens"
+        f"Mode: **{'agent' if agent else 'chat'}** · bible strategy: "
+        f"**{chosen_fit.strategy}** · context "
+        f"**{chosen_fit.selection.context_tokens:,}** tokens"
     )
-    destination = config_path(surface)
+    destination = config_path()
     if st.button(f"Write {destination.as_posix()}", type="primary"):
-        config = build_config(chosen_fit, catalogue, probe)
+        config = build_config(chosen_fit, catalogue, probe, agent)
         path = write_config(config)
         st.success(f"Wrote {path}")
         st.json(config)
 else:
     st.caption("Nothing confirmed yet — pick a fit above.")
 
-for known in ("user", "admin"):
-    existing = read_config(known)
-    if existing:
-        with st.expander(
-            f"Current {config_path(known).as_posix()} "
-            f"(written {existing.get('written_at', '?')})"
-        ):
-            st.json(existing)
+existing = read_config()
+if existing:
+    with st.expander(
+        f"Current {config_path().as_posix()} "
+        f"(written {existing.get('written_at', '?')})"
+    ):
+        st.json(existing)

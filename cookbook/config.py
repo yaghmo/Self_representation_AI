@@ -23,15 +23,16 @@ CONFIG_VERSION = 1
 CONFIG_DIR = Path("config")
 
 
-def config_path(surface: str = "user") -> Path:
-    """One config per surface. They are genuinely different stacks — the admin
-    agent needs a tool-calling model and the user bot does not — so a single
-    stack.json would mean each choice silently destroying the other.
+def config_path() -> Path:
+    """One config for one stack.
+
+    The user/admin split used to mean two stacks. It does not any more: the
+    same models serve both, and `agent` decides whether tools exist.
     """
-    return CONFIG_DIR / f"stack.{surface}.json"
+    return CONFIG_DIR / "stack.json"
 
 
-def build_config(fit: Fit, catalogue: Catalogue, probe: Probe) -> dict:
+def build_config(fit: Fit, catalogue: Catalogue, probe: Probe, agent: bool) -> dict:
     selection = fit.selection
     roles: dict[str, dict] = {}
 
@@ -67,8 +68,7 @@ def build_config(fit: Fit, catalogue: Catalogue, probe: Probe) -> dict:
     return {
         "version": CONFIG_VERSION,
         "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "surface": selection.surface,
-        "agent": selection.surface == "admin",
+        "agent": agent,
         "context_tokens": selection.context_tokens,
         "bible_strategy": fit.strategy,
         "roles": roles,
@@ -91,14 +91,14 @@ def build_config(fit: Fit, catalogue: Catalogue, probe: Probe) -> dict:
 
 
 def write_config(config: dict, path: Path | None = None) -> Path:
-    path = path or config_path(config.get("surface", "user"))
+    path = path or config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     return path
 
 
-def read_config(surface: str = "user", path: Path | None = None) -> dict | None:
-    path = path or config_path(surface)
+def read_config(path: Path | None = None) -> dict | None:
+    path = path or config_path()
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))

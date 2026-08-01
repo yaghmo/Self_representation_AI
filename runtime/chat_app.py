@@ -59,17 +59,8 @@ with st.sidebar:
 
     st.success("Backend up")
 
-    # The service pins its surface from SURFACE in its own environment, so the
-    # page asks for one only when the service is willing to be told.
-    surface = (
-        st.radio("Surface", ["user", "admin"], horizontal=True)
-        if os.environ.get("ALLOW_SURFACE_OVERRIDE")
-        else None
-    )
-    surface_param = {"surface": surface} if surface else {}
-
     try:
-        status = get("/model", **surface_param).json()
+        status = get("/model").json()
     except Exception as exc:
         st.error(str(exc))
         st.stop()
@@ -77,7 +68,7 @@ with st.sidebar:
     if "detail" in status and "name" in status:
         st.write(f"**{status['name']}**")
         st.caption(
-            f"{status['surface']} surface · {status['source']} · "
+            f"{'agent' if status.get('agent') else 'chat'} · {status['source']} · "
             f"context {status['context_tokens']:,} · bible: {status['bible_strategy']}"
         )
         icon = {"gpu": "🟢", "partial": "🟡", "cpu": "🔴"}.get(status.get("mode"), "")
@@ -113,7 +104,7 @@ with st.sidebar:
         if st.button("Load model", type="primary", width="stretch"):
             with st.spinner("Starting llama-server — first load reads several GB from disk"):
                 started = time.time()
-                response = post("/model/load", surface_param, timeout=330.0)
+                response = post("/model/load", {}, timeout=330.0)
             if response.status_code >= 400:
                 st.error(response.json().get("detail", response.text))
             else:

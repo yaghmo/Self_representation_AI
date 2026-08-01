@@ -18,30 +18,26 @@ from pathlib import Path
 from typing import Iterable, Literal
 
 from .probe import Probe
-from .schema import GB, MB, Catalogue, Device, ModelEntry, Role, Surface, human_bytes
+from .schema import GB, MB, Catalogue, Device, ModelEntry, Role, human_bytes
 
-# What each surface has to hold in context.
+# What the stack has to hold in context.
 #
-# The fan surface reads the profile only — `sources.md` is the creator's
-# unedited answers and stays admin-side. That halves the context the user stack
-# has to buy, and context is paid for in KV cache, which is paid for in model
-# size.
-#
-# Measured from the real files when they exist; the repo ships templates and
+# Measured from the real file when it exists; the repo ships templates and
 # `data/` may be absent. Deliberately not imported from `runtime` — the cookbook
 # installs standalone and `runtime` already depends on it.
 DEFAULT_PROFILE_TOKENS = 8_000
-DEFAULT_SOURCES_TOKENS = 15_000
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
-def bible_tokens(surface: Surface = "user") -> int:
-    """Tokens of bible the given surface must hold."""
-    profile = _measure(DATA_DIR / "character.md", DEFAULT_PROFILE_TOKENS)
-    if surface != "admin":
-        return profile
-    return profile + _measure(DATA_DIR / "sources.md", DEFAULT_SOURCES_TOKENS)
+def bible_tokens() -> int:
+    """Tokens of profile the model must hold.
+
+    One number for both modes. The agent reads `sources.md` through tools —
+    searching and appending, never holding the corpus in context — so there is
+    no surface that needs it resident.
+    """
+    return _measure(DATA_DIR / "character.md", DEFAULT_PROFILE_TOKENS)
 
 
 def _measure(path: Path, fallback: int) -> int:
@@ -151,7 +147,6 @@ class Selection:
     context_tokens: int
     placements: dict[Role, Placement] = field(default_factory=dict)
     llm_provider: str | None = None
-    surface: Surface = "user"
 
 
 @dataclass
@@ -185,8 +180,8 @@ class Fit:
         return "bricks — " + ", ".join(parts)
 
 
-def strategy_for(context_tokens: int, surface: Surface = "user") -> Strategy:
-    needed = bible_tokens(surface) + CONVERSATION_RESERVE_TOKENS
+def strategy_for(context_tokens: int) -> Strategy:
+    needed = bible_tokens() + CONVERSATION_RESERVE_TOKENS
     return "whole-bible" if context_tokens >= needed else "retrieval"
 
 
@@ -219,11 +214,6 @@ def evaluate(
         else:
             ram_used += cost
 
-        if role == "llm" and selection.surface == "admin" and model.tool_calling != "native":
-            blockers.append(
-                f"{model.id} has {model.tool_calling} tool calling — the admin "
-                "agent needs native, or its tool calls will not parse"
-            )
         if not model.supports(placement.device):
             blockers.append(f"{model.id} cannot run on {placement.device}")
         if not model.fits_context(selection.context_tokens):
@@ -260,7 +250,7 @@ def evaluate(
         if api_backed
         else selection.context_tokens
     )
-    strategy = strategy_for(context_tokens, selection.surface)
+    strategy = strategy_for(context_tokens)
 
     score = (quality / weight_total if weight_total else 0.0)
     if strategy == "whole-bible":
@@ -287,10 +277,9 @@ def _candidates(
     role: Role,
     budget: Budget,
     require_cloning: bool,
-    surface: Surface = "user",
 ) -> list[Placement]:
     out: list[Placement] = []
-    for model in catalogue.for_surface(role, surface):
+    for model in catalogue.by_role(role):
         if role == "tts" and require_cloning and not model.cloning:
             continue
         for device in model.devices:
@@ -306,7 +295,6 @@ def auto_fit(
     roles: Iterable[Role] = ("llm", "embedding", "tts"),
     llm_provider: str | None = None,
     require_cloning: bool = True,
-    surface: Surface = "user",
     context_candidates: Iterable[int] = CONTEXT_CANDIDATES,
     whole_bible_bonus: float = DEFAULT_WHOLE_BIBLE_BONUS,
     limit: int = 15,
@@ -324,7 +312,7 @@ def auto_fit(
     for role in roles:
         if role == "llm" and llm_provider:
             continue
-        options = _candidates(catalogue, role, budget, require_cloning, surface)
+        options = _candidates(catalogue, role, budget, require_cloning)
         if not options:
             return []
         per_role[role] = options
@@ -343,7 +331,6 @@ def auto_fit(
                 context_tokens=context,
                 placements=placements,
                 llm_provider=llm_provider,
-                surface=surface,
             )
             fit = evaluate(selection, catalogue, budget, whole_bible_bonus)
             if not fit.ok:
@@ -373,19 +360,18 @@ def largest_shortfall(
     budget: Budget,
     roles: Iterable[Role],
     require_cloning: bool = True,
-    surface: Surface = "user",
 ) -> str:
     """When nothing fits, say something more useful than 'nothing fits'."""
     cheapest = 0
     for role in roles:
         options = [
             m
-            for m in catalogue.for_surface(role, surface)
+            for m in catalogue.by_role(role)
             if not (role == "tts" and require_cloning and not m.cloning)
         ]
-        if not options and role == "llm" and surface == "admin":
+        if not options and role == "llm":
             return (
-                "No model in the catalogue has native tool calling, so no admin "
+                "No model in the catalogue has native tool calling, so no LLM "
                 "stack is possible. Use an API for the LLM, or add one."
             )
         if options:
@@ -401,3 +387,26 @@ def largest_shortfall(
         "No combination fits within a single pool. Try moving the embedding "
         "model to the CPU, lowering the context length, or serving the LLM by API."
     )
+
+
+def _self_check() -> None:
+    # bible_tokens takes no surface: one stack serves both modes, and the
+    # agent reads sources.md through tools rather than holding it in context.
+    tokens = bible_tokens()
+    assert isinstance(tokens, int) and tokens > 0, tokens
+
+    # Whichever way it was measured, the strategy threshold is that number
+    # plus the conversation reserve. Assert on the boundary, not a constant,
+    # so this keeps testing the logic when the profile grows.
+    threshold = tokens + CONVERSATION_RESERVE_TOKENS
+    assert strategy_for(threshold) == "whole-bible"
+    assert strategy_for(threshold - 1) == "retrieval"
+
+    # The fallback path: no data/ on a fresh clone.
+    assert _measure(Path("does-not-exist.md"), 4_242) == 4_242
+
+    print("fit self-check: ok")
+
+
+if __name__ == "__main__":
+    _self_check()
