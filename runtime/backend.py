@@ -156,6 +156,7 @@ class LocalBackend:
     def stream(self, messages: list[Message], **kwargs) -> Iterator[str]:
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         self.last_reasoning = ""
+        self.last_tool_calls = []
         started = time.monotonic()
         chunks = 0
         logger.debug("POST %s (%d messages, stream=True)", url, len(messages))
