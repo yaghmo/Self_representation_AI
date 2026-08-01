@@ -28,6 +28,7 @@ SOURCES_PATH = PROFILE_PATH.parent / "sources.md"
 ENTRY = re.compile(r"^### (S-\d+)", re.MULTILINE)
 SEARCH_LIMIT = 5
 SOURCE_LOG_HEADING = "source log"
+BACKUP_DIR = ".backups"
 
 
 class StaleProposal(RuntimeError):
@@ -71,13 +72,74 @@ class Proposal:
                 "read it again and re-propose rather than overwriting the "
                 "newer content."
             )
-        backups = self.path.parent / ".backups"
-        backups.mkdir(exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        if self.path.exists():
-            shutil.copy2(self.path, backups / f"{self.path.name}.{stamp}")
+        snapshot(self.path)
         self.path.write_text(self.new_text, encoding="utf-8")
         return self.path
+
+
+def snapshot(path: Path) -> Path | None:
+    """Copy a file into its sibling `.backups/` before it is overwritten.
+
+    `data/` is gitignored, so these snapshots are the only undo that exists.
+    """
+    backups = path.parent / BACKUP_DIR
+    backups.mkdir(exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    if not path.exists():
+        return None
+    # Two applies inside the same second would otherwise write the same name,
+    # and the second would overwrite the snapshot the first just took — losing
+    # exactly the state someone would want back.
+    destination = backups / f"{path.name}.{stamp}"
+    bump = 0
+    while destination.exists():
+        bump += 1
+        destination = backups / f"{path.name}.{stamp}-{bump}"
+    shutil.copy2(path, destination)
+    return destination
+
+
+def list_backups(directory: Path | None = None) -> list[Path]:
+    """Snapshots of the two bible files, newest first.
+
+    Restricted to those two names on purpose: this list feeds a restore
+    button, and a restore is a whole-file overwrite. Anything else that ends
+    up in the folder is not something to offer to write back.
+    """
+    directory = directory or SOURCES_PATH.parent
+    backups = directory / BACKUP_DIR
+    if not backups.is_dir():
+        return []
+    restorable = {SOURCES_PATH.name, PROFILE_PATH.name}
+    found = [p for p in backups.iterdir() if p.is_file() and _restore_target_name(p) in restorable]
+    return sorted(found, key=lambda p: p.name, reverse=True)
+
+
+def _restore_target_name(backup: Path) -> str:
+    """`sources.md.20260801T203941` -> `sources.md`."""
+    return backup.name.rsplit(".", 1)[0]
+
+
+def restore_backup(backup: Path, directory: Path | None = None) -> Path:
+    """Roll one file back to a snapshot, snapshotting the current text first.
+
+    An undo that destroys what it replaced is not an undo. The pre-restore
+    snapshot is what makes this reversible in the other direction.
+
+    The name is checked against the two bible files rather than trusted: this
+    is the one path that overwrites a whole file, and a crafted name would
+    otherwise choose the destination.
+    """
+    directory = directory or SOURCES_PATH.parent
+    name = _restore_target_name(backup)
+    if name not in {SOURCES_PATH.name, PROFILE_PATH.name}:
+        raise ValueError(f"{backup.name!r} is not a snapshot of a bible file")
+    if backup.resolve().parent != (directory / BACKUP_DIR).resolve():
+        raise ValueError(f"{backup.name!r} is not in {directory / BACKUP_DIR}")
+    target = directory / name
+    snapshot(target)
+    shutil.copy2(backup, target)
+    return target
 
 
 def _propose(
@@ -565,6 +627,34 @@ def _self_check() -> None:
             pass
         else:
             raise AssertionError("expected StaleProposal when the file moved under a pending proposal")
+
+        # Restore rolls a file back to a snapshot, and snapshots the current
+        # text on the way — an undo that destroys what it replaced is not one.
+        snapshots = list_backups(directory=root)
+        assert snapshots, "the applied proposals above should have left snapshots"
+        assert all(p.name.startswith("sources.md.") for p in snapshots), snapshots
+        current = sources.read_text(encoding="utf-8")
+        restore_backup(snapshots[-1], directory=root)  # oldest: the pre-S-003 text
+        rolled_back = sources.read_text(encoding="utf-8")
+        assert rolled_back == corpus, "restore must reproduce the snapshot exactly"
+        assert current in [
+            p.read_text(encoding="utf-8") for p in list_backups(directory=root)
+        ], "the text being replaced must itself be snapshotted"
+
+        # A name that is not one of the two bible files is refused rather than
+        # written anywhere.
+        stray = root / BACKUP_DIR / "secrets.env.20260101T000000"
+        stray.write_text("nope", encoding="utf-8")
+        assert stray not in list_backups(directory=root), "only bible files are listed"
+        try:
+            restore_backup(stray, directory=root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("expected ValueError for a non-bible snapshot")
+
+        # Put S-003 back so the assertions below run against the fuller file.
+        restore_backup(list_backups(directory=root)[0], directory=root)
 
         # A section replace touches one section, and carries both sides so the
         # confirm dialog can show before beside after.
