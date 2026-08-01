@@ -29,7 +29,15 @@ from pydantic import BaseModel, Field
 
 from cookbook.config import read_config
 from runtime.backend import Message
-from runtime.bible import MessageTooLarge, ProfileMissing, ProfileTooLarge, assemble
+from runtime.bible import (
+    MessageTooLarge,
+    ProcedureMissing,
+    ProfileMissing,
+    ProfileTooLarge,
+    assemble,
+    build_persona,
+    build_procedure,
+)
 from runtime.model import Model, ModelNotDownloaded
 from service.logging_config import setup_logging
 
@@ -59,8 +67,10 @@ app = FastAPI(title="Character chat service", version="0.1.0", lifespan=lifespan
 
 
 class ChatMessage(BaseModel):
-    role: str = Field(pattern="^(system|user|assistant)$")
+    role: str = Field(pattern="^(system|user|assistant|tool)$")
     content: str
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -68,11 +78,13 @@ class ChatRequest(BaseModel):
     temperature: float = 0.7
     max_tokens: int = Field(default=512, ge=1, le=8192)
     thinking: bool = False
+    tools: list[dict] | None = None
 
 
 class ChatResponse(BaseModel):
     content: str
     reasoning: str = ""
+    tool_calls: list[dict] = Field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
 
@@ -120,22 +132,50 @@ def _reject_client_system(messages: list[ChatMessage]) -> None:
     )
 
 
+def _reject_tools(model: Model, request: ChatRequest) -> None:
+    """Tools exist only in agent mode.
+
+    The split is not about model size or context — it is that a fan must not be
+    able to reach the tools that write the bible. The flag comes from the
+    config the cookbook wrote, so a request cannot move it.
+    """
+    if request.tools and not model.agent:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "tools were supplied but this deployment is not in agent mode. "
+                "Re-run the cookbook with Agent mode checked to enable them."
+            ),
+        )
+
+
 def _prompt_for(model: Model, request: ChatRequest) -> list[Message]:
     _reject_client_system(request.messages)
+    _reject_tools(model, request)
     override = [m for m in request.messages if m.role == "system"]
-    history = [Message(m.role, m.content) for m in request.messages if m.role != "system"]
+    history = [
+        Message(m.role, m.content, tool_calls=m.tool_calls, tool_call_id=m.tool_call_id)
+        for m in request.messages
+        if m.role != "system"
+    ]
+    if override:
+        persona = override[0].content
+    else:
+        persona = build_procedure() if model.agent else build_persona()
     try:
         return assemble(
             history,
             context_tokens=model.context_tokens,
             count=model.count_tokens,
             reserve_tokens=max(1024, request.max_tokens * 2),
-            persona=override[0].content if override else None,
+            persona=persona,
         )
     except ProfileMissing as exc:
         raise HTTPException(status_code=424, detail=str(exc)) from exc
+    except ProcedureMissing as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
     except ProfileTooLarge as exc:
-        logger.error("profile does not fit: %s", exc)
+        logger.error("prompt does not fit: %s", exc)
         raise HTTPException(status_code=507, detail=str(exc)) from exc
     except MessageTooLarge as exc:
         # The caller's turn, not the profile — theirs to shorten, so 413.
@@ -209,6 +249,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             thinking=request.thinking,
+            tools=request.tools,
         )
     except Exception as exc:
         logger.exception("chat failed")
@@ -218,6 +259,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     return ChatResponse(
         content=content,
         reasoning=getattr(backend, "last_reasoning", ""),
+        tool_calls=getattr(backend, "last_tool_calls", []) or [],
         prompt_tokens=getattr(backend, "last_usage", None).prompt_tokens if backend else 0,
         completion_tokens=getattr(backend, "last_usage", None).completion_tokens if backend else 0,
     )
@@ -226,6 +268,11 @@ def chat(request: ChatRequest) -> ChatResponse:
 @app.post("/chat/stream")
 def chat_stream(request: ChatRequest) -> StreamingResponse:
     model = _require_loaded()
+    if request.tools:
+        raise HTTPException(
+            status_code=400,
+            detail="tool calls are not streamed — use POST /chat in agent mode",
+        )
     messages = _prompt_for(model, request)
 
     def generate():
@@ -312,6 +359,30 @@ def _self_check() -> None:
     # than surfacing as an unhandled 500.
     response = client.post("/chat", json={"messages": [{"role": "user", "content": "x" * 200_000}]})
     assert response.status_code == 413, (response.status_code, response.text)
+
+    # Tools are illegal unless the deployment is in agent mode. Refused, not
+    # ignored: a client that thinks it has tools and silently doesn't is a
+    # loop that never terminates.
+    schema = [{"type": "function", "function": {"name": "noop", "parameters": {}}}]
+    response = client.post(
+        "/chat",
+        json={"messages": [{"role": "user", "content": "hi"}], "tools": schema},
+    )
+    assert response.status_code == 400, (response.status_code, response.text)
+    assert "agent mode" in response.json()["detail"], response.text
+
+    # In agent mode the system prompt is the procedure, not the persona.
+    _model.agent = True
+    seen.clear()
+    response = client.post(
+        "/chat",
+        json={"messages": [{"role": "user", "content": "hi"}], "tools": schema},
+    )
+    _model.agent = False
+    assert response.status_code == 200, (response.status_code, response.text)
+    system = seen["messages"][0].content
+    assert "You are the person described" not in system, "persona leaked into agent mode"
+    assert "S-" in system, "the procedure should describe the S-### entry format"
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
 
