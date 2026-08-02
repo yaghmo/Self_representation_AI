@@ -21,6 +21,10 @@
 !templates/**
 !.claude/**
 
+# Machine-specific: absolute paths and per-session temp dirs. Shared settings
+# live in .claude/settings.json, which is tracked.
+.claude/settings.local.json
+
 # Application code. Generic — holds no creator data, so it is tracked.
 !cookbook/**
 !runtime/**
