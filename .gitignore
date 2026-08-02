@@ -21,6 +21,12 @@
 !templates/**
 !.claude/**
 
+# Design specs and implementation plans. They describe the app, not the
+# creator. Audited 2026-08-02: no character name, no quoted source material,
+# in any file. Keep it that way — a spec that needs a real example is a spec
+# that needs a synthetic one instead.
+!docs/**
+
 # Machine-specific: absolute paths and per-session temp dirs. Shared settings
 # live in .claude/settings.json, which is tracked.
 .claude/settings.local.json
