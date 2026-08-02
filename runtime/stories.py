@@ -87,8 +87,8 @@ def parse_story(text: str) -> Story:
     for position, mark in enumerate(marks):
         end = marks[position + 1].start() if position + 1 < len(marks) else len(text)
         raw = text[mark.end():end].lstrip("\n")
-        # Strip trailing whitespace but preserve exactly one trailing newline
-        event_text = raw.rstrip() + "\n" if raw.strip() else ""
+        # Strip trailing newlines only; preserve significant whitespace like markdown hard breaks
+        event_text = raw.rstrip("\n") + "\n" if raw.strip() else ""
         events.append(Event(id=mark.group(1), title=mark.group(2).strip(),
                             text=event_text))
 
@@ -164,6 +164,23 @@ def _self_check() -> None:
         pass
     else:
         raise AssertionError("malformed story was accepted")
+
+    # Trailing significant whitespace (markdown hard breaks) must survive round-trip.
+    # This catches silent data loss from over-aggressive whitespace stripping.
+    text_with_hardbreak = (
+        "# ST-002 — test\n"
+        "**Summary:** test\n"
+        "**Keywords:** test\n"
+        "**Logged:** test\n"
+        "\n"
+        "## E-001 — line with hard break\n"
+        "End with two spaces  \n"  # Two trailing spaces = markdown hard line break
+    )
+    story_hb = parse_story(text_with_hardbreak)
+    assert "  \n" in story_hb.events[0].text, "trailing spaces lost in parse"
+    rendered_hb = render_story(story_hb)
+    assert "  \n" in rendered_hb, "trailing spaces lost in render"
+    assert rendered_hb == text_with_hardbreak, "round-trip with trailing spaces failed"
 
     print("stories: ok")
 
