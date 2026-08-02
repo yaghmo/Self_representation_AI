@@ -385,6 +385,43 @@ def line_key(line: str) -> str:
     return ""
 
 
+def line_value(line: str) -> str:
+    """What a line *says*, with the label, cites and markup taken off.
+
+    `- **Race:** elf [S-075]` and `- **Self-identification:** elf [S-075]` say
+    the same thing under different labels. The field key cannot tell them
+    apart; this can.
+    """
+    stripped = line.strip().lstrip("-*").strip()
+    if stripped.startswith("|"):
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        stripped = cells[1] if len(cells) > 1 else ""
+    elif stripped.startswith("**"):
+        stripped = stripped.split("**", 2)[-1].lstrip(":").strip()
+    without_cites = re.sub(r"[\[`]S-\d+[^\]`]*[\]`]", "", stripped)
+    return re.sub(r"[^a-z0-9 ]", "", without_cites.lower()).strip()
+
+
+def _dedupe_cites(line: str) -> str:
+    """Collapse a cite repeated inside one line.
+
+    Told to keep the cites a line carries and add its own, a model told to add
+    `S-075` to a line already citing `S-075` writes it twice.
+    """
+    seen: set[str] = set()
+
+    def once(match: re.Match) -> str:
+        token = match.group(0)
+        key = re.sub(r"\W", "", token)
+        if key in seen:
+            return ""
+        seen.add(key)
+        return token
+
+    collapsed = re.sub(r"[\[`]S-\d+[^\]`]*[\]`]", once, line)
+    return re.sub(r"\s*,\s*,", ",", collapsed).replace(" ,", "").rstrip(", ").rstrip()
+
+
 def _is_table(lines: list[str]) -> bool:
     """Two or more `|` rows means the section is a table, not a bullet list."""
     return sum(1 for line in lines if line.lstrip().startswith("|")) >= 2
@@ -424,6 +461,7 @@ def add_profile_line(heading: str, line: str, path: Path | None = None) -> Propo
     # attached — including the very row it was meant to change. Adding a
     # second "Age" row does not answer the age; it just makes the profile
     # contradict itself twice.
+    body = _dedupe_cites(body)
     key = line_key(body)
     if key:
         clash = next((existing for existing in lines if line_key(existing) == key), None)
@@ -432,6 +470,20 @@ def add_profile_line(heading: str, line: str, path: Path | None = None) -> Propo
                 f"{name!r} already has a line for {key!r}:\n\n{clash.strip()}\n\n"
                 "Use replace_profile_line to change it, keeping the cites it "
                 "already carries and adding yours."
+            )
+
+    # The same fact under a different label is still the same fact. Left to
+    # itself a model will file one answer as Race, then Self-identification,
+    # then Ethnicity, and each passes the field check because each label is
+    # new.
+    value = line_value(body)
+    if value:
+        echo = next((existing for existing in lines if line_value(existing) == value), None)
+        if echo is not None:
+            raise ValueError(
+                f"{name!r} already says this, under a different label:\n\n"
+                f"{echo.strip()}\n\nOne fact, one line. Edit that line if it "
+                "needs the new cite, or move on to the next section."
             )
     while lines and not lines[-1].strip():
         lines.pop()
@@ -457,6 +509,7 @@ def replace_profile_line(
     body = line.strip()
     if "\n" in body:
         raise ValueError("one line per call — call this again for the next line")
+    body = _dedupe_cites(body)
     name, start, end, lines = _section_lines(old, heading)
     needle = find.strip().lower()
     if not needle:
@@ -1153,6 +1206,24 @@ def _self_check() -> None:
             assert "'register'" in str(exc).lower(), str(exc)
         else:
             raise AssertionError("expected ValueError for a bold label already present")
+
+        # The same fact under a new label is refused. This is the real run:
+        # one answer filed as Race, then Self-identification, then Ethnicity,
+        # each passing the field check because each label was new.
+        add_profile_line("6. Voice", "- **Race:** elf [S-075]", path=table).apply()
+        try:
+            add_profile_line("6. Voice", "- **Self-identification:** elf [S-076]", path=table)
+        except ValueError as exc:
+            assert "under a different label" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected ValueError for the same value relabelled")
+
+        # A cite repeated inside one line is collapsed — the model is told to
+        # keep the existing cites and add its own, and adds one already there.
+        doubled = add_profile_line(
+            "6. Voice", "- **Height:** tall [S-077], [S-077]", path=table
+        )
+        assert doubled.after.count("S-077") == 1, doubled.after
 
         # An unlabelled prose line has no field to clash on, so it still adds.
         add_profile_line("6. Voice", "- another observation [S-003]", path=table).apply()

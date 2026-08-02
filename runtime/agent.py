@@ -22,6 +22,7 @@ from typing import Callable, Iterator
 from service.logging_config import get_logger, log_payload
 
 from .backend import Message
+from .bible import section_index
 from .tools import (
     FOLLOWUP_SCHEMAS,
     TOOL_SCHEMAS,
@@ -58,7 +59,35 @@ def _result_message(call_id: str, text: str) -> Message:
     return Message("tool", text, tool_call_id=call_id)
 
 
-def followup(entry: str, read_section: Callable[[str], str] = read_profile_section) -> list[Message]:
+def _elsewhere(index: Callable[[], str] | None) -> str:
+    """The prompt fragment for facts that belong in an unlisted section.
+
+    The `Feeds:` line is the model's judgement from the logging phase, and it
+    gets it wrong: an answer giving a nationality, a species and an age was
+    filed as feeding Background and Relationships, and the profile's Age field
+    lives in Core Identity — so the age had nowhere to go and quietly went
+    nowhere. Naming the gap is honest; writing into a section the entry never
+    claimed is the agent overruling the record.
+    """
+    if index is None:
+        return ""
+    try:
+        headings = index()
+    except Exception:  # a missing profile is not a reason to lose the task
+        return ""
+    return (
+        "If part of the entry belongs in a section that is not above, do not "
+        "put it in one of these instead — say at the end which section it "
+        "needs. The profile's sections are:\n\n"
+        f"{headings}\n\n"
+    )
+
+
+def followup(
+    entry: str,
+    read_section: Callable[[str], str] = read_profile_section,
+    index: Callable[[], str] | None = section_index,
+) -> list[Message]:
     """The task that follows a logged entry: put it in the profile.
 
     A fresh, bounded conversation rather than a continuation of the chat. The
@@ -103,7 +132,10 @@ def followup(entry: str, read_section: Callable[[str], str] = read_profile_secti
             "leave the ones this entry does not change exactly as they are.\n\n"
             f"Every line you write carries {entry_id}. Match the shape already "
             "used — a row where there is a table, a bullet where there are "
-            "bullets. When the sections are done, say what you changed and stop.",
+            "bullets. One fact goes in one line: do not file the same thing "
+            "again under a second label.\n\n"
+            f"{_elsewhere(index)}"
+            "When the sections are done, say what you changed and stop.",
         )
     ]
 
@@ -125,6 +157,7 @@ def run(
     messages: list[Message],
     max_iterations: int = MAX_ITERATIONS,
     tools: list[dict] | None = None,
+    seen: dict[tuple[str, str], int] | None = None,
 ) -> Iterator[Step]:
     """Drive the model until it answers, proposes a write, or runs out of turns.
 
@@ -143,12 +176,16 @@ def run(
     allowed = {schema["function"]["name"] for schema in tools}
 
     history = list(messages)
-    # What it has already looked at. A small model asked to edit a profile
-    # will happily read every section in the file, one turn each, and run out
-    # of turns before it writes anything — re-reading is free to ask for and
-    # expensive to answer, so the second identical call gets a nudge instead
-    # of the payload.
-    seen: dict[tuple[str, str], int] = {}
+    # What it has already done. A small model asked to edit a profile will
+    # happily read every section in the file, one turn each, and run out of
+    # turns before it writes anything — so the second identical call gets a
+    # nudge instead of the payload.
+    #
+    # The caller can pass this in, and for the confirm gate it must: every
+    # Apply resumes through a fresh `run`, and a guard that forgets at each
+    # resume does not guard the case that actually happens — the same write
+    # proposed again one click later.
+    seen = {} if seen is None else seen
 
     for iteration in range(max_iterations):
         logger.info("turn %d/%d, %d messages in history", iteration + 1, max_iterations, len(history))
@@ -425,6 +462,15 @@ def _self_check() -> None:
             assert "add_profile_line" in steps[1].text, steps[1]
             assert sources.read_text(encoding="utf-8") == corpus, "a refused tool writes nothing"
             assert steps[-1].text == "fine"
+
+            # The repeat guard can be carried by the caller, because every
+            # Apply resumes through a fresh run — a guard that resets there
+            # does not guard the case that happens.
+            carried: dict = {}
+            first = list(run(rereads, [Message("user", "hi")], max_iterations=1, seen=carried))
+            assert first[-1].kind == "stopped", first
+            again = list(run(rereads, [Message("user", "hi")], max_iterations=1, seen=carried))
+            assert "already called" in again[1].text, again[1]
 
             # The follow-up task is built from the entry alone: its id, the
             # sections its Feeds line names, and how those sections read now.

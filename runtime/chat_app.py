@@ -279,6 +279,7 @@ if prompt or resume:
         st.session_state.pop("pending_step", None)
         st.session_state.pop("pending", None)
         st.session_state.pop("followup_active", None)
+        st.session_state.pop("seen_calls", None)
         st.session_state["history"].append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -325,6 +326,7 @@ if prompt or resume:
             # system prompt opens by telling the model to log one.
             tools = FOLLOWUP_SCHEMAS
             st.session_state["followup_active"] = True
+            st.session_state["seen_calls"] = {}
             st.caption(f"Updating the profile from {entry_id_of(entry)}")
         elif paused is not None:
             # Continue the paused turn: the model's own tool call is still in
@@ -339,7 +341,15 @@ if prompt or resume:
         reply = ""
         with st.chat_message("assistant"):
             try:
-                for step in run_agent(post_turn, history, tools=tools):
+                # Carried across Applies: each one resumes through a fresh run,
+                # and the repeat worth catching is the same write proposed
+                # again one click later.
+                for step in run_agent(
+                    post_turn,
+                    history,
+                    tools=tools,
+                    seen=st.session_state.setdefault("seen_calls", {}),
+                ):
                     if step.kind == "tool_call":
                         st.caption(f"{step.name}({step.text})")
                     elif step.kind == "tool_result":
