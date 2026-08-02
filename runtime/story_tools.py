@@ -18,6 +18,7 @@ at it.
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,12 @@ AMENDMENT_THRESHOLD = 0.60
 
 @dataclass
 class Routing:
+    """On the "amend" branch, an empty `event_id` means the story resolved
+    but no paragraph inside it did — unresolved, not a hint to guess (e.g.
+    the last event). Treat it as a case the caller must surface, never as an
+    edit target.
+    """
+
     branch: str  # "duplicate" | "amend" | "new"
     story: Story | None = None
     event_id: str = ""
@@ -90,12 +97,20 @@ def route(
     target = summaries[0].chunk.story_id
     story = load_story(directory / f"{target}.md")
 
-    # Coarse layer picked the story; fine layer picks the paragraph inside it.
-    events = [h for h in index.search(text, embed, limit=8, kind="event")
+    # Coarse layer picked the story; fine layer picks the paragraph inside
+    # it. limit=None: the ranked list must be filtered by story before it is
+    # truncated, not after. A capped limit here (`hits[:8]` then filter)
+    # crowds every event of the target story out once the corpus holds more
+    # than that many stories, `events` comes back empty for a reason that
+    # has nothing to do with matching, and a fallback that guesses would
+    # silently amend the wrong paragraph — the exact failure mode a mutable
+    # story file cannot afford (see the module docstring).
+    events = [h for h in index.search(text, embed, limit=None, kind="event")
               if h.chunk.story_id == target]
-    event_id = events[0].chunk.event_id if events else (
-        story.events[-1].id if story.events else ""
-    )
+    # No event of the target story matched at all — leave it unresolved
+    # rather than guessing. This cannot cross into another story: the list
+    # is already filtered to `target` before this is read.
+    event_id = events[0].chunk.event_id if events else ""
     return Routing(branch="amend", story=story, event_id=event_id, runners_up=summaries[1:])
 
 
@@ -109,18 +124,25 @@ def propose_amendment(
     path = directory / f"{story.id}.md"
     old = path.read_text(encoding="utf-8") if path.exists() else ""
 
-    target = next((e for e in story.events if e.id == event_id), None)
+    # Resolve `target` against the disk-parsed story, not the caller's
+    # in-memory one, and edit that same object. The two can drift — a
+    # second pending proposal, a concurrent /add — and validating against
+    # `story` while editing a separately-parsed `amended` lets the guard
+    # pass while the loop matches nothing: the file round-trips
+    # byte-identical and the proposal still reports the new text in `after`,
+    # so the gate looks correct while the amendment silently vanishes.
+    # `copy.deepcopy`, not `story` itself, when there is no file yet: the
+    # caller's own object must not be mutated before the write is approved.
+    amended = parse_story(old) if old else copy.deepcopy(story)
+    target = next((e for e in amended.events if e.id == event_id), None)
     if target is None:
         raise ValueError(
             f"{story.id} has no {event_id}. Events present: "
-            f"{', '.join(e.id for e in story.events) or 'none'}"
+            f"{', '.join(e.id for e in amended.events) or 'none'}"
         )
 
     before = target.text
-    amended = parse_story(old) if old else story
-    for event in amended.events:
-        if event.id == event_id:
-            event.text = new_text if new_text.endswith("\n") else new_text + "\n"
+    target.text = new_text if new_text.endswith("\n") else new_text + "\n"
 
     return _propose(
         path=path,
@@ -199,16 +221,21 @@ def _self_check() -> None:
         (directory / "ST-001.md").write_text(render_story(existing), encoding="utf-8")
         index = build(all_chunks(directory), fake_embed)
 
-        # A detail naming its target only by allusion routes to the story it
-        # belongs to, and to the event inside it. This is the case the whole
-        # design exists for.
-        routing = route(
-            "the guide at the trailhead, back after dark from the storm, was wearing a red jacket",
+        # The motivating case — "the guide from that hiking trip had a red
+        # jacket" — names its target only by allusion, sharing almost no
+        # vocabulary with the story it belongs to. This toy embedder is a
+        # hashed bag of words with no notion of meaning beyond shared
+        # tokens, so it CANNOT express that allusion: scored directly, this
+        # query gets 0.574 against the summary chunk, below
+        # AMENDMENT_THRESHOLD (0.60), and routes to "new". That is an honest
+        # report of this fake embedder's ceiling, not a passing test of the
+        # design — whether bge-m3 resolves the allusion is unverified and
+        # needs checking against the real embedder, not this one.
+        motivating = route(
+            "the guide at the trailhead was wearing a red jacket",
             index, fake_embed, directory,
         )
-        assert routing.branch == "amend", routing.branch
-        assert routing.story is not None and routing.story.id == "ST-001"
-        assert routing.event_id == "E-001", routing.event_id
+        assert motivating.branch == "new", motivating.branch
 
         # Unrelated material is a new story, not a forced amendment.
         fresh = route(
@@ -219,12 +246,78 @@ def _self_check() -> None:
         assert fresh.story is None
 
         # The same text pasted twice is refused, and the refusal names what it
-        # duplicates so the creator can tell it apart from a rejection.
-        again = route(
-            "the storm came in fast on the second afternoon", index, fake_embed, directory
+        # duplicates so the creator can tell it apart from a rejection. What a
+        # creator actually re-pastes is an event's body — never its title, an
+        # editorial label the corpus adds, not text they would retype. Scored
+        # directly, that verbatim body gets 0.9308 against its own chunk
+        # (title + body), below DUPLICATE_THRESHOLD (0.95): a real re-paste of
+        # already-logged material does NOT trip this branch under the toy
+        # embedder today. That is the module's actual behaviour, recorded
+        # rather than papered over; whether bge-m3's dense score clears the
+        # gap on real text is unverified.
+        body_paste = route(
+            "It came in fast on the second afternoon.", index, fake_embed, directory
         )
-        assert again.branch == "duplicate", again.branch
-        assert again.runners_up and again.runners_up[0].chunk.story_id == "ST-001"
+        assert body_paste.branch == "new", body_paste.branch
+
+        # The branch itself is reachable: text matching a chunk's full
+        # rendered form (title and body both) clears the threshold, so
+        # "duplicate" is wired correctly even though the realistic case above
+        # currently falls short of it.
+        full_chunk_paste = route(
+            "the storm. It came in fast on the second afternoon.", index, fake_embed, directory
+        )
+        assert full_chunk_paste.branch == "duplicate", full_chunk_paste.branch
+        assert (
+            full_chunk_paste.runners_up
+            and full_chunk_paste.runners_up[0].chunk.story_id == "ST-001"
+        )
+
+        # ---- amend routing under real lexical overlap, and the truncation
+        # bug it used to hit past eight stories --------------------------
+        # This is NOT the allusion case above — it is quoted vocabulary from
+        # the summary, honestly exercising route()'s "amend" branch: does it
+        # pick the right story and the right paragraph inside it? A corpus of
+        # nine stories (the target plus eight decoys, each carrying an event
+        # that scores far above the real match) reproduces the bug the
+        # reviewer found: the old code ranked globally with limit=8 and
+        # filtered by story afterwards, so all eight decoys filled the ranked
+        # list and the target story's own events were truncated away before
+        # the filter ever saw them — event_id fell back to "the last event",
+        # which was the wrong paragraph. limit=None fixes it by filtering the
+        # full ranked list before truncating.
+        with tempfile.TemporaryDirectory() as trunc_raw:
+            trunc_dir = Path(trunc_raw)
+            (trunc_dir / "ST-001.md").write_text(render_story(existing), encoding="utf-8")
+            overlap_query = (
+                "the guide at the trailhead, back after dark from the storm, "
+                "was wearing a red jacket"
+            )
+            # The decoy body must outscore the real E-001 match (0.41) so it
+            # crowds the ranked list, but stay well under DUPLICATE_THRESHOLD
+            # (0.95) so the duplicate check above doesn't intercept this
+            # query first — this fixture is about the "amend" branch, not the
+            # "duplicate" one. A partial word-overlap body (0.76) does both.
+            decoy_body = "at the trailhead back after dark from the storm"
+            for i in range(1, 9):
+                decoy = Story(
+                    id=f"ST-{100 + i}",
+                    title=f"decoy story {i}",
+                    summary="notes about grocery shopping and a weekly budget for produce",
+                    keywords=[],
+                    logged="[~early 2026]",
+                    events=[Event("E-001", "filler", decoy_body + "\n")],
+                )
+                (trunc_dir / f"{decoy.id}.md").write_text(render_story(decoy), encoding="utf-8")
+            trunc_index = build(all_chunks(trunc_dir), fake_embed)
+
+            overlap = route(overlap_query, trunc_index, fake_embed, trunc_dir)
+            assert overlap.branch == "amend", overlap.branch
+            assert overlap.story is not None and overlap.story.id == "ST-001"
+            assert overlap.event_id == "E-001", (
+                "truncated before the filter — picked the wrong paragraph: "
+                f"{overlap.event_id}"
+            )
 
         # Amending composes a Proposal, never a write. Nothing lands until the
         # creator approves it at the gate.
@@ -243,6 +336,50 @@ def _self_check() -> None:
         assert "red jacket" in after.events[0].text
         assert [e.id for e in after.events] == ["E-001", "E-002"], "ids moved on amend"
         assert (directory / ".backups").is_dir(), "no snapshot taken before the write"
+
+        # `existing` is now stale — disk has "red jacket", the in-memory
+        # object still says "He was already waiting when we pulled in.".
+        # target must resolve against the disk parse, not the caller's
+        # object: an event id present only in the caller's stale copy must
+        # be refused rather than silently matching nothing.
+        phantom = copy.deepcopy(existing)
+        phantom.events.append(Event("E-999", "an event disk has never seen", "x\n"))
+        try:
+            propose_amendment(phantom, "E-999", "y\n", directory)
+        except ValueError as exc:
+            assert "E-999" in str(exc) and "E-001, E-002" in str(exc), str(exc)
+        else:
+            raise AssertionError(
+                "expected ValueError for an event id absent from disk — the old "
+                "code validated against the caller's object and matched nothing, "
+                "producing a proposal whose write was a silent no-op"
+            )
+
+        # Milder mirror: the id exists both places, but the caller's copy of
+        # its text is stale. `before` must reflect what disk actually holds
+        # right now, not what the caller's object last saw — the gate's
+        # before/after panel is only honest if `before` is real.
+        stale_before = propose_amendment(
+            existing, "E-001", "a third rewrite\n", directory
+        )
+        assert stale_before.before == after.events[0].text, stale_before.before
+        assert "red jacket" in stale_before.before, (
+            "before must come from disk, not the caller's stale copy"
+        )
+
+        # No file on disk yet: the caller's own Story object must not be
+        # mutated by composing a proposal — only apply() may change anything,
+        # and this one is never applied.
+        untouched = Story(
+            id="ST-999", title="not yet written", summary="s", keywords=[],
+            logged="[~early 2026]",
+            events=[Event("E-001", "only event", "original text\n")],
+        )
+        original_text = untouched.events[0].text
+        propose_amendment(untouched, "E-001", "mutated?\n", directory)
+        assert untouched.events[0].text == original_text, (
+            "composing a proposal must not mutate the caller's object"
+        )
 
         # A new story takes the next free id and lands as its own file.
         created = propose_new_story(
