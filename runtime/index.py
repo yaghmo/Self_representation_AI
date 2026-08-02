@@ -195,17 +195,24 @@ def in_id_order(hits: list[Hit]) -> list[Hit]:
 
 def _self_check() -> None:
     import tempfile
+    import zlib
 
     # A deterministic stand-in for bge-m3: hash each word into a fixed number
     # of buckets. Shares the only properties the index depends on — same text
     # gives the same vector, shared words give a higher cosine — and needs no
     # weights, so this check runs anywhere.
+    #
+    # zlib.crc32, not the builtin hash(): str hashing is salted per-process
+    # (PEP 456), so hash(word) % width buckets words differently on every
+    # run and any assertion sitting close to its threshold flips depending on
+    # the process's random seed. crc32 is deterministic across processes and
+    # machines, so the same corpus always buckets the same way.
     def fake_embed(texts: list[str]) -> "np.ndarray":
         width = 64
         out = np.zeros((len(texts), width), dtype=np.float32)
         for row, text in enumerate(texts):
             for word in re.findall(r"\w+", text.lower()):
-                out[row, hash(word) % width] += 1.0
+                out[row, zlib.crc32(word.encode("utf-8")) % width] += 1.0
         norms = np.linalg.norm(out, axis=1, keepdims=True)
         return out / np.maximum(norms, 1e-9)
 
