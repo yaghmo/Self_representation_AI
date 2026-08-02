@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -173,9 +174,12 @@ def load_index(path: Path | None = None) -> Index:
         loaded = np.load(path, allow_pickle=False)
         chunks = [Chunk(**record) for record in json.loads(str(loaded["meta"]))]
         return Index(chunks, loaded["vectors"])
-    except (ValueError, KeyError, json.JSONDecodeError):
+    except (ValueError, KeyError, json.JSONDecodeError, zipfile.BadZipFile, EOFError):
         # Index file is corrupt or incomplete. Since the index is derived
-        # and can be rebuilt, degrade to empty rather than crash.
+        # and can be rebuilt, degrade to empty rather than crash. Catches:
+        # - zipfile.BadZipFile: truncated writes (most common corruption)
+        # - EOFError: empty files
+        # - ValueError/KeyError/JSONDecodeError: malformed content
         return Index([], np.zeros((0, 1), dtype=np.float32))
 
 
@@ -280,6 +284,15 @@ def _self_check() -> None:
         corrupt = load_index(corrupt_path)
         assert len(corrupt.chunks) == 0, "corrupt index should return empty"
         assert corrupt.vectors.shape == (0, 1), "corrupt index should have empty vector shape"
+
+        # A truncated file (interrupted write mid-save) must not crash; degrade to empty.
+        # This is the most common real-world corruption mode.
+        truncated_path = Path(directory) / "truncated.npz"
+        full_data = path.read_bytes()
+        truncated_path.write_bytes(full_data[:len(full_data) // 2])
+        truncated = load_index(truncated_path)
+        assert len(truncated.chunks) == 0, "truncated index should return empty"
+        assert truncated.vectors.shape == (0, 1), "truncated index should have empty vector shape"
 
     print("index: ok")
 
