@@ -105,14 +105,16 @@ def snapshot(path: Path) -> Path | None:
     return destination
 
 
-# `[0-9]{3}` (not `\d+`) — `stories.py` only ever writes three ASCII digits
-# (`f"{prefix}-{n:03d}"`), so a write guard has no business admitting more.
-# `\d` is Unicode-aware (`STORY_NAME.fullmatch("ST-٣.md")` would match `\d`),
-# which `int()` then happily parses — a restore through that hole would land
-# attacker-chosen content as a loadable story. `fullmatch`, not `match` with
-# `^…$`: `$` alone matches just before a trailing newline, which is a legal
-# filename byte on the Linux container this ships in.
-STORY_NAME = re.compile(r"ST-[0-9]{3}\.md")
+# Admits every id `next_story_id` can emit — three digits minimum
+# (`f"{prefix}-{n:03d}"`), more once the corpus passes 999, since `%03d` is a
+# minimum width, not a maximum — while still excluding what it never emits.
+# `[0-9]` (not `\d`) — `\d` is Unicode-aware
+# (`STORY_NAME.fullmatch("ST-٣.md")` would match `\d`), which `int()` then
+# happily parses — a restore through that hole would land attacker-chosen
+# content as a loadable story. `fullmatch`, not `match` with `^…$`: `$` alone
+# matches just before a trailing newline, which is a legal filename byte on
+# the Linux container this ships in.
+STORY_NAME = re.compile(r"ST-[0-9]{3,}\.md")
 
 
 def _corpus_roots(directory: Path | None) -> tuple[Path, Path]:
@@ -1159,6 +1161,26 @@ def _self_check() -> None:
             pass
         else:
             raise AssertionError("restore accepted a story name from the bible's .backups")
+
+        # `%03d` is a minimum width, not a maximum: once the corpus passes
+        # 999 stories, `next_story_id` emits four-digit ids ("ST-1000"), and
+        # those must be listed and restorable too. Silently refusing them
+        # would be Finding 1 again — a snapshot with no way to roll it
+        # back — just relocated to a distant threshold instead of fixed.
+        story_1000 = stories_root / "ST-1000.md"
+        story_1000.write_text("# ST-1000 — a trip\n", encoding="utf-8")
+        snapshot(story_1000)
+        names_1000 = [b.name for b in list_backups(directory=root)]
+        assert any(n.startswith("ST-1000.md.") for n in names_1000), names_1000
+
+        story_1000.write_text("# ST-1000 — amended\n", encoding="utf-8")
+        [story_1000_backup] = [
+            b for b in list_backups(directory=root) if b.name.startswith("ST-1000.md.")
+        ]
+        restore_backup(story_1000_backup, directory=root)
+        assert story_1000.read_text(encoding="utf-8") == "# ST-1000 — a trip\n", (
+            "a four-digit story id must restore too — %03d has no maximum width"
+        )
 
         # ---- the default-argument path chat_app.py actually calls -----------
         # list_backups() and restore_backup(choice) with no directory — the
