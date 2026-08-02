@@ -21,37 +21,10 @@ Real answers carry details that identify or locate a real person. **Reduce preci
 
 This bends the verbatim rule on purpose: **keep the phrasing, reduce the specifics.** Phrasing is voice data and stays untouched; a date is not voice data.
 
-## Redaction policy — set per creator
+## Redaction policy
 
-The defaults below are deliberately conservative. **This is the creator's call, not the author's.** They may loosen any row — but only they can, and it has to be recorded here with a date. Never loosen a row by inference, by convenience, or because a detail seems harmless.
-
-Unset, unclear, or mid-discussion → **use the default.** Fail safe.
-
-| Category | Default | This instance | Approved by / when |
-|---|---|---|---|
-| Dates | fuzz to period — `[~mid-July]`, `[~2023]` | default | — |
-| Locations | city level; no address, venue, or neighbourhood | default | — |
-| School / employer names | generalised — "their university" | default | — |
-| Third-party full names | first name only, or "a friend" | default | — |
-| Contact details, handles, booking or flight numbers | omit entirely, always | default | — |
-| Age | approximate, not tied to an exact year | default | — |
-| Family details | generalised; no names | default | — |
-| Health / medical | omit unless the creator explicitly opts in | default | — |
-
-To loosen a row, replace `default` with what's allowed and fill in the approval column:
-
-```
-| Dates | fuzz to period | exact dates OK for public/professional events only | creator, 2026-03-04 |
-```
-
-Two things worth keeping in mind when a creator loosens something:
-
-- **Precision compounds.** Individually harmless details — a city, a school, a birth month, a workplace — combine into an identification. A row loosened in isolation may be safe; three loosened rows may not be.
-- **This is reversible only going forward.** Once precise data is logged, embedded, and answered with, it has been published. Removing it later doesn't unpublish it. When unsure, log conservatively — precision can always be added when the creator confirms, but it cannot be recalled.
-
-If a detail matters to the character but is too precise to log safely, ask instead of guessing how much to blur.
-
-This file is the evidence base the bot answers from. How it reaches the model at runtime is a separate decision — the format deliberately doesn't assume one.
+Moved to `data/redaction-policy.md`. One policy governs every corpus — this
+file, the story corpus, and anything added later.
 
 ### Entry format
 

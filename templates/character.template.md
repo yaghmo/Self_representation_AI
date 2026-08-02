@@ -24,7 +24,7 @@ Every statement here carries a cite — `[S-004]` — pointing at the source ent
 4. **Contradictions get flagged, not resolved.** If two sources conflict, mark `⚠️ CONFLICT` here and log it in `sources.md`. Ask; don't pick a winner.
 5. **"Unknown" is a valid, correct state** — always better than a guess that has to be un-taught later.
 6. **Single-sourced claims are marked `(tentative)`.** Two or more independent sources drops the marker. This tells the chatbot how firmly to assert something.
-7. **Reduce precision on identifying details.** Keep the fact, drop the fingerprint: "flight to Italy `[~mid-July]`", not the exact date; "their university", not its name. A bracketed value is always a deliberate fuzzed replacement, never an original. How much to reduce is set per creator — follow the `## Redaction policy` table in `sources.md`, and use the conservative default whenever a row is unset.
+7. **Reduce precision on identifying details.** Keep the fact, drop the fingerprint: "flight to Italy `[~mid-July]`", not the exact date; "their university", not its name. A bracketed value is always a deliberate fuzzed replacement, never an original. How much to reduce is set per creator — follow the policy table in `data/redaction-policy.md`, which governs every corpus, and use the conservative default whenever a row is unset.
 
 ### The update loop
 
