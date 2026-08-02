@@ -104,19 +104,32 @@ def snapshot(path: Path) -> Path | None:
     return destination
 
 
-def list_backups(directory: Path | None = None) -> list[Path]:
-    """Snapshots of the two bible files, newest first.
+STORY_NAME = re.compile(r"^ST-\d+\.md$")
 
-    Restricted to those two names on purpose: this list feeds a restore
-    button, and a restore is a whole-file overwrite. Anything else that ends
-    up in the folder is not something to offer to write back.
+
+def _is_corpus_file(name: str) -> bool:
+    """Names a restore is allowed to write to: the two bible files, or a
+    story file.
+
+    Restore overwrites a whole file, so the destination is checked rather
+    than trusted — a crafted snapshot name would otherwise choose where it
+    lands.
+    """
+    return name in {SOURCES_PATH.name, PROFILE_PATH.name} or bool(STORY_NAME.match(name))
+
+
+def list_backups(directory: Path | None = None) -> list[Path]:
+    """Snapshots of the corpus files (bible + stories), newest first.
+
+    Restricted to those names on purpose: this list feeds a restore button,
+    and a restore is a whole-file overwrite. Anything else that ends up in
+    the folder is not something to offer to write back.
     """
     directory = directory or SOURCES_PATH.parent
     backups = directory / BACKUP_DIR
     if not backups.is_dir():
         return []
-    restorable = {SOURCES_PATH.name, PROFILE_PATH.name}
-    found = [p for p in backups.iterdir() if p.is_file() and _restore_target_name(p) in restorable]
+    found = [p for p in backups.iterdir() if p.is_file() and _is_corpus_file(_restore_target_name(p))]
     return sorted(found, key=lambda p: p.name, reverse=True)
 
 
@@ -131,14 +144,14 @@ def restore_backup(backup: Path, directory: Path | None = None) -> Path:
     An undo that destroys what it replaced is not an undo. The pre-restore
     snapshot is what makes this reversible in the other direction.
 
-    The name is checked against the two bible files rather than trusted: this
+    The name is checked against the corpus files rather than trusted: this
     is the one path that overwrites a whole file, and a crafted name would
     otherwise choose the destination.
     """
     directory = directory or SOURCES_PATH.parent
     name = _restore_target_name(backup)
-    if name not in {SOURCES_PATH.name, PROFILE_PATH.name}:
-        raise ValueError(f"{backup.name!r} is not a snapshot of a bible file")
+    if not _is_corpus_file(name):
+        raise ValueError(f"{backup.name!r} is not a snapshot of a corpus file")
     if backup.resolve().parent != (directory / BACKUP_DIR).resolve():
         raise ValueError(f"{backup.name!r} is not in {directory / BACKUP_DIR}")
     target = directory / name
@@ -1001,6 +1014,63 @@ def _self_check() -> None:
             pass
         else:
             raise AssertionError("expected ValueError for a non-bible snapshot")
+
+        # Story snapshots are restorable too. Without this, /story writes get a
+        # snapshot taken and no way to roll it back — an undo that cannot be run.
+        story_file = root / "ST-001.md"
+        story_file.write_text("# ST-001 — a trip\n", encoding="utf-8")
+        snapshot(story_file)
+        names = [b.name for b in list_backups(root)]
+        assert any(n.startswith("ST-001.md.") for n in names), names
+
+        # The guard still refuses anything that is not a corpus file. This is
+        # the one path that overwrites a whole file by name.
+        passwd = root / BACKUP_DIR / "passwd.20260101T000000"
+        passwd.write_text("x", encoding="utf-8")
+        try:
+            restore_backup(passwd, root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("restore accepted a non-corpus name")
+
+        # Merely containing a valid story id is not being one — prefix,
+        # suffix, and a lookalike extension must all be refused.
+        for bad in (
+            "xST-001.md.20260101T000000",       # prefixed
+            "ST-001.md.bak.20260101T000000",    # trailing junk before the stamp
+            "ST-001.mdx.20260101T000000",       # lookalike extension
+        ):
+            lookalike = root / BACKUP_DIR / bad
+            lookalike.write_text("x", encoding="utf-8")
+            try:
+                restore_backup(lookalike, root)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"restore accepted {bad!r}")
+
+        # A snapshot name is trusted for its target only after the directory
+        # is checked too — a name matching the pattern but sitting outside
+        # .backups (directly, or reached by climbing out with "..") must
+        # still be refused. This is pre-existing behaviour; asserted here
+        # because the guard above must not have weakened it.
+        outside = root / "ST-001.md.20260101T000000"
+        outside.write_text("x", encoding="utf-8")
+        try:
+            restore_backup(outside, root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("restore accepted a snapshot outside .backups")
+
+        traversal = root / BACKUP_DIR / ".." / "ST-001.md.20260101T000000"
+        try:
+            restore_backup(traversal, root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("restore accepted a path-traversal snapshot")
 
         # Put S-003 back so the assertions below run against the fuller file.
         restore_backup(list_backups(directory=root)[0], directory=root)
