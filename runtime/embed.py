@@ -89,6 +89,20 @@ def _self_check() -> None:
         else:
             raise AssertionError("a missing stack.json was accepted")
 
+        # Role configured but weights not on disk — the likeliest failure a user hits.
+        # A bogus model_id is guaranteed absent under MODELS_DIR.
+        missing_weights = Path(raw) / "with_weights.json"
+        missing_weights.write_text(
+            '{"version": 1, "roles": {"embedding": {"model_id": "nonexistent-model-12345"}}}',
+            encoding="utf-8",
+        )
+        try:
+            bge_embedder(missing_weights)
+        except EmbeddingNotConfigured as exc:
+            assert "cookbook.download" in str(exc).lower(), str(exc)
+        else:
+            raise AssertionError("a missing weights directory was accepted")
+
     print("embed: ok")
 
 
