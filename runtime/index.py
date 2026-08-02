@@ -120,7 +120,7 @@ class Index:
         vector = embed([query])[0]
         dense = self.vectors[wanted] @ vector
         hits = [
-            Hit(self.chunks[position], float(dense[row]) + 0.15 * _lexical(query, self.chunks[position]))
+            Hit(self.chunks[position], 0.85 * float(dense[row]) + 0.15 * _lexical(query, self.chunks[position]))
             for row, position in enumerate(wanted)
         ]
         hits.sort(key=lambda h: h.score, reverse=True)
@@ -169,9 +169,14 @@ def load_index(path: Path | None = None) -> Index:
     path = path or INDEX_PATH
     if not path.exists():
         return Index([], np.zeros((0, 1), dtype=np.float32))
-    loaded = np.load(path, allow_pickle=False)
-    chunks = [Chunk(**record) for record in json.loads(str(loaded["meta"]))]
-    return Index(chunks, loaded["vectors"])
+    try:
+        loaded = np.load(path, allow_pickle=False)
+        chunks = [Chunk(**record) for record in json.loads(str(loaded["meta"]))]
+        return Index(chunks, loaded["vectors"])
+    except (ValueError, KeyError, json.JSONDecodeError):
+        # Index file is corrupt or incomplete. Since the index is derived
+        # and can be rebuilt, degrade to empty rather than crash.
+        return Index([], np.zeros((0, 1), dtype=np.float32))
 
 
 def in_id_order(hits: list[Hit]) -> list[Hit]:
@@ -225,9 +230,23 @@ def _self_check() -> None:
     events = index.search("waiting when we pulled in", fake_embed, kind="event")
     assert events[0].chunk.event_id == "E-001", events[0].chunk.key
 
-    # Identical text scores ~1.0. This is what the duplicate threshold reads.
-    same = index.search("It came in fast on the second afternoon.", fake_embed)
-    assert same[0].score > 0.95, same[0].score
+    # Identical text scores 1.0 (convex blend: 0.85 * dense + 0.15 * lexical, ceiling 1.0).
+    # The chunk text for E-002 is "the storm. It came in fast on the second afternoon."
+    identical_query = "the storm. It came in fast on the second afternoon."
+    same = index.search(identical_query, fake_embed)
+    assert same[0].chunk.event_id == "E-002", f"matched wrong chunk: {same[0].chunk.key}"
+    assert same[0].score >= 0.99, f"identical text scored {same[0].score}, expected >= 0.99"
+    assert same[0].score <= 1.0, f"score {same[0].score} exceeds 1.0"
+
+    # A near-miss: shares most words but is not identical text must score below 0.95.
+    # "the storm. It came in fast on the second morning" differs by one word.
+    near_miss = index.search("the storm. It came in fast on the second morning.", fake_embed)
+    assert near_miss[0].score < 0.95, f"near-miss scored {near_miss[0].score}, expected < 0.95"
+
+    # All scores from search must stay within [0, 1.0].
+    all_scores = index.search("hiking", fake_embed, limit=None)
+    for hit in all_scores:
+        assert 0 <= hit.score <= 1.0, f"score {hit.score} out of bounds"
 
     # Ranked by score for routing, but re-ordered by stable id for the prompt.
     # Both orderings are needed and they are not the same list.
@@ -254,6 +273,13 @@ def _self_check() -> None:
         reloaded = load_index(path)
         assert [c.key for c in reloaded.chunks] == [c.key for c in index.chunks]
         assert np.allclose(reloaded.vectors, index.vectors)
+
+        # A corrupt index file (garbage bytes) must not crash; degrade to empty.
+        corrupt_path = Path(directory) / "corrupt.npz"
+        corrupt_path.write_bytes(b"not a valid npz file\x00\xff\xfe")
+        corrupt = load_index(corrupt_path)
+        assert len(corrupt.chunks) == 0, "corrupt index should return empty"
+        assert corrupt.vectors.shape == (0, 1), "corrupt index should have empty vector shape"
 
     print("index: ok")
 
