@@ -76,6 +76,70 @@ def read_policy(path: Path | None = None) -> str:
     return path.read_text(encoding="utf-8")
 
 
+# One bounded call, not the agent loop: redaction and segmentation are a fixed
+# transform, and a loop would spend turns deciding to do what it was told. The
+# policy is interpolated fresh on every ingestion rather than baked in at
+# startup, so a creator who loosens a row sees it on their next story.
+INGEST_PROMPT = """You are preparing the creator's story for their own corpus.
+
+Apply this redaction policy to every detail before you write anything:
+
+{policy}
+
+Reduce on the way in. This corpus is reachable by the public-facing bot, so
+anything exact you write here can be surfaced, and removing it later does not
+unpublish it. A bracketed value is always a fuzzed replacement — never write
+the precise value you were given.
+
+Keep the creator's phrasing. Reduce specifics, never rewrite voice. Do not add
+events, details, names, or feelings that are not in the text you were handed.
+
+`logged` is the period the text itself gives. If it gives none, return "".
+A period you worked out from context is a date the creator never said, and an
+invented date is worse than no date — leave it empty and it can be asked.
+
+Return JSON only:
+{{"summary": "one sentence", "keywords": ["..."], "logged": "[~period]" or "",
+  "events": [{{"title": "short", "text": "the creator's words, redacted"}}]}}
+"""
+
+
+# Anything that could be a time reference. Deliberately generous — this decides
+# whether the creator said *when*, not what they said.
+TEMPORAL = re.compile(
+    r"\b(19|20)\d{2}\b"
+    r"|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b"
+    r"|\b(mon|tues|wednes|thurs|fri|satur|sun)day\b"
+    r"|\b(spring|summer|autumn|fall|winter)\b"
+    r"|\b(yesterday|today|tonight|tomorrow|weekend)\b"
+    r"|\b(last|next|this|past)\s+(night|week|month|year|summer|winter|spring|autumn|fall)\b"
+    # Bare `ago`, not `\d+ (days|weeks) ago` — "three days ago" spells its
+    # number, and "ago" alone is never anything but a time reference.
+    r"|\bago\b",
+    re.IGNORECASE,
+)
+
+
+def keep_logged(logged: str, source: str) -> str:
+    """`logged`, but only if the source actually said when.
+
+    The ingestion pass invents periods. Told to return "" when the text gives
+    no time, it returns `[~mid-July]` anyway — that string is an example inside
+    the redaction policy the same prompt carries, and the model pattern-matches
+    it. Prompting harder does not fix a model copying its own instructions, so
+    the check is here instead of there: no temporal marker in what the creator
+    wrote means no period logged, whatever came back.
+
+    An invented date is not a small error in this corpus. It is a fact the
+    creator never stated, becoming canon the bot will assert.
+
+    ponytail: a regex over obvious time words, not a date parser. It answers
+    "did they mention when at all", and the cost of a miss is an empty field
+    the creator can fill — reach for dateparser only if that gets annoying.
+    """
+    return logged if TEMPORAL.search(source) else ""
+
+
 def route(
     text: str,
     index: Index,
@@ -189,6 +253,18 @@ def propose_new_story(
 def _self_check() -> None:
     import tempfile
     import zlib
+
+    # A period survives only when the creator's own words carry a time. The
+    # observed failure is the model returning `[~mid-July]` for text with no
+    # date in it at all, copied out of the example in the policy it was handed.
+    assert keep_logged("[~mid-July]", "On 15 July I flew to Lisbon.") == "[~mid-July]"
+    assert keep_logged("[~2023]", "We went back the summer after that.") == "[~2023]"
+    assert keep_logged("[~last week]", "It rained three days ago and we stayed in.")
+    assert keep_logged("[~mid-July]", "I fixed a bicycle chain and got grease everywhere.") == ""
+    assert keep_logged("[~late summer 2023]", "She laughed at the door handle.") == ""
+    # "May" is a month and a verb. Generous on purpose — a spurious period the
+    # creator can delete beats an invented one they have to notice.
+    assert keep_logged("[~May]", "I may go back at some point.") == "[~May]"
 
     # zlib.crc32, not the builtin hash(): str hashing is salted per-process
     # (PEP 456), so builtin hash() buckets words differently on every run and

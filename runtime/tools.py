@@ -78,6 +78,10 @@ class Proposal:
                 "read it again and re-propose rather than overwriting the "
                 "newer content."
             )
+        # The first story lands in a `data/stories/` that nothing has created
+        # yet, and `snapshot()` writes into a subdirectory of it. The bible
+        # files always have a parent, so this only ever fires on a new corpus.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         snapshot(self.path)
         self.path.write_text(self.new_text, encoding="utf-8")
         return self.path

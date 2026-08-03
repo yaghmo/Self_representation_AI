@@ -15,14 +15,22 @@ placement decision was, rather than hiding them behind a pretty surface.
 
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 import time
+from pathlib import Path
 
 import httpx
 import streamlit as st
 
 from runtime.agent import followup, resumed, run as run_agent
 from runtime.backend import Message
+from runtime.convert import ConversionFailed, to_markdown
+from runtime.embed import EmbeddingNotConfigured, bge_embedder
+from runtime.index import all_chunks, build, load_index
+from runtime.stories import STORIES_DIR
+from runtime.story_tools import keep_logged, propose_amendment, propose_new_story, route
 from runtime.tools import (
     FOLLOWUP_SCHEMAS,
     SOURCES_PATH,
@@ -50,6 +58,21 @@ def get(path: str, **params):
 def post(path: str, payload: dict, timeout: float = 330.0):
     with httpx.Client(timeout=timeout) as client:
         return client.post(f"{SERVICE_URL}{path}", json=payload)
+
+
+def json_block(raw: str) -> dict | None:
+    """The ingestion reply as an object, tolerating a ``` fence around it.
+
+    Fence-stripping only. The object still has to parse whole — a reply that
+    isn't valid JSON returns None and stops the ingestion, because a story that
+    silently lost half its events looks successful and reports nothing.
+    """
+    for candidate in (raw, raw[raw.find("{") : raw.rfind("}") + 1]):
+        try:
+            return json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return None
 
 
 def stream_reply(payload: dict):
@@ -93,7 +116,11 @@ def confirm_dialog(proposal) -> None:
         again, and that is how one answer becomes two entries.
         """
         st.session_state["pending"] = None
-        st.session_state["resume"] = True
+        # Only a tool call has a turn waiting on the answer. A `/story`
+        # proposal is composed by this page, not by the model, so there is
+        # nothing paused to close — resuming would run the loop over a
+        # conversation that never asked it anything.
+        st.session_state["resume"] = st.session_state.get("pending_step") is not None
         st.session_state["resume_note"] = note
         st.session_state["history"].append({"role": "user", "content": shown})
         st.rerun()
@@ -106,7 +133,18 @@ def confirm_dialog(proposal) -> None:
             # The file moved under the proposal. Never merge, never overwrite —
             # the creator re-asks and the agent re-reads.
             resolved(f"not applied — {exc}", f"[not applied: {exc}]")
-        st.session_state["applied_note"] = f"Wrote {path} (snapshot in data/.backups/)"
+        # A story's snapshot lands beside the story, not beside the bible, so
+        # the note points at the directory that actually holds it.
+        st.session_state["applied_note"] = f"Wrote {path} (snapshot in {path.parent}/.backups/)"
+
+        # The index is derived from the files, so it follows the write rather
+        # than being written alongside it. `refresh` re-embeds only what
+        # changed, which for one approved story is one story.
+        if path.parent == STORIES_DIR and st.session_state.get("story_index") is not None:
+            index = st.session_state["story_index"]
+            index.refresh(all_chunks(), st.session_state["story_embed"])
+            index.save()
+
         # A logged entry is only half the procedure. The entry itself names the
         # sections it feeds, so the second half needs the entry — not the
         # conversation that produced it.
@@ -249,6 +287,39 @@ else:
 if "history" not in st.session_state:
     st.session_state["history"] = []
 
+# `/story` is a write path onto the corpus, so it is loaded only in agent mode
+# — the fan surface never reaches an embedder, an index, or a proposal.
+#
+# This does put sentence-transformers, and therefore torch, in the Streamlit
+# process, which the module docstring above deliberately kept out of it. The
+# crash that rule came from was a CUDA context in a script that reruns on every
+# keystroke; the embedding role is CPU unless the creator configured otherwise,
+# and the model is loaded once per session rather than per rerun. If it ever
+# does bite, the embedder moves behind the service like the LLM did.
+_embed = None
+if status.get("agent"):
+    if "story_embed" not in st.session_state:
+        try:
+            st.session_state["story_embed"] = bge_embedder()
+        except EmbeddingNotConfigured as exc:
+            st.session_state["story_embed"] = None
+            st.session_state["story_error"] = str(exc)
+        except Exception as exc:  # a torch or weights failure, not a config one
+            st.session_state["story_embed"] = None
+            st.session_state["story_error"] = f"{type(exc).__name__}: {exc}"
+    _embed = st.session_state["story_embed"]
+
+    # The index is derived and small, so a missing file is rebuilt rather than
+    # reported: `data/stories/*.md` are the truth and the index follows them.
+    # A missing embedder is reported instead of worked around — indexing with a
+    # stand-in writes vectors no real query can match, and the corpus would
+    # look indexed while retrieving nothing.
+    if _embed is not None and "story_index" not in st.session_state:
+        story_index = load_index()
+        if not story_index.chunks:
+            story_index = build(all_chunks(), _embed)
+        st.session_state["story_index"] = story_index
+
 columns = st.columns([1, 1, 6])
 if columns[0].button("Clear"):
     st.session_state["history"] = []
@@ -260,7 +331,22 @@ for message in st.session_state["history"]:
         st.markdown(message["content"])
 
 ready = bool(health.get("model_loaded"))
-prompt = st.chat_input("Say something" if ready else "Load the model first")
+agent_mode = bool(status.get("agent"))
+
+entered = st.chat_input(
+    ("Say something, or /story to log one" if agent_mode else "Say something")
+    if ready
+    else "Load the model first",
+    accept_file=agent_mode,
+    file_type=["md", "markdown", "txt", "docx", "pdf"],
+)
+# `accept_file` changes the return type: a bare string without it, a value
+# carrying `.text` and `.files` with it.
+prompt = getattr(entered, "text", entered) if entered is not None else None
+attachments = list(getattr(entered, "files", None) or [])
+
+if st.session_state.get("story_error"):
+    st.caption(f"`/story` is unavailable — {st.session_state['story_error']}")
 
 # Applying or declining a proposal hands the turn back to the agent: the /add
 # procedure does not end at the source entry, it ends with the profile sections
@@ -268,7 +354,128 @@ prompt = st.chat_input("Say something" if ready else "Load the model first")
 # to prompt again to get the second half of a procedure already underway.
 resume = bool(st.session_state.pop("resume", False))
 
-if prompt or resume:
+# A file has no other consumer on this page, so attaching one means `/story`
+# whether or not the command was typed.
+story_command = agent_mode and (bool(attachments) or bool(prompt and prompt.startswith("/story")))
+
+if story_command:
+    if not ready:
+        st.warning("Model is not loaded — press Load model in the sidebar.")
+        st.stop()
+    if _embed is None:
+        st.error(st.session_state.get("story_error", "no embedder — /story is unavailable"))
+        st.stop()
+
+    # Same as typing an ordinary message: the paused proposal is stale the
+    # moment the conversation moves on.
+    for key in ("pending_step", "pending", "followup_active", "seen_calls"):
+        st.session_state.pop(key, None)
+
+    text = (prompt or "").removeprefix("/story").strip()
+    for upload in attachments:
+        # `to_markdown` reads the file's own bytes, so the upload — a buffer in
+        # memory — needs a real path carrying its real suffix.
+        handle = tempfile.NamedTemporaryFile(suffix=Path(upload.name).suffix, delete=False)
+        failure = ""
+        try:
+            handle.write(upload.getvalue())
+            handle.close()
+            text += ("\n\n" if text else "") + to_markdown(Path(handle.name))
+        except ConversionFailed as exc:
+            failure = str(exc)
+        finally:
+            handle.close()
+            os.unlink(handle.name)
+        if failure:
+            st.error(failure)
+            st.stop()
+
+    if not text.strip():
+        st.warning("`/story` needs the narrative — type it after the command, or attach a file.")
+        st.stop()
+
+    with st.chat_message("user"):
+        st.markdown(f"**/story** — {len(text):,} characters in")
+
+    # The raw text never enters `history`. It is pre-redaction by definition,
+    # and history is replayed to the model on every later turn.
+    routing = None
+    try:
+        routing = route(text, st.session_state["story_index"], _embed)
+    except Exception as exc:
+        st.error(f"Routing failed — {type(exc).__name__}: {exc}")
+    if routing is None:
+        st.stop()
+
+    if routing.branch == "duplicate":
+        top = routing.runners_up[0]
+        st.warning(
+            f"Already logged — {top.score:.0%} similar to {top.chunk.key}. Nothing ingested."
+        )
+        st.session_state["history"].append(
+            {"role": "user", "content": f"[/story refused as a duplicate of {top.chunk.key}]"}
+        )
+        st.stop()
+
+    existing = ""
+    if routing.branch == "amend":
+        if not routing.event_id:
+            st.error(
+                f"{routing.story.id} matched, but no paragraph inside it did — there "
+                "is nothing to amend. Name the event, or log this as its own story."
+            )
+            st.stop()
+        target = next((e for e in routing.story.events if e.id == routing.event_id), None)
+        existing = target.text if target else ""
+        st.info(f"Amending {routing.story.id}/{routing.event_id} — {routing.story.title}")
+        if routing.runners_up:
+            st.caption(
+                "Other candidates: "
+                + ", ".join(f"{h.chunk.story_id} ({h.score:.2f})" for h in routing.runners_up)
+            )
+    else:
+        st.info("New story — nothing in the corpus matches this closely.")
+
+    with st.spinner("Redacting and segmenting"):
+        response = post("/ingest", {"text": text, "existing": existing})
+    if response.status_code >= 400:
+        st.error(response.json().get("detail", response.text))
+        st.stop()
+
+    raw = response.json()["content"]
+    parsed = json_block(raw)
+    if parsed is None:
+        st.error("The ingestion pass did not return JSON. Nothing ingested.")
+        st.code(raw)
+        st.stop()
+
+    proposal = None
+    try:
+        if routing.branch == "amend":
+            # Only `events[0]`: the amended paragraph, redacted, in the
+            # creator's phrasing — not a whole story rebuilt around it.
+            proposal = propose_amendment(
+                routing.story, routing.event_id, parsed["events"][0]["text"]
+            )
+        else:
+            proposal = propose_new_story(
+                summary=parsed["summary"],
+                keywords=parsed.get("keywords", []),
+                # Dropped unless the creator's own text said when — the
+                # ingestion pass invents periods. See keep_logged.
+                logged=keep_logged(parsed.get("logged", ""), text),
+                events=[(e["title"], e["text"]) for e in parsed["events"]],
+            )
+    except Exception as exc:
+        st.error(f"The reply parsed but does not fit a story — {type(exc).__name__}: {exc}")
+        st.code(raw)
+    if proposal is None:
+        st.stop()
+
+    # Same gate the bible writes go through. There is no second confirm path.
+    st.session_state["pending"] = proposal
+
+elif prompt or resume:
     if not ready:
         st.warning("Model is not loaded — press Load model in the sidebar.")
         st.stop()

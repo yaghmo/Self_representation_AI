@@ -16,6 +16,7 @@ Endpoints are deliberately few:
     POST /model/unload   stop it and free the VRAM
     POST /chat           one completion
     POST /chat/stream    the same, as a token stream
+    POST /ingest         redact and segment one story (agent mode only)
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from runtime.bible import (
     build_procedure,
 )
 from runtime.model import Model, ModelNotDownloaded
+from runtime.story_tools import INGEST_PROMPT, read_policy
 from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
@@ -87,6 +89,14 @@ class ChatResponse(BaseModel):
     tool_calls: list[dict] = Field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+
+
+class IngestRequest(BaseModel):
+    text: str
+    # On the amend branch, the paragraph being edited, so the pass rewrites it
+    # rather than inventing a replacement for text it never saw.
+    existing: str = ""
+    max_tokens: int = Field(default=1024, ge=1, le=8192)
 
 
 class LoadRequest(BaseModel):
@@ -331,6 +341,69 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     return StreamingResponse(generate(), media_type="text/plain")
 
 
+@app.post("/ingest")
+def ingest(request: IngestRequest) -> dict:
+    """Redact and segment one story, in a single bounded call.
+
+    Server-side because the model lives here, and because the redaction policy
+    is read fresh on every call — a creator who loosens a row sees it on their
+    next story rather than after a restart.
+
+    Not `/chat`: that endpoint refuses client-supplied system prompts, which is
+    the right rule and not one to weaken for this. The prompt is assembled here
+    from a constant and the policy file, so a client still cannot choose it.
+
+    Deliberately unlogged. `log_payload` on this route would write the raw,
+    pre-redaction story into logs/service.log — the exact precision the policy
+    exists to keep off disk, in a file nobody would think to clean.
+    """
+    model = _require_loaded()
+    if not model.agent:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "ingestion writes the corpus, so it is admin-side only and this "
+                "deployment is not in agent mode."
+            ),
+        )
+
+    try:
+        policy = read_policy()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=424, detail=str(exc)) from exc
+
+    text = request.text
+    if request.existing:
+        text += (
+            "\n\n---\nThe paragraph this amends currently reads:\n\n" + request.existing
+        )
+
+    try:
+        messages = assemble(
+            [Message("user", text)],
+            context_tokens=model.context_tokens,
+            count=model.count_tokens,
+            reserve_tokens=max(1024, request.max_tokens * 2),
+            persona=INGEST_PROMPT.format(policy=policy),
+        )
+    except ProfileTooLarge as exc:
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
+    except MessageTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    try:
+        # Low temperature and no thinking: one right answer, and reasoning
+        # tokens are unbudgeted here as everywhere else.
+        content = model.chat(
+            messages, temperature=0.2, max_tokens=request.max_tokens, thinking=False
+        )
+    except Exception as exc:
+        logger.exception("ingest failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {"content": content}
+
+
 def _self_check() -> None:
     """The trust boundary, without weights.
 
@@ -439,6 +512,13 @@ def _self_check() -> None:
     response = client.post("/chat", json=forged)
     _model.agent = False
     assert response.status_code == 200, (response.status_code, response.text)
+
+    # Ingestion is a write path onto the corpus, so it is refused outright on a
+    # fan deployment — checked before the policy file is even read, so a clone
+    # with no data/ still proves the gate.
+    response = client.post("/ingest", json={"text": "a thing that happened"})
+    assert response.status_code == 403, (response.status_code, response.text)
+    assert "agent mode" in response.json()["detail"], response.text
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
 

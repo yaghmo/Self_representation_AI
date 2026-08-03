@@ -1,13 +1,20 @@
 """The embedder the index actually runs on, loaded from the cookbook's config.
 
 `runtime/index.py` takes its embedder as a parameter so it can be checked with
-no weights on disk. This module is the other side of that: it holds the import
-of sentence-transformers and the model load, and nothing else depends on it
-except the entry points that need a real one.
+no weights on disk. This module is the other side of that: it holds the model
+load, and nothing else depends on it except the entry points that need a real
+one.
 
-sentence-transformers is imported inside the function rather than at module
-scope. The import pulls torch, which is seconds and hundreds of megabytes, and
-anything that only wants the exception type should not pay for it.
+transformers rather than sentence-transformers, which is what this originally
+used. sentence-transformers imports scikit-learn, and torch followed by sklearn
+is an access violation on this machine — two copies of the OpenMP runtime in
+one process. Since bge-m3's dense vector is just the CLS token normalised (its
+own `1_Pooling/config.json` says so), the wrapper was buying a segfault and a
+transitive dependency in exchange for four lines.
+
+torch and transformers are imported inside the function, not at module scope:
+the import is seconds and hundreds of megabytes, and anything that only wants
+the exception type should not pay for it.
 """
 
 from __future__ import annotations
@@ -15,9 +22,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STACK_PATH = REPO_ROOT / "config" / "stack.json"
 MODELS_DIR = REPO_ROOT / "models"
+
+# ponytail: fixed batch, no length-sorted bucketing. The corpus is hundreds of
+# chunks embedded once at ingestion — bucketing would save seconds a day.
+BATCH = 8
 
 
 class EmbeddingNotConfigured(RuntimeError):
@@ -48,20 +61,44 @@ def bge_embedder(stack_path: Path | None = None):
         )
 
     try:
-        from sentence_transformers import SentenceTransformer
+        import torch
+        from transformers import AutoModel, AutoTokenizer
     except ImportError as exc:
         raise EmbeddingNotConfigured(
-            "sentence-transformers is not installed — run `uv sync --extra runtime`"
+            "torch and transformers are not installed — run `uv sync --extra runtime`"
         ) from exc
 
-    model = SentenceTransformer(str(weights), device=role.get("device", "cpu"))
+    device = role.get("device", "cpu")
+    tokenizer = AutoTokenizer.from_pretrained(str(weights))
+    model = AutoModel.from_pretrained(str(weights)).to(device).eval()
+
+    # The model's own config, not a constant here: bge-m3 takes 8192, and a
+    # number copied into this file would silently truncate a longer one.
+    config = weights / "sentence_bert_config.json"
+    max_length = 512
+    if config.exists():
+        max_length = json.loads(config.read_text(encoding="utf-8")).get("max_seq_length", 512)
 
     def embed(texts: list[str]):
-        return model.encode(
-            texts,
-            normalize_embeddings=True,  # the index scores with a plain dot product
-            convert_to_numpy=True,
-        ).astype("float32")
+        vectors = []
+        for start in range(0, len(texts), BATCH):
+            batch = tokenizer(
+                texts[start : start + BATCH],
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            ).to(device)
+            with torch.inference_mode():
+                # CLS token, per the model's 1_Pooling/config.json. Normalised
+                # because the index scores with a plain dot product.
+                hidden = model(**batch).last_hidden_state[:, 0]
+                vectors.append(
+                    torch.nn.functional.normalize(hidden, p=2, dim=1).cpu().numpy()
+                )
+        if not vectors:
+            return np.zeros((0, model.config.hidden_size), dtype=np.float32)
+        return np.concatenate(vectors).astype(np.float32)
 
     return embed
 
