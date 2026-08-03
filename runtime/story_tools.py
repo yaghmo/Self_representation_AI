@@ -222,15 +222,17 @@ def _self_check() -> None:
         index = build(all_chunks(directory), fake_embed)
 
         # The motivating case — "the guide from that hiking trip had a red
-        # jacket" — names its target only by allusion, sharing almost no
-        # vocabulary with the story it belongs to. This toy embedder is a
-        # hashed bag of words with no notion of meaning beyond shared
-        # tokens, so it CANNOT express that allusion: scored directly, this
-        # query gets 0.574 against the summary chunk, below
-        # AMENDMENT_THRESHOLD (0.60), and routes to "new". That is an honest
-        # report of this fake embedder's ceiling, not a passing test of the
-        # design — whether bge-m3 resolves the allusion is unverified and
-        # needs checking against the real embedder, not this one.
+        # jacket." This query shares two verbatim content words with the
+        # summary chunk ("guide", "trailhead") and still scores only 0.574
+        # against it — below AMENDMENT_THRESHOLD (0.60) — so it routes to
+        # "new". A truer allusion, one with no shared nouns at all, scores
+        # lower still (0.23-0.35 across phrasings): this toy
+        # hashed-bag-of-words embedder cannot
+        # express the allusive case at any realistic phrasing, with or
+        # without incidental word overlap. That is an honest report of this
+        # fake embedder's ceiling, not a passing test of the design —
+        # whether bge-m3 resolves the allusion is unverified and needs
+        # checking against the real embedder, not this one.
         motivating = route(
             "the guide at the trailhead was wearing a red jacket",
             index, fake_embed, directory,
