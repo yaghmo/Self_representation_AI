@@ -68,7 +68,10 @@ def bge_embedder(stack_path: Path | None = None):
             "torch and transformers are not installed — run `uv sync --extra runtime`"
         ) from exc
 
-    device = role.get("device", "cpu")
+    # The cookbook's vocabulary is "gpu"/"cpu"; torch's is "cuda"/"cpu". Passed
+    # through unmapped, a role fitted onto the GPU dies in `.to("gpu")` with a
+    # torch error naming every device except the one that was asked for.
+    device = {"gpu": "cuda"}.get(role.get("device", "cpu"), role.get("device", "cpu"))
     tokenizer = AutoTokenizer.from_pretrained(str(weights))
     model = AutoModel.from_pretrained(str(weights)).to(device).eval()
 

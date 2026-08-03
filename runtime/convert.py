@@ -42,6 +42,15 @@ def to_markdown(path: Path) -> str:
             return path.read_text(encoding="utf-8")
         except OSError as exc:
             raise ConversionFailed(f"{path.name} could not be read: {exc}") from exc
+        except UnicodeDecodeError as exc:
+            # A note saved as latin-1 or cp1252 is an ordinary thing to be
+            # handed. Refuse it by name rather than crashing the page, and say
+            # what to do — re-saving as UTF-8 keeps the creator's phrasing,
+            # while guessing a codec here would silently corrupt it.
+            raise ConversionFailed(
+                f"{path.name} is not UTF-8 text ({exc.reason} at byte {exc.start}). "
+                "Re-save it as UTF-8 and attach it again."
+            ) from exc
 
     magic = MAGIC.get(path.suffix.lower())
     if magic:
@@ -117,6 +126,17 @@ def _self_check() -> None:
             pass
         else:
             raise AssertionError("a truncated file was converted anyway")
+
+        # Text that isn't UTF-8 is refused by name, not by traceback — the
+        # passthrough branch never sees markitdown, so nothing else catches it.
+        latin = directory / "note.txt"
+        latin.write_bytes("caf\xe9 in the morning".encode("latin-1"))
+        try:
+            to_markdown(latin)
+        except ConversionFailed as exc:
+            assert "UTF-8" in str(exc), str(exc)
+        else:
+            raise AssertionError("non-UTF-8 text was read anyway")
 
         missing = directory / "nope.pdf"
         try:
