@@ -20,6 +20,9 @@ runtime = [
     "transformers>=4.45",
     "sentence-transformers>=3.2",
     "numpy>=1.24",
+    # Extras, not bare markitdown: 0.1.x moved per-format support out of the
+    # base package, so the bare install converts nothing /story would be given.
+    "markitdown[docx,pdf]>=0.1.7",
 ]
 
 [build-system]
