@@ -402,6 +402,18 @@ def ingest(request: IngestRequest) -> dict:
     input_tokens = model.count_tokens(text)
     cap = ingest_cap(model.context_tokens, persona_tokens)
 
+    if cap <= 0:
+        # The persona alone leaves no room. Splitting the story cannot help,
+        # so say the thing that is actually wrong rather than the 413 below.
+        raise HTTPException(
+            status_code=507,
+            detail=(
+                f"The ingestion prompt is about {persona_tokens:,} tokens and the "
+                f"context window is {model.context_tokens:,}. No story of any "
+                "length fits. Load a model with a larger context window."
+            ),
+        )
+
     if input_tokens > cap:
         raise HTTPException(
             status_code=413,
@@ -422,7 +434,7 @@ def ingest(request: IngestRequest) -> dict:
             [Message("user", text)],
             context_tokens=model.context_tokens,
             count=model.count_tokens,
-            reserve_tokens=max(1024, max_tokens),
+            reserve_tokens=max_tokens,
             persona=persona,
         )
     except ProfileTooLarge as exc:
@@ -564,6 +576,21 @@ def _self_check() -> None:
     assert ingest_cap(8192, 1075) > 2000, "a normal story must fit"
     # A persona that fills the window leaves no room for any story.
     assert ingest_cap(2048, 4096) <= 0, "an over-large persona must not yield a positive cap"
+
+    # The invariant `ingest_cap` is derived from: for an input at exactly the
+    # cap, the reserve `ingest()` actually passes to `assemble()` must leave a
+    # budget that still fits persona + input. This is what a floor under
+    # `max_tokens` (e.g. `max(1024, max_tokens)`) breaks — the cap promises
+    # room the reserve then doesn't leave.
+    context_tokens, persona_tokens = 2048, 1075
+    cap = ingest_cap(context_tokens, persona_tokens)
+    assert cap > 0, "fixture must exercise a normal, fitting persona"
+    reserve = int(cap * REPLY_RATIO) + REPLY_FLOOR
+    budget = context_tokens - reserve
+    assert budget >= persona_tokens + cap, (
+        "the reserve ingest() passes to assemble() must leave room for "
+        "persona + input at exactly the cap"
+    )
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
 
