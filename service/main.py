@@ -49,6 +49,24 @@ logger = setup_logging("service")
 # the weights twice.
 _model: Model | None = None
 
+# The ingestion reply echoes the creator's text back redacted — policy
+# preserves phrasing, so it barely shrinks — plus a summary, keywords, event
+# titles and JSON syntax.
+#
+# ponytail: 1.4 is a guess, deliberately generous. Wrong low truncates the
+# reply; wrong high refuses slightly early. Measure the realised ratio once a
+# real corpus exists and replace it.
+REPLY_RATIO = 1.4
+REPLY_FLOOR = 256
+
+
+def ingest_cap(context_tokens: int, persona_tokens: int) -> int:
+    """Largest story that leaves room for its own redacted reply.
+
+    From persona + input + (input * RATIO + FLOOR) <= context.
+    """
+    return int((context_tokens - persona_tokens - REPLY_FLOOR) / (1 + REPLY_RATIO))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -96,7 +114,8 @@ class IngestRequest(BaseModel):
     # On the amend branch, the paragraph being edited, so the pass rewrites it
     # rather than inventing a replacement for text it never saw.
     existing: str = ""
-    max_tokens: int = Field(default=1024, ge=1, le=8192)
+    # None means auto: sized from the input, because the reply restates it.
+    max_tokens: int | None = Field(default=None, ge=1, le=8192)
 
 
 class LoadRequest(BaseModel):
@@ -378,13 +397,33 @@ def ingest(request: IngestRequest) -> dict:
             "\n\n---\nThe paragraph this amends currently reads:\n\n" + request.existing
         )
 
+    persona = INGEST_PROMPT.format(policy=policy)
+    persona_tokens = model.count_tokens(persona)
+    input_tokens = model.count_tokens(text)
+    cap = ingest_cap(model.context_tokens, persona_tokens)
+
+    if input_tokens > cap:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"This story is about {input_tokens:,} tokens. The ingestion cap "
+                f"is {cap:,} tokens (roughly {cap * 4:,} characters) at the "
+                "current context size, because the reply has to restate the "
+                "whole story redacted. Split it at a scene break and send the "
+                "halves as two /story calls — they route independently, and the "
+                "second will offer to amend the first if they overlap."
+            ),
+        )
+
+    max_tokens = request.max_tokens or int(input_tokens * REPLY_RATIO) + REPLY_FLOOR
+
     try:
         messages = assemble(
             [Message("user", text)],
             context_tokens=model.context_tokens,
             count=model.count_tokens,
-            reserve_tokens=max(1024, request.max_tokens * 2),
-            persona=INGEST_PROMPT.format(policy=policy),
+            reserve_tokens=max(1024, max_tokens),
+            persona=persona,
         )
     except ProfileTooLarge as exc:
         raise HTTPException(status_code=507, detail=str(exc)) from exc
@@ -395,7 +434,7 @@ def ingest(request: IngestRequest) -> dict:
         # Low temperature and no thinking: one right answer, and reasoning
         # tokens are unbudgeted here as everywhere else.
         content = model.chat(
-            messages, temperature=0.2, max_tokens=request.max_tokens, thinking=False
+            messages, temperature=0.2, max_tokens=max_tokens, thinking=False
         )
     except Exception as exc:
         logger.exception("ingest failed")
@@ -519,6 +558,12 @@ def _self_check() -> None:
     response = client.post("/ingest", json={"text": "a thing that happened"})
     assert response.status_code == 403, (response.status_code, response.text)
     assert "agent mode" in response.json()["detail"], response.text
+
+    # The cap is derived from the reply budget, not chosen separately.
+    assert ingest_cap(8192, 1075) == int((8192 - 1075 - REPLY_FLOOR) / (1 + REPLY_RATIO))
+    assert ingest_cap(8192, 1075) > 2000, "a normal story must fit"
+    # A persona that fills the window leaves no room for any story.
+    assert ingest_cap(2048, 4096) <= 0, "an over-large persona must not yield a positive cap"
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
 
