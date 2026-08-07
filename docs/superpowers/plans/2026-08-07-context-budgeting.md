@@ -66,6 +66,17 @@ Add to the end of `_self_check()` in `runtime/bible.py`, before the final `print
     if split is not None:
         assert split[1][0].role != "tool", "kept half must not open on an orphaned tool result"
 
+    # History that tails off in tool results — the agent loop's normal mid-run
+    # state. No split preserves the invariant, so it must refuse rather than
+    # clamp back onto the tool message.
+    trailing = [
+        Message("user", "do the thing " + "word " * 20),
+        Message("assistant", "", tool_calls=[{"id": "c2", "function": {"name": "t"}}]),
+        Message("tool", "the result " + "word " * 20, tool_call_id="c2"),
+    ]
+    tail = plan_compaction(trailing, room=estimate_tokens(trailing[0].content))
+    assert tail is None or tail[1][0].role != "tool", "must refuse rather than keep an orphan"
+
     # The summary is pinned: it survives a budget that evicts ordinary history.
     note = "Earlier in this conversation: they described a trip."
     out = assemble(turns, context_tokens=1400, persona=persona, summary=note)
@@ -147,6 +158,13 @@ def plan_compaction(
     # being summarized, and llama-server rejects a result with no call.
     while split < len(history) and history[split].role == "tool":
         split += 1
+
+    # Running off the end means the history tails off in tool results and no
+    # split preserves the invariant — refuse rather than clamp back onto one.
+    # A history ending on a raw tool message is the agent loop's normal
+    # mid-run state, so this is a live path, not a corner case.
+    if split >= len(history):
+        return None
 
     # The newest turn is the question this reply is for — always verbatim.
     split = min(split, len(history) - 1)
