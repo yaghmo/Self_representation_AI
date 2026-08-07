@@ -101,6 +101,11 @@ class ChatRequest(BaseModel):
     max_tokens: int = Field(default=512, ge=1, le=8192)
     thinking: bool = False
     tools: list[dict] | None = None
+    # A compaction summary, pinned after the persona. User-role by design: a
+    # client can already write user turns, so this grants no authority it did
+    # not have — and it must never be a system message, which is exactly what
+    # _reject_client_system exists to prevent.
+    summary: str = ""
 
 
 class ChatResponse(BaseModel):
@@ -222,6 +227,7 @@ def _prompt_for(model: Model, request: ChatRequest) -> list[Message]:
             count=model.count_tokens,
             reserve_tokens=max(1024, request.max_tokens * 2),
             persona=persona,
+            summary=request.summary,
         )
     except ProfileMissing as exc:
         raise HTTPException(status_code=424, detail=str(exc)) from exc

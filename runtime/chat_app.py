@@ -26,11 +26,19 @@ import streamlit as st
 
 from runtime.agent import followup, resumed, run as run_agent
 from runtime.backend import Message
+from runtime.bible import plan_compaction
 from runtime.convert import ConversionFailed, to_markdown
 from runtime.embed import EmbeddingNotConfigured, bge_embedder
 from runtime.index import all_chunks, build, load_index
-from runtime.stories import STORIES_DIR
-from runtime.story_tools import keep_logged, propose_amendment, propose_new_story, route
+from runtime.stories import STORIES_DIR, load_story
+from runtime.story_tools import (
+    Routing,
+    keep_logged,
+    parse_story_command,
+    propose_amendment,
+    propose_new_story,
+    route,
+)
 from runtime.tools import (
     FOLLOWUP_SCHEMAS,
     SOURCES_PATH,
@@ -372,6 +380,7 @@ if story_command:
         st.session_state.pop(key, None)
 
     text = (prompt or "").removeprefix("/story").strip()
+    wanted_id, text = parse_story_command(text)
     for upload in attachments:
         # `to_markdown` reads the file's own bytes, so the upload — a buffer in
         # memory — needs a real path carrying its real suffix.
@@ -400,10 +409,29 @@ if story_command:
     # The raw text never enters `history`. It is pre-redaction by definition,
     # and history is replayed to the model on every later turn.
     routing = None
-    try:
-        routing = route(text, st.session_state["story_index"], _embed)
-    except Exception as exc:
-        st.error(f"Routing failed — {type(exc).__name__}: {exc}")
+    if wanted_id:
+        target_path = STORIES_DIR / f"{wanted_id}.md"
+        if not target_path.exists():
+            # A typo must not silently become a new story.
+            st.error(f"No story {wanted_id} in the corpus. Drop the id to log a new story.")
+            st.stop()
+        story = load_story(target_path)
+        # The creator named the story; the index still picks the paragraph.
+        hits = [
+            h for h in st.session_state["story_index"].search(text, _embed, limit=None, kind="event")
+            if h.chunk.story_id == wanted_id
+        ]
+        routing = Routing(
+            branch="amend",
+            story=story,
+            event_id=hits[0].chunk.event_id if hits else "",
+        )
+        st.caption(f"Targeting {wanted_id} — routing skipped.")
+    else:
+        try:
+            routing = route(text, st.session_state["story_index"], _embed)
+        except Exception as exc:
+            st.error(f"Routing failed — {type(exc).__name__}: {exc}")
     if routing is None:
         st.stop()
 
@@ -491,15 +519,50 @@ elif prompt or resume:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-    messages = list(st.session_state["history"])
+    floor = st.session_state.get("prompt_floor", 0)
+    scoped = list(st.session_state["history"][floor:])
+
+    # Compact before the wall. `room` is the context minus the persona and the
+    # reply reserve; the service holds the real persona, so this is the client
+    # estimating its own share conservatively.
+    room = max(512, int(status.get("context_tokens", 8192)) - 5500 - max_tokens)
+    turns = [Message(m["role"], m["content"]) for m in scoped]
+    planned = plan_compaction(turns, room=room)
+    if planned is not None:
+        older, newer = planned
+        with st.spinner("Compacting older turns"):
+            response = post(
+                "/summarize",
+                {"messages": [m.as_dict() for m in older], "max_tokens": 256},
+            )
+        if response.status_code == 200:
+            fresh = response.json()["content"].strip()
+            previous = st.session_state.get("summary", "")
+            # Fold, don't nest: the old summary is material for the new one.
+            st.session_state["summary"] = (
+                f"{previous} {fresh}".strip() if previous else fresh
+            )
+            # Those turns are now represented by the summary. Drop them from
+            # what is *sent*; `history` keeps them for the visible transcript.
+            st.session_state["prompt_floor"] = floor + len(older)
+            scoped = [{"role": m.role, "content": m.content} for m in newer]
+        else:
+            # A failed compaction must not lose history. Keep sending it all
+            # and let `assemble()` trim as it did before.
+            st.caption("Compaction failed — older turns will be trimmed instead.")
+
+    messages = scoped
     if override_allowed and system_prompt:
         messages.insert(0, {"role": "system", "content": system_prompt})
+
+    summary_note = st.session_state.get("summary", "")
 
     payload = {
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "thinking": thinking,
+        "summary": summary_note,
     }
 
     if bool(status.get("agent")):
@@ -515,6 +578,7 @@ elif prompt or resume:
                     "max_tokens": max_tokens,
                     "thinking": thinking,
                     "tools": tools,
+                    "summary": summary_note,
                 },
             )
             response.raise_for_status()
