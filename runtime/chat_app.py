@@ -141,45 +141,53 @@ def confirm_dialog(proposal) -> None:
             # The file moved under the proposal. Never merge, never overwrite —
             # the creator re-asks and the agent re-reads.
             resolved(f"not applied — {exc}", f"[not applied: {exc}]")
+        else:
+            # Everything below reads `path`, so it belongs to the branch where
+            # `path` was bound. `resolved()` does halt — it ends in st.rerun() —
+            # but that makes the whole block's safety turn on the last line of
+            # a function two screens up. `else` is the same guarantee stated
+            # where it can be checked.
 
-        # A story landing somewhere new scopes the context to it. Only on
-        # Apply: the creator saw the gate and ratified the routing, so an
-        # uncalibrated threshold can propose a wrong landing but never act
-        # on one unobserved.
-        if path.parent == STORIES_DIR:
-            landed = path.stem
-            if landed != st.session_state.get("current_story"):
-                st.session_state["current_story"] = landed
-                # The previous story is on disk, parsed and indexed. Keeping
-                # its turns in the prompt duplicates a file route() reaches
-                # in one call, so they stop being sent — and stay on screen.
-                st.session_state["prompt_floor"] = len(st.session_state["history"])
-                st.session_state.pop("summary", None)
-                logged = st.session_state.setdefault("logged_stories", [])
-                if landed not in logged:
-                    logged.append(landed)
+            # A story landing somewhere new scopes the context to it. Only on
+            # Apply: the creator saw the gate and ratified the routing, so an
+            # uncalibrated threshold can propose a wrong landing but never act
+            # on one unobserved.
+            if path.parent == STORIES_DIR:
+                landed = path.stem
+                if landed != st.session_state.get("current_story"):
+                    st.session_state["current_story"] = landed
+                    # The previous story is on disk, parsed and indexed. Keeping
+                    # its turns in the prompt duplicates a file route() reaches
+                    # in one call, so they stop being sent — and stay on screen.
+                    st.session_state["prompt_floor"] = len(st.session_state["history"])
+                    st.session_state.pop("summary", None)
+                    logged = st.session_state.setdefault("logged_stories", [])
+                    if landed not in logged:
+                        logged.append(landed)
 
-        # A story's snapshot lands beside the story, not beside the bible, so
-        # the note points at the directory that actually holds it.
-        st.session_state["applied_note"] = f"Wrote {path} (snapshot in {path.parent}/.backups/)"
+            # A story's snapshot lands beside the story, not beside the bible, so
+            # the note points at the directory that actually holds it.
+            st.session_state["applied_note"] = (
+                f"Wrote {path} (snapshot in {path.parent}/.backups/)"
+            )
 
-        # The index is derived from the files, so it follows the write rather
-        # than being written alongside it. `refresh` re-embeds only what
-        # changed, which for one approved story is one story.
-        if path.parent == STORIES_DIR and st.session_state.get("story_index") is not None:
-            index = st.session_state["story_index"]
-            index.refresh(all_chunks(), st.session_state["story_embed"])
-            index.save()
+            # The index is derived from the files, so it follows the write rather
+            # than being written alongside it. `refresh` re-embeds only what
+            # changed, which for one approved story is one story.
+            if path.parent == STORIES_DIR and st.session_state.get("story_index") is not None:
+                index = st.session_state["story_index"]
+                index.refresh(all_chunks(), st.session_state["story_embed"])
+                index.save()
 
-        # A logged entry is only half the procedure. The entry itself names the
-        # sections it feeds, so the second half needs the entry — not the
-        # conversation that produced it.
-        if path.name == SOURCES_PATH.name and entry_id_of(proposal.after):
-            st.session_state["followup_entry"] = proposal.after
-        resolved(
-            f"applied — {proposal.summary}. This write is done; do not repeat it.",
-            f"[applied: {proposal.summary}]",
-        )
+            # A logged entry is only half the procedure. The entry itself names the
+            # sections it feeds, so the second half needs the entry — not the
+            # conversation that produced it.
+            if path.name == SOURCES_PATH.name and entry_id_of(proposal.after):
+                st.session_state["followup_entry"] = proposal.after
+            resolved(
+                f"applied — {proposal.summary}. This write is done; do not repeat it.",
+                f"[applied: {proposal.summary}]",
+            )
     if right.button("Decline", width="stretch"):
         resolved(
             f"declined by the creator — {proposal.summary}. Do not retry it.",
