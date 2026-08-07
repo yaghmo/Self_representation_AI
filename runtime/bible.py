@@ -21,6 +21,24 @@ from .backend import Message, tokenize_url
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROFILE_PATH = REPO_ROOT / "data" / "character.md"
 
+# Compaction trips before the wall, not at it, so a long reply never lands
+# mid-turn. KEEP is the newest share of history left verbatim.
+COMPACT_TRIP = 0.80
+COMPACT_KEEP = 0.40
+
+SUMMARIZE_PROMPT = """Summarise the conversation below so it can stand in for
+those turns in a later prompt.
+
+Record only what was actually said. Do not add detail, motive, or conclusion
+that is not in the turns you were handed — an invented fact here becomes a
+memory the assistant asserts later, with nothing marking it as derived.
+
+Keep any correction the speaker made. A summary that drops "no, I meant —"
+leaves the version they retracted standing as fact.
+
+Write one short paragraph, third person, no preamble.
+"""
+
 
 class ProfileMissing(FileNotFoundError):
     pass
@@ -180,12 +198,54 @@ the creator's own words and are copied exactly or left alone.
 """
 
 
+def plan_compaction(
+    history: list[Message],
+    room: int,
+    count: Callable[[str], int] = estimate_tokens,
+) -> tuple[list[Message], list[Message]] | None:
+    """Split history into (to_summarize, to_keep), or None if it still fits.
+
+    Pure: no model call, no state. The caller decides what to do with the
+    halves, which is what keeps the summary sticky — recomputing it every turn
+    would rewrite the prompt prefix every turn and defeat the KV cache.
+    """
+    if not history:
+        return None
+
+    total = sum(count(m.content) for m in history)
+    if total <= room * COMPACT_TRIP:
+        return None
+
+    # Walk newest-first, keeping turns until the verbatim share is spent.
+    keep_budget = total * COMPACT_KEEP
+    kept = 0
+    split = len(history)
+    for position in range(len(history) - 1, -1, -1):
+        cost = count(history[position].content)
+        if kept + cost > keep_budget:
+            break
+        kept += cost
+        split = position
+
+    # Never open the kept half on a tool result: its call sits in the half
+    # being summarized, and llama-server rejects a result with no call.
+    while split < len(history) and history[split].role == "tool":
+        split += 1
+
+    # The newest turn is the question this reply is for — always verbatim.
+    split = min(split, len(history) - 1)
+    if split <= 0:
+        return None
+    return history[:split], history[split:]
+
+
 def assemble(
     history: list[Message],
     context_tokens: int,
     count: Callable[[str], int] = estimate_tokens,
     reserve_tokens: int = 1024,
     persona: str | None = None,
+    summary: str = "",
 ) -> list[Message]:
     """The system prompt plus as much recent conversation as fits.
 
@@ -209,6 +269,16 @@ def assemble(
     # in order. Oldest context is the cheapest thing to lose.
     remaining = budget - persona_tokens
 
+    # Pinned outside the trimming loop. As the first entry of `history` it
+    # would be the first thing evicted — the compaction undone by the next
+    # turn that needed room. Its cost comes off the budget before the loop.
+    pinned: list[Message] = []
+    if summary:
+        summary_cost = count(summary)
+        if summary_cost < remaining:
+            pinned = [Message("user", summary)]
+            remaining -= summary_cost
+
     # The newest turn is the one question this reply is actually for. If it
     # doesn't fit, dropping it would send the persona into the void and get
     # an answer to no question — silently. Refuse instead.
@@ -230,7 +300,7 @@ def assemble(
         kept.append(message)
     kept.reverse()
 
-    return [Message("system", persona), *_whole_tool_pairs(kept)]
+    return [Message("system", persona), *pinned, *_whole_tool_pairs(kept)]
 
 
 def _whole_tool_pairs(kept: list[Message]) -> list[Message]:
@@ -397,6 +467,44 @@ def _self_check() -> None:
         persona=persona,
     )
     assert [m.role for m in paired] == ["system", "assistant", "tool", "user"], paired
+
+    # -- compaction ----------------------------------------------------------
+    # Invented placeholder turns only; this file is tracked.
+    turns = [Message("user", f"message number {n} " + "word " * 20) for n in range(10)]
+    each = estimate_tokens(turns[0].content)
+
+    assert plan_compaction(turns, room=each * 100) is None, "must not trip with room to spare"
+    assert plan_compaction([], room=10) is None, "empty history has nothing to compact"
+
+    planned = plan_compaction(turns, room=each * 5)
+    assert planned is not None, "must trip when history overruns the room"
+    older, newer = planned
+    assert older and newer, "both halves must be non-empty"
+    assert older + newer == turns, "compaction must partition, not drop"
+    assert newer[-1] is turns[-1], "the newest turn is always kept verbatim"
+
+    # A tool result must never start the kept half — its call would be gone.
+    paired = [
+        Message("user", "do the thing " + "word " * 20),
+        Message("assistant", "", tool_calls=[{"id": "c1", "function": {"name": "t"}}]),
+        Message("tool", "the result " + "word " * 20, tool_call_id="c1"),
+        Message("user", "thanks " + "word " * 20),
+    ]
+    split = plan_compaction(paired, room=estimate_tokens(paired[0].content) * 2)
+    if split is not None:
+        assert split[1][0].role != "tool", "kept half must not open on an orphaned tool result"
+
+    # The summary is pinned: it survives a budget that evicts ordinary history.
+    note = "Earlier in this conversation: they described a trip."
+    out = assemble(turns, context_tokens=1400, persona=persona, summary=note)
+    assert out[0].role == "system", "persona stays first"
+    assert out[0].content == persona, "persona stays byte-identical"
+    assert out[1].role == "user" and out[1].content == note, "summary is pinned right after the persona"
+
+    # Absent a summary, output is unchanged from before this feature.
+    assert assemble(turns, context_tokens=1400, persona=persona) == [
+        m for m in assemble(turns, context_tokens=1400, persona=persona, summary="")
+    ], "empty summary must be a no-op"
 
     print("bible self-check: ok")
 
