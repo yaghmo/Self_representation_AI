@@ -17,6 +17,7 @@ Endpoints are deliberately few:
     POST /chat           one completion
     POST /chat/stream    the same, as a token stream
     POST /ingest         redact and segment one story (agent mode only)
+    POST /summarize      compact older turns into one paragraph
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from runtime.bible import (
     ProcedureMissing,
     ProfileMissing,
     ProfileTooLarge,
+    SUMMARIZE_PROMPT,
     assemble,
     build_persona,
     build_procedure,
@@ -116,6 +118,11 @@ class IngestRequest(BaseModel):
     existing: str = ""
     # None means auto: sized from the input, because the reply restates it.
     max_tokens: int | None = Field(default=None, ge=1, le=8192)
+
+
+class SummarizeRequest(BaseModel):
+    messages: list[ChatMessage]
+    max_tokens: int = Field(default=256, ge=1, le=2048)
 
 
 class LoadRequest(BaseModel):
@@ -455,6 +462,40 @@ def ingest(request: IngestRequest) -> dict:
     return {"content": content}
 
 
+@app.post("/summarize")
+def summarize(request: SummarizeRequest) -> dict:
+    """Compact older turns into one paragraph.
+
+    Not agent-gated: the fan surface fills its window too, and summarising is
+    not a write. The prompt is a server-held constant for the same reason
+    `/chat` refuses a client system message — a client picks which turns are
+    summarised, never the instruction applied to them.
+
+    Deliberately unlogged, like `/ingest`: the turns are conversation content
+    and `log_payload` would write them to disk.
+    """
+    model = _require_loaded()
+
+    transcript = "\n\n".join(f"{m.role}: {m.content}" for m in request.messages)
+    try:
+        messages = assemble(
+            [Message("user", transcript)],
+            context_tokens=model.context_tokens,
+            count=model.count_tokens,
+            reserve_tokens=max(1024, request.max_tokens),
+            persona=SUMMARIZE_PROMPT,
+        )
+    except (ProfileTooLarge, MessageTooLarge) as exc:
+        # Too much to summarise in one pass. The caller keeps its history
+        # rather than losing it to a failed compaction.
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    content = model.chat(
+        messages, temperature=0.2, max_tokens=request.max_tokens, thinking=False
+    )
+    return {"content": content}
+
+
 def _self_check() -> None:
     """The trust boundary, without weights.
 
@@ -591,6 +632,15 @@ def _self_check() -> None:
         "the reserve ingest() passes to assemble() must leave room for "
         "persona + input at exactly the cap"
     )
+
+    # Summarisation is available on a fan deployment — compaction is not a
+    # write, and the prompt is server-held, so no client can choose it.
+    response = client.post(
+        "/summarize",
+        json={"messages": [{"role": "user", "content": "a thing that happened"}]},
+    )
+    assert response.status_code == 200, (response.status_code, response.text)
+    assert "content" in response.json(), response.text
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
 
