@@ -231,8 +231,8 @@ def plan_compaction(
     # being summarized, and llama-server rejects a result with no call.
     while split < len(history) and history[split].role == "tool":
         split += 1
-
-    # The newest turn is the question this reply is for — always verbatim.
+    if split >= len(history):
+        return None
     split = min(split, len(history) - 1)
     if split <= 0:
         return None
@@ -493,6 +493,17 @@ def _self_check() -> None:
     split = plan_compaction(paired, room=estimate_tokens(paired[0].content) * 2)
     if split is not None:
         assert split[1][0].role != "tool", "kept half must not open on an orphaned tool result"
+
+    # Regression: history ending on a tool result must not be split into an
+    # orphaned result. This is the normal mid-loop state when compaction is needed.
+    tool_ending = [
+        Message("user", "ask " + "word " * 20),
+        Message("assistant", "", tool_calls=[{"id": "c2", "function": {"name": "t"}}]),
+        Message("tool", "answer " + "word " * 20, tool_call_id="c2"),
+    ]
+    tool_split = plan_compaction(tool_ending, room=estimate_tokens(tool_ending[0].content))
+    if tool_split is not None:
+        assert tool_split[1][0].role != "tool", "must not split into orphaned result even at history end"
 
     # The summary is pinned: it survives a budget that evicts ordinary history.
     note = "Earlier in this conversation: they described a trip."
