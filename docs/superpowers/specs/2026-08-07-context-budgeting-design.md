@@ -129,6 +129,12 @@ returns `(to_summarize, to_keep)`.
 
 When `summary` is non-empty, inserts it directly after the persona.
 
+It has to be a parameter rather than just the first entry in `history`.
+`assemble()` trims oldest-first, so a summary placed at the front of history
+would be the very first message evicted — the compaction would be undone by
+the next turn that needed room. The parameter pins it outside the trimming
+loop, and its cost is subtracted from the budget before the loop runs.
+
 ### Prompt layout
 
 ```
