@@ -1,0 +1,150 @@
+"""The embedder the index actually runs on, loaded from the cookbook's config.
+
+`runtime/index.py` takes its embedder as a parameter so it can be checked with
+no weights on disk. This module is the other side of that: it holds the model
+load, and nothing else depends on it except the entry points that need a real
+one.
+
+transformers rather than sentence-transformers, which is what this originally
+used. sentence-transformers imports scikit-learn, and torch followed by sklearn
+is an access violation on this machine — two copies of the OpenMP runtime in
+one process. Since bge-m3's dense vector is just the CLS token normalised (its
+own `1_Pooling/config.json` says so), the wrapper was buying a segfault and a
+transitive dependency in exchange for four lines.
+
+torch and transformers are imported inside the function, not at module scope:
+the import is seconds and hundreds of megabytes, and anything that only wants
+the exception type should not pay for it.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STACK_PATH = REPO_ROOT / "config" / "stack.json"
+MODELS_DIR = REPO_ROOT / "models"
+
+# ponytail: fixed batch, no length-sorted bucketing. The corpus is hundreds of
+# chunks embedded once at ingestion — bucketing would save seconds a day.
+BATCH = 8
+
+
+class EmbeddingNotConfigured(RuntimeError):
+    """No embedding model in the stack config, or its weights are absent."""
+
+
+def bge_embedder(stack_path: Path | None = None):
+    """Return an `Embedder`: texts in, L2-normalised float32 vectors out."""
+    stack_path = stack_path or STACK_PATH
+    if not stack_path.exists():
+        raise EmbeddingNotConfigured(
+            f"{stack_path} is missing — run the cookbook to fit a stack first."
+        )
+
+    config = json.loads(stack_path.read_text(encoding="utf-8"))
+    role = config.get("roles", {}).get("embedding")
+    if not role or not role.get("model_id"):
+        raise EmbeddingNotConfigured(
+            "no embedding role in the stack config — run the cookbook and pick "
+            "an embedding model before indexing stories."
+        )
+
+    weights = MODELS_DIR / role["model_id"]
+    if not weights.is_dir():
+        raise EmbeddingNotConfigured(
+            f"{role['model_id']} is configured but not downloaded. Run: "
+            "uv run python -m cookbook.download --from-config"
+        )
+
+    try:
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+    except ImportError as exc:
+        raise EmbeddingNotConfigured(
+            "torch and transformers are not installed — run `uv sync --extra runtime`"
+        ) from exc
+
+    # The cookbook's vocabulary is "gpu"/"cpu"; torch's is "cuda"/"cpu". Passed
+    # through unmapped, a role fitted onto the GPU dies in `.to("gpu")` with a
+    # torch error naming every device except the one that was asked for.
+    device = {"gpu": "cuda"}.get(role.get("device", "cpu"), role.get("device", "cpu"))
+    tokenizer = AutoTokenizer.from_pretrained(str(weights))
+    model = AutoModel.from_pretrained(str(weights)).to(device).eval()
+
+    # The model's own config, not a constant here: bge-m3 takes 8192, and a
+    # number copied into this file would silently truncate a longer one.
+    config = weights / "sentence_bert_config.json"
+    max_length = 512
+    if config.exists():
+        max_length = json.loads(config.read_text(encoding="utf-8")).get("max_seq_length", 512)
+
+    def embed(texts: list[str]):
+        vectors = []
+        for start in range(0, len(texts), BATCH):
+            batch = tokenizer(
+                texts[start : start + BATCH],
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            ).to(device)
+            with torch.inference_mode():
+                # CLS token, per the model's 1_Pooling/config.json. Normalised
+                # because the index scores with a plain dot product.
+                hidden = model(**batch).last_hidden_state[:, 0]
+                vectors.append(
+                    torch.nn.functional.normalize(hidden, p=2, dim=1).cpu().numpy()
+                )
+        if not vectors:
+            return np.zeros((0, model.config.hidden_size), dtype=np.float32)
+        return np.concatenate(vectors).astype(np.float32)
+
+    return embed
+
+
+def _self_check() -> None:
+    import tempfile
+
+    # No embedding role configured is the state a fresh machine is in, and it
+    # must say so rather than failing somewhere inside a model loader.
+    with tempfile.TemporaryDirectory() as raw:
+        empty = Path(raw) / "stack.json"
+        empty.write_text('{"version": 1, "roles": {}}', encoding="utf-8")
+        try:
+            bge_embedder(empty)
+        except EmbeddingNotConfigured as exc:
+            assert "cookbook" in str(exc).lower(), str(exc)
+        else:
+            raise AssertionError("a missing embedding role was accepted")
+
+        missing = Path(raw) / "nope.json"
+        try:
+            bge_embedder(missing)
+        except EmbeddingNotConfigured:
+            pass
+        else:
+            raise AssertionError("a missing stack.json was accepted")
+
+        # Role configured but weights not on disk — the likeliest failure a user hits.
+        # A bogus model_id is guaranteed absent under MODELS_DIR.
+        missing_weights = Path(raw) / "with_weights.json"
+        missing_weights.write_text(
+            '{"version": 1, "roles": {"embedding": {"model_id": "nonexistent-model-12345"}}}',
+            encoding="utf-8",
+        )
+        try:
+            bge_embedder(missing_weights)
+        except EmbeddingNotConfigured as exc:
+            assert "cookbook.download" in str(exc).lower(), str(exc)
+        else:
+            raise AssertionError("a missing weights directory was accepted")
+
+    print("embed: ok")
+
+
+if __name__ == "__main__":
+    _self_check()

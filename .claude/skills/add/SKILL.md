@@ -96,7 +96,7 @@ Ask **whose information is this**, before asking how precise it is:
 | Whose | Action |
 |---|---|
 | Someone other than the creator | **Omit entirely.** Not fuzzed — omitted. Their health, age, job, problems, and name are not character data at any precision |
-| The creator's, and precise (date, place, school, number, handle) | Fuzz per the policy table in `sources.md` |
+| The creator's, and precise (date, place, school, number, handle) | Fuzz per the policy table in `data/redaction-policy.md` |
 | The creator's, and not identifying | Keep verbatim |
 
 **Default when unsure: omit and tell the user what you left out.** They can always ask you to add it back. You cannot un-log something.
@@ -119,8 +119,9 @@ Never infer an age, a location, or a date that was not stated — including from
 ### 1. Read state first
 
 1. `CLAUDE.md` — project rules
-2. `data/sources.md` — the **redaction policy table**, the `## Ingested material` table, the highest existing `S-###`
-3. `data/character.md` — the current profile
+2. `data/redaction-policy.md` — the **redaction policy table**, which governs every corpus
+3. `data/sources.md` — the `## Ingested material` table, the highest existing `S-###`
+4. `data/character.md` — the current profile
 
 **Read the policy table; don't assume the defaults.** The creator may have loosened a row. Unset or unclear → conservative default.
 

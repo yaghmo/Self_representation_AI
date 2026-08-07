@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .bible import PROFILE_END, PROFILE_PATH, PROFILE_START
+from .stories import STORIES_DIR
 
 SOURCES_PATH = PROFILE_PATH.parent / "sources.md"
 ENTRY = re.compile(r"^### (S-\d+)", re.MULTILINE)
@@ -77,6 +78,10 @@ class Proposal:
                 "read it again and re-propose rather than overwriting the "
                 "newer content."
             )
+        # The first story lands in a `data/stories/` that nothing has created
+        # yet, and `snapshot()` writes into a subdirectory of it. The bible
+        # files always have a parent, so this only ever fires on a new corpus.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         snapshot(self.path)
         self.path.write_text(self.new_text, encoding="utf-8")
         return self.path
@@ -104,19 +109,61 @@ def snapshot(path: Path) -> Path | None:
     return destination
 
 
-def list_backups(directory: Path | None = None) -> list[Path]:
-    """Snapshots of the two bible files, newest first.
+# Admits every id `next_story_id` can emit — three digits minimum
+# (`f"{prefix}-{n:03d}"`), more once the corpus passes 999, since `%03d` is a
+# minimum width, not a maximum — while still excluding what it never emits.
+# `[0-9]` (not `\d`) — `\d` is Unicode-aware
+# (`STORY_NAME.fullmatch("ST-٣.md")` would match `\d`), which `int()` then
+# happily parses — a restore through that hole would land attacker-chosen
+# content as a loadable story. `fullmatch`, not `match` with `^…$`: `$` alone
+# matches just before a trailing newline, which is a legal filename byte on
+# the Linux container this ships in.
+STORY_NAME = re.compile(r"ST-[0-9]{3,}\.md")
 
-    Restricted to those two names on purpose: this list feeds a restore
-    button, and a restore is a whole-file overwrite. Anything else that ends
-    up in the folder is not something to offer to write back.
+
+def _corpus_roots(directory: Path | None) -> tuple[Path, Path]:
+    """(bible_dir, stories_dir) — the exactly-two directories a snapshot may
+    belong to. A story's snapshot lands beside the story file
+    (`data/stories/.backups`), not beside the bible (`data/.backups`), so
+    both have to be known rather than one being assumed.
+
+    This is a closed, hardcoded pair — never a directory derived from a
+    snapshot's own name in a general way. That is the one thing this whole
+    module exists to prevent: a crafted name choosing where a restore
+    writes.
     """
-    directory = directory or SOURCES_PATH.parent
-    backups = directory / BACKUP_DIR
-    if not backups.is_dir():
-        return []
-    restorable = {SOURCES_PATH.name, PROFILE_PATH.name}
-    found = [p for p in backups.iterdir() if p.is_file() and _restore_target_name(p) in restorable]
+    bible_dir = directory or SOURCES_PATH.parent
+    stories_dir = STORIES_DIR if directory is None else directory / "stories"
+    return bible_dir, stories_dir
+
+
+def list_backups(directory: Path | None = None) -> list[Path]:
+    """Snapshots of the corpus files (bible + stories), newest first.
+
+    Scans exactly the two known directories, and a name only counts in the
+    directory that matches its own kind — a story-shaped name sitting in the
+    bible's `.backups` is not offered, and vice versa. Anything else that
+    ends up in either folder is not something to offer to write back.
+    """
+    bible_dir, stories_dir = _corpus_roots(directory)
+    found: list[Path] = []
+
+    bible_backups = bible_dir / BACKUP_DIR
+    if bible_backups.is_dir():
+        found += [
+            p
+            for p in bible_backups.iterdir()
+            if p.is_file() and _restore_target_name(p) in {SOURCES_PATH.name, PROFILE_PATH.name}
+        ]
+
+    story_backups = stories_dir / BACKUP_DIR
+    if story_backups.is_dir():
+        found += [
+            p
+            for p in story_backups.iterdir()
+            if p.is_file() and STORY_NAME.fullmatch(_restore_target_name(p))
+        ]
+
     return sorted(found, key=lambda p: p.name, reverse=True)
 
 
@@ -131,17 +178,28 @@ def restore_backup(backup: Path, directory: Path | None = None) -> Path:
     An undo that destroys what it replaced is not an undo. The pre-restore
     snapshot is what makes this reversible in the other direction.
 
-    The name is checked against the two bible files rather than trusted: this
-    is the one path that overwrites a whole file, and a crafted name would
-    otherwise choose the destination.
+    The destination is picked from the closed pair `_corpus_roots` returns —
+    never derived from the snapshot's name in a general way. A bible name
+    routes to the bible directory, a story name to the story directory, and
+    only then is the snapshot confirmed to actually live in that specific
+    directory's own `.backups` — a name matching the pattern but sitting
+    anywhere else (the other corpus's `.backups`, loose in the corpus
+    directory, reached by climbing out with `..`) is refused.
     """
-    directory = directory or SOURCES_PATH.parent
+    bible_dir, stories_dir = _corpus_roots(directory)
     name = _restore_target_name(backup)
-    if name not in {SOURCES_PATH.name, PROFILE_PATH.name}:
-        raise ValueError(f"{backup.name!r} is not a snapshot of a bible file")
-    if backup.resolve().parent != (directory / BACKUP_DIR).resolve():
-        raise ValueError(f"{backup.name!r} is not in {directory / BACKUP_DIR}")
-    target = directory / name
+
+    if name in {SOURCES_PATH.name, PROFILE_PATH.name}:
+        target_dir = bible_dir
+    elif STORY_NAME.fullmatch(name):
+        target_dir = stories_dir
+    else:
+        raise ValueError(f"{backup.name!r} is not a snapshot of a corpus file")
+
+    if backup.resolve().parent != (target_dir / BACKUP_DIR).resolve():
+        raise ValueError(f"{backup.name!r} is not in {target_dir / BACKUP_DIR}")
+
+    target = target_dir / name
     snapshot(target)
     shutil.copy2(backup, target)
     return target
@@ -816,6 +874,14 @@ def _self_check() -> None:
     import tempfile
     from pathlib import Path
 
+    # Declared once, up front: this function temporarily repoints these at
+    # temp-directory fixtures in two places below (to exercise the
+    # default-argument path and the run_tool path-injection guard) and
+    # restores them in a `finally`. A single declaration covers the whole
+    # function body — Python requires the `global` statement to precede any
+    # bare use of the name in the function it appears in.
+    global SOURCES_PATH, PROFILE_PATH, STORIES_DIR
+
     # A corpus shaped like the real file: a Source log section holding
     # entries in the template's field order, followed by a trailing section
     # (Open Questions) an append must never land after.
@@ -1001,6 +1067,163 @@ def _self_check() -> None:
             pass
         else:
             raise AssertionError("expected ValueError for a non-bible snapshot")
+
+        # ---- story snapshots: two-directory routing -------------------------
+        # A story lives at data/stories/ST-###.md, so its snapshot lands in
+        # data/stories/.backups — a directory the bible knows nothing about.
+        # `directory=root` mirrors data/: bible files sit at the root, stories
+        # sit under root/stories, exactly as `data/` and `data/stories/` do.
+        stories_root = root / "stories"
+        stories_backups = stories_root / BACKUP_DIR
+        stories_backups.mkdir(parents=True)
+
+        story_file = stories_root / "ST-001.md"
+        story_file.write_text("# ST-001 — a trip\n", encoding="utf-8")
+        snapshot(story_file)
+        names = [b.name for b in list_backups(directory=root)]
+        assert any(n.startswith("ST-001.md.") for n in names), names
+
+        # And it actually restores — landing back in the stories directory,
+        # not wherever the bible files live.
+        story_file.write_text("# ST-001 — amended\n", encoding="utf-8")
+        [story_backup] = [b for b in list_backups(directory=root) if b.name.startswith("ST-001.md.")]
+        restore_backup(story_backup, directory=root)
+        assert story_file.read_text(encoding="utf-8") == "# ST-001 — a trip\n", (
+            "restore must land the story back in the stories directory"
+        )
+
+        # The guard still refuses anything that is not a corpus file. This is
+        # the one path that overwrites a whole file by name.
+        try:
+            restore_backup(root / BACKUP_DIR / "passwd.20260101T000000", directory=root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("restore accepted a non-corpus name")
+
+        # Merely containing a valid story id is not being one — prefix,
+        # suffix, and a lookalike extension are refused by the name check
+        # alone, before any file is even touched (the check that raises
+        # comes before any filesystem access, so these paths need not exist).
+        for bad in (
+            "xST-001.md.20260101T000000",       # prefixed
+            "ST-001.md.bak.20260101T000000",    # trailing junk before the stamp
+            "ST-001.mdx.20260101T000000",       # lookalike extension
+        ):
+            try:
+                restore_backup(stories_backups / bad, directory=root)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"restore accepted {bad!r}")
+
+        # `$` alone matches just before a trailing newline under `re.match` —
+        # a legal filename byte on the Linux container this ships in. The
+        # pattern must reject it (this is why the fix uses `fullmatch`, not
+        # `match` with `^...$`).
+        try:
+            restore_backup(stories_backups / "ST-001.md\n.20260101T000000", directory=root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("restore accepted a name with a trailing newline")
+
+        # `\d` is Unicode-aware; `stories.py` only ever writes three ASCII
+        # digits (`f"{prefix}-{n:03d}"`), so a non-ASCII digit must be refused
+        # too — otherwise a restore through this hole lands attacker-chosen
+        # content as a loadable story (`stories.py`'s own `\d`-based patterns
+        # and `int()` would accept it right back).
+        try:
+            restore_backup(stories_backups / "ST-٣.md.20260101T000000", directory=root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("restore accepted a Unicode-digit story id")
+
+        # A snapshot name is trusted for its target only after the directory
+        # is checked too — a name matching the pattern but sitting outside
+        # its own .backups (loose in the stories directory, reached by
+        # climbing out with "..", or sitting in the *other* corpus's
+        # .backups) must still be refused.
+        try:
+            restore_backup(stories_root / "ST-001.md.20260101T000000", directory=root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("restore accepted a snapshot outside .backups")
+
+        try:
+            restore_backup(stories_backups / ".." / "ST-001.md.20260101T000000", directory=root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("restore accepted a path-traversal snapshot")
+
+        try:
+            restore_backup(root / BACKUP_DIR / "ST-001.md.20260101T000000", directory=root)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("restore accepted a story name from the bible's .backups")
+
+        # `%03d` is a minimum width, not a maximum: once the corpus passes
+        # 999 stories, `next_story_id` emits four-digit ids ("ST-1000"), and
+        # those must be listed and restorable too. Silently refusing them
+        # would be Finding 1 again — a snapshot with no way to roll it
+        # back — just relocated to a distant threshold instead of fixed.
+        story_1000 = stories_root / "ST-1000.md"
+        story_1000.write_text("# ST-1000 — a trip\n", encoding="utf-8")
+        snapshot(story_1000)
+        names_1000 = [b.name for b in list_backups(directory=root)]
+        assert any(n.startswith("ST-1000.md.") for n in names_1000), names_1000
+
+        story_1000.write_text("# ST-1000 — amended\n", encoding="utf-8")
+        [story_1000_backup] = [
+            b for b in list_backups(directory=root) if b.name.startswith("ST-1000.md.")
+        ]
+        restore_backup(story_1000_backup, directory=root)
+        assert story_1000.read_text(encoding="utf-8") == "# ST-1000 — a trip\n", (
+            "a four-digit story id must restore too — %03d has no maximum width"
+        )
+
+        # ---- the default-argument path chat_app.py actually calls -----------
+        # list_backups() and restore_backup(choice) with no directory — the
+        # exact calls in runtime/chat_app.py. Point the module's own path
+        # globals at a temp layout that mirrors data/ (a bible directory with
+        # a stories/ sibling) for the duration of this block only; nothing
+        # under the real data/ is read or written.
+        prod_root = root / "prod"
+        prod_stories = prod_root / "stories"
+        prod_stories.mkdir(parents=True)
+        prod_story_file = prod_stories / "ST-001.md"
+        prod_story_file.write_text("# ST-001 — a trip\n", encoding="utf-8")
+
+        real_sources_path, real_profile_path, real_stories_dir = (
+            SOURCES_PATH,
+            PROFILE_PATH,
+            STORIES_DIR,
+        )
+        SOURCES_PATH = prod_root / "sources.md"
+        PROFILE_PATH = prod_root / "character.md"
+        STORIES_DIR = prod_stories
+        try:
+            snapshot(prod_story_file)
+            default_names = [b.name for b in list_backups()]
+            assert any(n.startswith("ST-001.md.") for n in default_names), default_names
+
+            prod_story_file.write_text("# ST-001 — amended\n", encoding="utf-8")
+            [default_backup] = [b for b in list_backups() if b.name.startswith("ST-001.md.")]
+            restore_backup(default_backup)
+            assert prod_story_file.read_text(encoding="utf-8") == "# ST-001 — a trip\n", (
+                "restore through the default-argument path must land back on "
+                "the story file, in the stories directory"
+            )
+        finally:
+            SOURCES_PATH, PROFILE_PATH, STORIES_DIR = (
+                real_sources_path,
+                real_profile_path,
+                real_stories_dir,
+            )
 
         # Put S-003 back so the assertions below run against the fuller file.
         restore_backup(list_backups(directory=root)[0], directory=root)
@@ -1263,7 +1486,6 @@ def _self_check() -> None:
         # Point the module's own defaults at the fixtures for this block
         # only, so a dropped "path" argument resolving to the default proves
         # the drop happened rather than accidentally reading the real repo.
-        global SOURCES_PATH, PROFILE_PATH
         real_sources_path, real_profile_path = SOURCES_PATH, PROFILE_PATH
         SOURCES_PATH, PROFILE_PATH = sources, target
         try:
