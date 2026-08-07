@@ -141,6 +141,24 @@ def confirm_dialog(proposal) -> None:
             # The file moved under the proposal. Never merge, never overwrite —
             # the creator re-asks and the agent re-reads.
             resolved(f"not applied — {exc}", f"[not applied: {exc}]")
+
+        # A story landing somewhere new scopes the context to it. Only on
+        # Apply: the creator saw the gate and ratified the routing, so an
+        # uncalibrated threshold can propose a wrong landing but never act
+        # on one unobserved.
+        if path.parent == STORIES_DIR:
+            landed = path.stem
+            if landed != st.session_state.get("current_story"):
+                st.session_state["current_story"] = landed
+                # The previous story is on disk, parsed and indexed. Keeping
+                # its turns in the prompt duplicates a file route() reaches
+                # in one call, so they stop being sent — and stay on screen.
+                st.session_state["prompt_floor"] = len(st.session_state["history"])
+                st.session_state.pop("summary", None)
+                logged = st.session_state.setdefault("logged_stories", [])
+                if landed not in logged:
+                    logged.append(landed)
+
         # A story's snapshot lands beside the story, not beside the bible, so
         # the note points at the directory that actually holds it.
         st.session_state["applied_note"] = f"Wrote {path} (snapshot in {path.parent}/.backups/)"
@@ -331,8 +349,14 @@ if status.get("agent"):
 columns = st.columns([1, 1, 6])
 if columns[0].button("Clear"):
     st.session_state["history"] = []
+    for key in ("prompt_floor", "summary", "current_story", "logged_stories"):
+        st.session_state.pop(key, None)
     st.rerun()
-columns[1].caption(f"{len(st.session_state['history'])} turns")
+columns[1].caption(
+    f"{len(st.session_state['history'])} turns"
+    + (f" · sending {len(st.session_state['history']) - st.session_state.get('prompt_floor', 0)}"
+       if st.session_state.get("prompt_floor") else "")
+)
 
 for message in st.session_state["history"]:
     with st.chat_message(message["role"]):
@@ -555,7 +579,13 @@ elif prompt or resume:
     if override_allowed and system_prompt:
         messages.insert(0, {"role": "system", "content": system_prompt})
 
-    summary_note = st.session_state.get("summary", "")
+    logged = st.session_state.get("logged_stories", [])
+    parts = []
+    if logged:
+        parts.append("Earlier this session you logged: " + ", ".join(logged) + ".")
+    if st.session_state.get("summary"):
+        parts.append(st.session_state["summary"])
+    summary_note = "\n\n".join(parts)
 
     payload = {
         "messages": messages,
