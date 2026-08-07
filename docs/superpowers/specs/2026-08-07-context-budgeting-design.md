@@ -4,10 +4,16 @@
 **Status:** design, approved
 **Touches:** `runtime/bible.py`, `service/main.py`, `runtime/chat_app.py`
 
-Two independent problems that share one chokepoint. `assemble()` has exactly
-three callers — `_prompt_for()` (`service/main.py:193`), `ingest()`
-(`service/main.py:382`), and its own `_self_check()` — so both fixes land in
-one function rather than in every caller.
+Four changes to how the admin and fan surfaces spend their context window.
+Parts 1 and 2 are budget defects; Parts 3 and 4 are about *which* context is
+worth spending it on.
+
+`assemble()` has exactly three callers — `_prompt_for()`
+(`service/main.py:193`), `ingest()` (`service/main.py:382`), and its own
+`_self_check()` — so Parts 1 and 2 land in one function rather than in every
+caller. Parts 3 and 4 sit in `chat_app`'s session-state handling, which is why
+they ride along rather than getting their own pass: they touch the same
+plumbing.
 
 ## Motivating measurements
 
@@ -203,10 +209,121 @@ For Part 1, in `service/main.py`'s `_self_check()`:
 - auto `max_tokens` scales with input length
 - input over the derived cap returns 413, not a truncated 200
 
+For Parts 3 and 4, in `runtime/story_tools.py`'s `_self_check()` — the id
+parsing is pure text and testable without a model or an embedder:
+
+- `/story ST-001 text` targets `ST-001` and strips the id from the text
+- an unknown id is refused by name, never routed as a new story
+- no leading id falls through to `route()` unchanged
+- a switch is detected only when an *applied* landing differs from the current
+  story id
+
+## Part 3 — admin story-scoped context
+
+Part 2 compacts under token pressure, which is the wrong primary trigger for
+the admin surface. The dominant admin pattern is the creator dumping a lot of
+material about *one* story across many turns, then moving to a different
+story. Those two situations want different handling.
+
+| Trigger | Action | Why |
+|---|---|---|
+| an **applied** `/story` lands on a different story id | drop the prior story's turns from the prompt | it is already written to disk, parsed and indexed — keeping it in context duplicates a file `route()` can reach in one call |
+| token pressure **within** one story | Part 2 compaction | not yet persisted, and it is the thread being actively built |
+
+### Switch detection
+
+`route()` already returns the landing: `Routing.story.id` on amend, the newly
+allocated `ST-###` on new. No detector to build and no extra embedding call.
+
+The switch is evaluated **only on an applied proposal** — the creator saw the
+confirm gate, read the Before/After, and hit Apply. The routing decision is
+therefore creator-ratified before it is allowed to move any context.
+
+This matters because `AMENDMENT_THRESHOLD` (0.60) is uncalibrated — it sits
+within 0.01 of its decision boundary on the toy cases, and cannot be tuned
+until a real corpus exists. An untuned threshold may *propose* a wrong
+landing; gating on Apply means it can never *act* on one unobserved. Firing
+on declined proposals, or on embedding drift in plain chat, both give this up.
+
+Note that while the corpus is empty every `/story` routes to `new`, so the
+switch fires on each one. That is correct behaviour, not a bug — each is
+genuinely a different story.
+
+### Display history is not prompt history
+
+`chat_app` currently uses `st.session_state["history"]` as both the visible
+transcript and the payload sent to the model. These separate: dropping turns
+from the prompt must not blank the creator's screen. The creator keeps
+scrolling back through the whole session; only what is *sent* is scoped.
+
+### What survives a switch
+
+One pinned line, roughly 15 tokens:
+
+```
+Earlier this session you logged: ST-004, ST-006.
+```
+
+Enough that "what have we done so far" gets a true answer instead of a blank
+one, without paying to restate material that is on disk and retrievable.
+
+## Part 4 — explicit story id on `/story`
+
+`chat_app.py:404` calls `route(text, ...)` on the whole input with no id
+parsing. So `/story ST-001 blabla` embeds the literal `ST-001` as narrative,
+matches it lexically as content, and writes it into the story text as if the
+creator had typed it as prose.
+
+A leading story id becomes an explicit routing override: `/story ST-001 …`
+skips `route()`, targets `ST-001` directly, and strips the id from the text
+before ingestion. Unrecognised ids are refused by name rather than silently
+falling through to routing — a typo must not become a new story.
+
+This is the manual correction path for a mis-route, which is what makes
+Part 3 safe to key off routing at all.
+
+## Recorded for later — fan retrieval shape
+
+Not built here. Recorded so it is not re-litigated when retrieval is specced.
+
+Retrieval searches **flat over event chunks**, then hydrates each hit with its
+parent story's summary as a header (`chunk.story_id` is already on every
+chunk, so it is a dict lookup).
+
+The rejected alternative is the two-stage shape `route()` uses — summary layer
+picks the story, event layer picks the paragraph inside it. That is correct
+for *ingestion*, which must make a story-level decision. It is wrong for
+retrieval when stories are similar and differ only in small events, which is
+the expected shape of lifestyle material: near-identical summaries make the
+summary layer the *least* discriminative signal, and stage one commits to a
+story on that signal while discarding every other story — throwing away
+exactly the detail that distinguishes them.
+
+```
+query: "the time the coffee machine broke"
+
+two-stage:  ST-003 "a normal week at home"  0.61
+            ST-007 "a quiet week at home"   0.60   <- coin flip
+            -> commits to ST-003, searches only inside it
+            -> the event is in ST-007, never seen
+
+flat:       ST-007/E-014 "the coffee machine died"  0.88
+```
+
+A stories-and-summaries manifest file was also rejected: the markdown and the
+index already hold that data, `load_all()` parses every story with no embedder
+and no index, and a third copy has nothing keeping it in sync.
+
 ## Out of scope
 
 - Retrieval on the fan path. `recall(query)` remains unbuilt; this work makes
-  the window last longer, it does not add retrieval.
+  the window last longer, it does not add retrieval. Its shape is recorded
+  above; building it is a separate spec, and it wants a real corpus to tune
+  against.
+- Chunk metadata — carrying `logged` onto `Chunk` (`chunks_of()` drops it
+  today, so nothing can filter by period) and giving events their own keywords
+  instead of inheriting the story's. Both are small, both are prerequisites
+  for retrieval, and both belong with that spec rather than this one.
 - The redaction field-consistency defect (keywords line carries the
   unredacted original while the body is fuzzed). Separate bug, separate pass.
 - The extrapolation defect quoted above, on the chat path. Also separate.
