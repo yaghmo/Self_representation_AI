@@ -140,6 +140,23 @@ def keep_logged(logged: str, source: str) -> str:
     return logged if TEMPORAL.search(source) else ""
 
 
+# A leading story id, and only at the very start. Anchored so prose beginning
+# with an id-shaped word is left alone.
+LEADING_ID = re.compile(r"^\s*(ST-\d{3,})\b[:,]?\s*", re.IGNORECASE)
+
+
+def parse_story_command(raw: str) -> tuple[str, str]:
+    """Split a leading `ST-###` off the narrative.
+
+    The manual override for a mis-route. Returns ("", raw) when no id leads,
+    so the caller falls through to `route()` unchanged.
+    """
+    found = LEADING_ID.match(raw)
+    if not found:
+        return "", raw
+    return found.group(1).upper(), raw[found.end():].strip()
+
+
 def route(
     text: str,
     index: Index,
@@ -253,6 +270,21 @@ def propose_new_story(
 def _self_check() -> None:
     import tempfile
     import zlib
+
+    # -- explicit story id ---------------------------------------------------
+    assert parse_story_command("ST-001 we drove to the lake") == (
+        "ST-001",
+        "we drove to the lake",
+    ), "a leading id targets that story and leaves the narrative behind"
+    assert parse_story_command("st-001 we drove") == ("ST-001", "we drove"), "case insensitive"
+    assert parse_story_command("we drove to the lake") == (
+        "",
+        "we drove to the lake",
+    ), "no id means route() decides"
+    # A bare id with no narrative is not a story.
+    assert parse_story_command("ST-001") == ("ST-001", "")
+    # Must not eat text that merely starts with something id-shaped.
+    assert parse_story_command("STORY about a lake") == ("", "STORY about a lake")
 
     # A period survives only when the creator's own words carry a time. The
     # observed failure is the model returning `[~mid-July]` for text with no
