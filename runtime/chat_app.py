@@ -27,6 +27,7 @@ import streamlit as st
 from runtime.agent import followup, resumed, run as run_agent
 from runtime.backend import Message
 from runtime.bible import plan_compaction
+from runtime import chat_log
 from runtime.convert import ConversionFailed, to_markdown
 from runtime.embed import EmbeddingNotConfigured, bge_embedder
 from runtime.index import all_chunks, build, load_index
@@ -94,6 +95,15 @@ def stream_reply(payload: dict):
                     yield piece
 
 
+def add_turn(role: str, content: str) -> None:
+    """Append to the live session and the on-disk log in one call.
+
+    Five call sites need this; one place keeps the two from drifting apart.
+    """
+    st.session_state["history"].append({"role": role, "content": content})
+    chat_log.append_turn(st.session_state["chat_log_path"], role, content)
+
+
 @st.dialog("Confirm this change", width="large")
 def confirm_dialog(proposal) -> None:
     """Nothing reaches disk until this returns through Apply.
@@ -132,7 +142,7 @@ def confirm_dialog(proposal) -> None:
         # conversation that never asked it anything.
         st.session_state["resume"] = st.session_state.get("pending_step") is not None
         st.session_state["resume_note"] = note
-        st.session_state["history"].append({"role": "user", "content": shown})
+        add_turn("user", shown)
         st.rerun()
 
     left, right = st.columns(2)
@@ -288,6 +298,7 @@ with st.sidebar:
             )
             if st.button("Restore", width="stretch"):
                 restored = restore_backup(choice)
+                chat_log.clear(st.session_state["chat_log_path"])
                 st.session_state["history"] = []
                 st.session_state["applied_note"] = (
                     f"Restored {restored} from {choice.name} — chat cleared, since "
@@ -321,7 +332,13 @@ else:
     )
 
 if "history" not in st.session_state:
-    st.session_state["history"] = []
+    path = chat_log.log_path(bool(status.get("agent")))
+    window = int(status.get("history_window", 20))
+    turns, summary = chat_log.load_recent(path, window)
+    st.session_state["history"] = turns
+    if summary:
+        st.session_state["summary"] = summary
+    st.session_state["chat_log_path"] = path
 
 # `/story` is a write path onto the corpus, so it is loaded only in agent mode
 # — the fan surface never reaches an embedder, an index, or a proposal.
@@ -358,6 +375,7 @@ if status.get("agent"):
 
 columns = st.columns([1, 1, 6])
 if columns[0].button("Clear"):
+    chat_log.clear(st.session_state["chat_log_path"])
     st.session_state["history"] = []
     for key in ("prompt_floor", "summary", "current_story", "logged_stories"):
         st.session_state.pop(key, None)
@@ -482,9 +500,7 @@ if story_command:
         st.warning(
             f"Already logged — {top.score:.0%} similar to {top.chunk.key}. Nothing ingested."
         )
-        st.session_state["history"].append(
-            {"role": "user", "content": f"[/story refused as a duplicate of {top.chunk.key}]"}
-        )
+        add_turn("user", f"[/story refused as a duplicate of {top.chunk.key}]")
         st.stop()
 
     existing = ""
@@ -601,7 +617,7 @@ elif prompt or resume:
         st.session_state.pop("pending", None)
         st.session_state.pop("followup_active", None)
         st.session_state.pop("seen_calls", None)
-        st.session_state["history"].append({"role": "user", "content": prompt})
+        add_turn("user", prompt)
         with st.chat_message("user"):
             st.markdown(prompt)
 
@@ -628,6 +644,7 @@ elif prompt or resume:
             st.session_state["summary"] = (
                 f"{previous} {fresh}".strip() if previous else fresh
             )
+            chat_log.append_summary(st.session_state["chat_log_path"], st.session_state["summary"])
             # Those turns are now represented by the summary. Drop them from
             # what is *sent*; `history` keeps them for the visible transcript.
             st.session_state["prompt_floor"] = floor + len(older)
@@ -733,7 +750,7 @@ elif prompt or resume:
                 st.error(f"{type(exc).__name__}: {exc}")
                 st.stop()
         if reply:
-            st.session_state["history"].append({"role": "assistant", "content": reply})
+            add_turn("assistant", reply)
     else:
         with st.chat_message("assistant"):
             started = time.time()
@@ -765,7 +782,7 @@ elif prompt or resume:
             else:
                 st.caption(f"{elapsed:.1f}s")
 
-        st.session_state["history"].append({"role": "assistant", "content": reply})
+        add_turn("assistant", reply)
 
 if st.session_state.get("applied_note"):
     st.success(st.session_state.pop("applied_note"))
