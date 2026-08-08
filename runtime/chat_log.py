@@ -22,6 +22,9 @@ CHATS_DIR = REPO_ROOT / "data" / "chats"
 
 
 def log_path(agent_mode: bool) -> Path:
+    # ponytail: one file per surface, not per visitor. Safe while this is one
+    # local process for one person. A multi-visitor fan deployment needs a
+    # per-visitor id in this path first — see 2026-08-08-chat-persistence-design.md.
     return CHATS_DIR / ("admin.jsonl" if agent_mode else "fan.jsonl")
 
 
@@ -52,11 +55,13 @@ def load_recent(path: Path, window: int) -> tuple[list[dict], str]:
             record = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(record, dict):
+            continue
         if record.get("type") == "summary":
             summary = record.get("text", "")
         elif "role" in record and "content" in record:
             turns.append({"role": record["role"], "content": record["content"]})
-    return turns[-window:], summary
+    return (turns[-window:] if window > 0 else []), summary
 
 
 def clear(path: Path) -> None:
@@ -111,6 +116,31 @@ def _self_check() -> None:
         )
         turns, _ = load_recent(path, window=20)
         assert [t["content"] for t in turns] == ["before", "after"], turns
+
+        # A syntactically valid but non-dict JSON line (e.g. a bare scalar)
+        # is skipped the same way, not a crash, and doesn't take the
+        # well-formed records around it down with it.
+        path.write_text(
+            '{"role": "user", "content": "before"}\n'
+            '42\n'
+            '{"role": "user", "content": "after"}\n',
+            encoding="utf-8",
+        )
+        turns, _ = load_recent(path, window=20)
+        assert [t["content"] for t in turns] == ["before", "after"], turns
+
+        # window=0 means "nothing", not "everything" — plain slicing would
+        # read `[-0:]` as `[0:]` and hand back the full list, which would
+        # make `history_window: 0` in stack.json silently rehydrate the
+        # entire log instead of none of it.
+        path.write_text(
+            '{"role": "user", "content": "a"}\n'
+            '{"type": "summary", "text": "sum"}\n',
+            encoding="utf-8",
+        )
+        turns, summary = load_recent(path, window=0)
+        assert turns == [], turns
+        assert summary == "sum", summary
 
         # Admin and fan resolve to different files under the same root.
         admin_path = log_path(agent_mode=True)

@@ -228,6 +228,12 @@ with st.sidebar:
         st.error(str(exc))
         st.stop()
 
+    # Set unconditionally, every rerun, before anything below (the sidebar's
+    # own Restore button included) reads it. It used to live inside the
+    # `"history" not in st.session_state` guard further down, textually after
+    # this read — safe only by accident of today's control flow.
+    st.session_state["chat_log_path"] = chat_log.log_path(bool(status.get("agent")))
+
     if "detail" in status and "name" in status:
         st.write(f"**{status['name']}**")
         st.caption(
@@ -332,13 +338,12 @@ else:
     )
 
 if "history" not in st.session_state:
-    path = chat_log.log_path(bool(status.get("agent")))
+    path = st.session_state["chat_log_path"]
     window = int(status.get("history_window", 20))
     turns, summary = chat_log.load_recent(path, window)
     st.session_state["history"] = turns
     if summary:
         st.session_state["summary"] = summary
-    st.session_state["chat_log_path"] = path
 
 # `/story` is a write path onto the corpus, so it is loaded only in agent mode
 # — the fan surface never reaches an embedder, an index, or a proposal.
