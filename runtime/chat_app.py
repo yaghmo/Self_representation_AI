@@ -35,6 +35,7 @@ from runtime.story_tools import (
     Routing,
     keep_logged,
     parse_story_command,
+    propose_addition,
     propose_amendment,
     propose_new_story,
     route,
@@ -43,6 +44,7 @@ from runtime.tools import (
     FOLLOWUP_SCHEMAS,
     SOURCES_PATH,
     TOOL_SCHEMAS,
+    NoChange,
     StaleProposal,
     entry_id_of,
     list_backups,
@@ -412,7 +414,7 @@ if story_command:
         st.session_state.pop(key, None)
 
     text = (prompt or "").removeprefix("/story").strip()
-    wanted_id, text = parse_story_command(text)
+    wanted_id, wanted_event, text = parse_story_command(text)
     for upload in attachments:
         # `to_markdown` reads the file's own bytes, so the upload — a buffer in
         # memory — needs a real path carrying its real suffix.
@@ -448,17 +450,25 @@ if story_command:
             st.error(f"No story {wanted_id} in the corpus. Drop the id to log a new story.")
             st.stop()
         story = load_story(target_path)
-        # The creator named the story; the index still picks the paragraph.
-        hits = [
-            h for h in st.session_state["story_index"].search(text, _embed, limit=None, kind="event")
-            if h.chunk.story_id == wanted_id
-        ]
-        routing = Routing(
-            branch="amend",
-            story=story,
-            event_id=hits[0].chunk.event_id if hits else "",
-        )
-        st.caption(f"Targeting {wanted_id} — routing skipped.")
+        if wanted_event:
+            # The creator named the paragraph. Nothing is picked by similarity
+            # on this path — an event id that does not exist is a typo, and
+            # falling back to the nearest match would rewrite a paragraph they
+            # did not name.
+            if not any(e.id == wanted_event for e in story.events):
+                st.error(
+                    f"{wanted_id} has no {wanted_event}. Events present: "
+                    + (", ".join(e.id for e in story.events) or "none")
+                )
+                st.stop()
+            routing = Routing(branch="amend", story=story, event_id=wanted_event)
+            st.caption(f"Rewriting {wanted_id}/{wanted_event} — routing skipped.")
+        else:
+            # A bare story id is new material for that story. Appending never
+            # overwrites the creator's words, so it is what an unqualified id
+            # means; `ST-###/E-###` is how they ask for the destructive one.
+            routing = Routing(branch="append", story=story)
+            st.caption(f"Adding to {wanted_id} — routing skipped.")
     else:
         try:
             routing = route(text, st.session_state["story_index"], _embed)
@@ -493,6 +503,10 @@ if story_command:
                 "Other candidates: "
                 + ", ".join(f"{h.chunk.story_id} ({h.score:.2f})" for h in routing.runners_up)
             )
+    elif routing.branch == "append":
+        # No `existing`: nothing in the story is being rewritten, so the
+        # ingestion pass has no paragraph to work against.
+        st.info(f"Adding to {routing.story.id} — {routing.story.title}")
     else:
         st.info("New story — nothing in the corpus matches this closely.")
 
@@ -512,10 +526,22 @@ if story_command:
     proposal = None
     try:
         if routing.branch == "amend":
-            # Only `events[0]`: the amended paragraph, redacted, in the
-            # creator's phrasing — not a whole story rebuilt around it.
+            # `events[0]` is the amended paragraph, redacted, in the creator's
+            # phrasing. Anything after it is new material in the same paste —
+            # appended to the same story rather than dropped, which is what
+            # made an amendment look applied while changing nothing.
             proposal = propose_amendment(
-                routing.story, routing.event_id, parsed["events"][0]["text"]
+                routing.story,
+                routing.event_id,
+                parsed["events"][0]["text"],
+                additions=[(e["title"], e["text"]) for e in parsed["events"][1:]],
+            )
+        elif routing.branch == "append":
+            # Every segment is new material — none of it replaces anything, so
+            # there is no first-segment special case here.
+            proposal = propose_addition(
+                routing.story,
+                [(e["title"], e["text"]) for e in parsed["events"]],
             )
         else:
             proposal = propose_new_story(
@@ -526,6 +552,16 @@ if story_command:
                 logged=keep_logged(parsed.get("logged", ""), text),
                 events=[(e["title"], e["text"]) for e in parsed["events"]],
             )
+    except NoChange:
+        # The ingestion pass handed back the paragraph it was given. Nothing to
+        # confirm, and a gate over an empty diff would report a write that never
+        # happened.
+        where = f"{routing.story.id}/{routing.event_id}" if routing.event_id else routing.story.id
+        st.warning(
+            f"The redacted text is identical to {where} as it already stands — "
+            "nothing ingested. Re-send with the new detail spelled out, or log "
+            "it as its own story."
+        )
     except Exception as exc:
         st.error(f"The reply parsed but does not fit a story — {type(exc).__name__}: {exc}")
         st.code(raw)

@@ -37,7 +37,7 @@ from runtime.stories import (
     parse_story,
     render_story,
 )
-from runtime.tools import Proposal, _propose
+from runtime.tools import NoChange, Proposal, _propose
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POLICY_PATH = REPO_ROOT / "data" / "redaction-policy.md"
@@ -54,7 +54,10 @@ class Routing:
     edit target.
     """
 
-    branch: str  # "duplicate" | "amend" | "new"
+    branch: str  # "duplicate" | "amend" | "append" | "new"
+    # "append" is never returned by `route()` — similarity cannot tell
+    # "belongs to this story" from "rewrites a line in it". Only a creator
+    # naming a bare `ST-###` produces it.
     story: Story | None = None
     event_id: str = ""
     runners_up: list[Hit] = field(default_factory=list)
@@ -140,21 +143,46 @@ def keep_logged(logged: str, source: str) -> str:
     return logged if TEMPORAL.search(source) else ""
 
 
-# A leading story id, and only at the very start. Anchored so prose beginning
-# with an id-shaped word is left alone.
-LEADING_ID = re.compile(r"^\s*(ST-\d{3,})\b[:,]?\s*", re.IGNORECASE)
+# A leading story id, optionally naming an event inside it, and only at the
+# very start. Anchored so prose beginning with an id-shaped word is left alone.
+# The separator is optional because the creator types this by hand: `st003`,
+# `ST 3`, `#ST-003` all name one story, and a rejected id is not a harmless
+# miss — it falls through to route(), which logs the amendment as a new story.
+LEADING_ID = re.compile(
+    r"^\s*#?\s*ST[-_ ]?(\d+)"
+    r"(?:\s*/?\s*E[-_ ]?(\d+))?"
+    r"\b[:,]?\s*",
+    re.IGNORECASE,
+)
 
 
-def parse_story_command(raw: str) -> tuple[str, str]:
-    """Split a leading `ST-###` off the narrative.
+def parse_story_command(raw: str) -> tuple[str, str, str]:
+    """Split a leading `ST-###` or `ST-###/E-###` off the narrative.
 
-    The manual override for a mis-route. Returns ("", raw) when no id leads,
-    so the caller falls through to `route()` unchanged.
+    Returns (story_id, event_id, rest). The manual override for a mis-route,
+    and the only way to state intent rather than have it guessed:
+
+    - `ST-003 …` names the story and nothing else, so the text is **appended**
+      to it as a new event.
+    - `ST-003/E-002 …` names the paragraph, so that paragraph is rewritten.
+
+    Appending is the bare-id default deliberately. Picking a paragraph by
+    similarity has no floor — the closest of a story's events wins however
+    weak the match — and a wrong append costs one delete, where a wrong
+    amendment overwrites words that exist nowhere else.
+
+    Returns ("", "", raw) when no id leads, so the caller falls through to
+    `route()` unchanged.
+
+    Numbers are zero-padded to the corpus's three-digit form, so `st3/e2` and
+    `ST-003/E-002` resolve to the same paragraph. An id that names nothing is
+    refused by the caller — never silently turned into a new story.
     """
     found = LEADING_ID.match(raw)
     if not found:
-        return "", raw
-    return found.group(1).upper(), raw[found.end():].strip()
+        return "", "", raw
+    event = f"E-{int(found.group(2)):03d}" if found.group(2) else ""
+    return f"ST-{int(found.group(1)):03d}", event, raw[found.end():].strip()
 
 
 def route(
@@ -195,12 +223,84 @@ def route(
     return Routing(branch="amend", story=story, event_id=event_id, runners_up=summaries[1:])
 
 
+def _append_events(story: Story, events: list[tuple[str, str]]) -> list[Event]:
+    """Add (title, body) pairs to a story in place, returning what was added.
+
+    Ids come from `next_event_id`, which allocates from the maximum, so
+    appending never renumbers an event the index already holds a vector for.
+    """
+    added = []
+    for title, body in events:
+        event = Event(
+            id=next_event_id(story),
+            title=title,
+            text=body if body.endswith("\n") else body + "\n",
+        )
+        story.events.append(event)
+        added.append(event)
+    return added
+
+
+def propose_addition(
+    story: Story,
+    events: list[tuple[str, str]],
+    directory: Path | None = None,
+) -> Proposal:
+    """Add new events to a story that already exists, changing nothing in it.
+
+    What `/story ST-003 …` means. The creator names the story the material
+    belongs to and nothing inside it is touched, so there is no edit target to
+    resolve and nothing to get wrong beyond the story itself — which they
+    stated rather than the index guessing.
+    """
+    directory = directory or STORIES_DIR
+    path = directory / f"{story.id}.md"
+    if not path.exists():
+        raise ValueError(f"{story.id} is not in the corpus — nothing to add to")
+
+    # Parsed from disk, never from the caller's object, for the reason spelled
+    # out in propose_amendment: the two drift, and editing the wrong one lets
+    # the file round-trip byte-identical while the proposal reports a change.
+    grown = parse_story(path.read_text(encoding="utf-8"))
+    added = _append_events(grown, events)
+    if not added:
+        raise ValueError(f"nothing to add to {story.id} — the pass returned no events")
+
+    return _propose(
+        path=path,
+        old=path.read_text(encoding="utf-8"),
+        new=render_story(grown),
+        summary=f"add to {story.id} — {len(added)} new event(s): "
+        + ", ".join(e.id for e in added),
+        before="",
+        after="\n".join(f"{e.title}\n{e.text}" for e in added).strip(),
+    )
+
+
 def propose_amendment(
     story: Story,
     event_id: str,
     new_text: str,
     directory: Path | None = None,
+    additions: list[tuple[str, str]] | None = None,
 ) -> Proposal:
+    """Rewrite one paragraph, and append whatever the paste added beyond it.
+
+    `additions` is (title, body) pairs, already segmented and redacted. The
+    creator pastes a longer version of a story they already logged: the first
+    segment is the paragraph being amended, and everything after it is new
+    material about the same story. Dropping it loses the creator's words
+    silently — the one thing this corpus cannot afford — and logging it as a
+    separate story splits one narrative in two.
+
+    Appended events take fresh `E-###` ids from the maximum, so nothing already
+    embedded is renumbered.
+
+    ponytail: the story's own summary and keywords are left as they stand, so
+    the summary chunk goes slightly stale when events are appended. Rewriting
+    them would be the model editing text the creator approved earlier under a
+    different confirm gate. Revisit if coarse-layer recall measurably suffers.
+    """
     directory = directory or STORIES_DIR
     path = directory / f"{story.id}.md"
     old = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -225,13 +325,24 @@ def propose_amendment(
     before = target.text
     target.text = new_text if new_text.endswith("\n") else new_text + "\n"
 
+    appended = _append_events(amended, additions or [])
+
+    summary = f"amend {story.id}/{event_id} — {target.title}"
+    if appended:
+        summary += f", and {len(appended)} new event(s): " + ", ".join(
+            e.id for e in appended
+        )
+
     return _propose(
         path=path,
         old=old,
         new=render_story(amended),
-        summary=f"amend {story.id}/{event_id} — {target.title}",
+        summary=summary,
         before=before,
-        after=new_text,
+        # The gate's after-panel must show everything the write lands, not just
+        # the rewritten paragraph — an appended event the creator never saw is
+        # an unreviewed write.
+        after="\n".join([target.text, *(f"{e.title}\n{e.text}" for e in appended)]).strip(),
     )
 
 
@@ -272,19 +383,58 @@ def _self_check() -> None:
     import zlib
 
     # -- explicit story id ---------------------------------------------------
+    # A bare story id appends; only `ST-###/E-###` names an edit target.
     assert parse_story_command("ST-001 we drove to the lake") == (
         "ST-001",
+        "",
         "we drove to the lake",
     ), "a leading id targets that story and leaves the narrative behind"
-    assert parse_story_command("st-001 we drove") == ("ST-001", "we drove"), "case insensitive"
+    assert parse_story_command("st-001 we drove") == ("ST-001", "", "we drove"), "case insensitive"
     assert parse_story_command("we drove to the lake") == (
+        "",
         "",
         "we drove to the lake",
     ), "no id means route() decides"
     # A bare id with no narrative is not a story.
-    assert parse_story_command("ST-001") == ("ST-001", "")
+    assert parse_story_command("ST-001") == ("ST-001", "", "")
     # Must not eat text that merely starts with something id-shaped.
-    assert parse_story_command("STORY about a lake") == ("", "STORY about a lake")
+    assert parse_story_command("STORY about a lake") == ("", "", "STORY about a lake")
+    # The separator is optional and the number is padded: the creator types the
+    # id by hand, and an id that fails to parse falls through to route(), which
+    # logs an amendment as a brand new story.
+    assert parse_story_command("st003 i walked toward the rocks") == (
+        "ST-003",
+        "",
+        "i walked toward the rocks",
+    ), "a hyphenless id is still an id"
+    assert parse_story_command("ST 3 we drove") == ("ST-003", "", "we drove"), "space separator"
+    assert parse_story_command("#ST-003 we drove") == ("ST-003", "", "we drove"), "leading hash"
+    assert parse_story_command("st_003: we drove") == ("ST-003", "", "we drove"), "underscore"
+    # Padding never mangles an id already wider than three digits.
+    assert parse_story_command("ST-1234 we drove") == ("ST-1234", "", "we drove")
+    # A saint is not a story id — the separator is optional, the digits are not.
+    assert parse_story_command("St. Peter's was closed") == ("", "", "St. Peter's was closed")
+
+    # An event id names the paragraph to rewrite, in every spelling the story
+    # id accepts. Without it the material is new, and appending is what the
+    # creator meant — the destructive reading must be the one they type out.
+    assert parse_story_command("ST-003/E-002 red jacket") == ("ST-003", "E-002", "red jacket")
+    assert parse_story_command("st3/e2 red jacket") == ("ST-003", "E-002", "red jacket")
+    assert parse_story_command("ST-003 / E-002: red jacket") == (
+        "ST-003", "E-002", "red jacket",
+    ), "spaces around the slash"
+    # The slash is optional too. Without this, `ST-003 E-002 …` appends and the
+    # id text itself is swallowed into the narrative — redacted, embedded and
+    # stored as the creator's own words, with no gate anywhere to catch it.
+    assert parse_story_command("ST-003 E-002 red jacket") == ("ST-003", "E-002", "red jacket")
+    assert parse_story_command("st 3 e 4 red jacket") == ("ST-003", "E-004", "red jacket")
+    assert parse_story_command("st3 e4 red jacket") == ("ST-003", "E-004", "red jacket")
+    # `E` still has to be followed by digits, so prose stays prose.
+    assert parse_story_command("ST-003 elephants everywhere") == (
+        "ST-003", "", "elephants everywhere",
+    )
+    # A slash that is not an event id belongs to the narrative.
+    assert parse_story_command("ST-003 he/she waved") == ("ST-003", "", "he/she waved")
 
     # A period survives only when the creator's own words carry a time. The
     # observed failure is the model returning `[~mid-July]` for text with no
@@ -446,6 +596,67 @@ def _self_check() -> None:
         assert "red jacket" in after.events[0].text
         assert [e.id for e in after.events] == ["E-001", "E-002"], "ids moved on amend"
         assert (directory / ".backups").is_dir(), "no snapshot taken before the write"
+
+        # The observed failure: the ingestion pass hands back the paragraph it
+        # was given, the file round-trips byte-identical, and the gate reports
+        # a write that never happened. Refused rather than proposed.
+        try:
+            propose_amendment(
+                after, "E-001", after.events[0].text, directory,
+            )
+        except NoChange:
+            pass
+        else:
+            raise AssertionError("an amendment that changes nothing was proposed")
+
+        # The other half of that failure: the paste was a longer version of the
+        # whole story, so the ingestion pass segmented it and everything past
+        # the first segment used to be dropped on the floor.
+        grew = propose_amendment(
+            after,
+            "E-001",
+            after.events[0].text,
+            directory,
+            additions=[("meeting a stranger", "She offered me her hand.\n"),
+                       ("the sunset", "We sat and watched it go down.\n")],
+        )
+        landed = parse_story(grew.new_text)
+        assert [e.id for e in landed.events] == ["E-001", "E-002", "E-003", "E-004"], (
+            f"appended events did not land or renumbered: {[e.id for e in landed.events]}"
+        )
+        assert "red jacket" in landed.events[0].text, "the amended paragraph was lost"
+        assert landed.events[2].title == "meeting a stranger", landed.events[2].title
+        assert "watched it go down" in landed.events[3].text
+        assert "E-003" in grew.summary and "E-004" in grew.summary, grew.summary
+
+        # `/story ST-001 …` — new material for a story that exists, touching
+        # nothing already in it. No edit target to resolve, so nothing to
+        # overwrite by guessing wrong.
+        added = propose_addition(
+            after, [("the drive home", "We got back after dark.\n")], directory,
+        )
+        with_new = parse_story(added.new_text)
+        assert [e.id for e in with_new.events] == ["E-001", "E-002", "E-003"], (
+            f"append renumbered or dropped: {[e.id for e in with_new.events]}"
+        )
+        assert with_new.events[0].text == after.events[0].text, "append edited an existing event"
+        assert with_new.events[1].text == after.events[1].text, "append edited an existing event"
+        assert "got back after dark" in with_new.events[2].text
+        assert (directory / "ST-001.md").read_text(encoding="utf-8") == render_story(after), (
+            "proposal wrote to disk before approval"
+        )
+        # An empty pass is a failure to report, not a write of nothing.
+        try:
+            propose_addition(after, [], directory)
+        except ValueError as exc:
+            assert "no events" in str(exc), str(exc)
+        else:
+            raise AssertionError("an empty addition was proposed")
+        # Everything the write lands has to be visible at the gate.
+        assert "She offered me her hand." in grew.after, grew.after
+        assert (directory / "ST-001.md").read_text(encoding="utf-8") == render_story(after), (
+            "proposal wrote appended events to disk before approval"
+        )
 
         # `existing` is now stale — disk has "red jacket", the in-memory
         # object still says "He was already waiting when we pulled in.".
