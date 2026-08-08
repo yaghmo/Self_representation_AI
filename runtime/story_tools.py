@@ -107,6 +107,44 @@ Return JSON only:
 """
 
 
+# The amend contract, stated rather than implied. `INGEST_PROMPT` is a
+# segmentation prompt, and running it over "the wave contained popcorn" plus the
+# paragraph being edited framed the new detail as something to *reduce*: one run
+# dropped it entirely, the next wrote `[~popcorn mentioned]` — a fuzzed-value
+# marker copied out of the redaction rules the same prompt carries. Same failure
+# as the invented `[~mid-July]` that `keep_logged` exists to catch: the model
+# does the task the prompt describes, and merging was never described.
+#
+# The policy still rides along, because a merged detail is new material entering
+# the corpus and has to be reduced on the way in like anything else.
+AMEND_PROMPT = """You are editing one paragraph of the creator's own story.
+
+Apply this redaction policy to every detail before you write anything:
+
+{policy}
+
+You are given new information, then the paragraph as it currently stands.
+Return that paragraph rewritten so the new information is part of it.
+
+Keep every detail the paragraph already has unless the new information
+contradicts it. Keep the creator's phrasing and rhythm — you are working their
+words, not replacing them. Add nothing they did not say.
+
+The new information belongs in the prose, in their voice. Do not summarise it,
+do not mention it in the third person, and never record it as a bracketed
+marker: brackets mark a value you fuzzed under the policy, and are not a way to
+note that something was said. A detail you cannot state under the policy is
+reduced, never annotated.
+
+If the new information is already fully present in the paragraph, return the
+paragraph unchanged — an amendment that changes nothing is reported as such.
+
+Return JSON only, with exactly one event holding the rewritten paragraph:
+{{"summary": "one sentence", "keywords": ["..."], "logged": "[~period]" or "",
+  "events": [{{"title": "short", "text": "the rewritten paragraph"}}]}}
+"""
+
+
 # Anything that could be a time reference. Deliberately generous — this decides
 # whether the creator said *when*, not what they said.
 TEMPORAL = re.compile(

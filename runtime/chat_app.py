@@ -510,8 +510,14 @@ if story_command:
     else:
         st.info("New story — nothing in the corpus matches this closely.")
 
-    with st.spinner("Redacting and segmenting"):
-        response = post("/ingest", {"text": text, "existing": existing})
+    # The creator naming the paragraph is what makes this a merge. A routed
+    # amend keeps the segmentation prompt: nothing said the paste is a fragment,
+    # and it is often a whole expanded story whose later segments get appended.
+    merge = bool(wanted_event)
+    with st.spinner("Merging into the paragraph" if merge else "Redacting and segmenting"):
+        response = post(
+            "/ingest", {"text": text, "existing": existing, "merge": merge}
+        )
     if response.status_code >= 400:
         st.error(response.json().get("detail", response.text))
         st.stop()
@@ -527,14 +533,22 @@ if story_command:
     try:
         if routing.branch == "amend":
             # `events[0]` is the amended paragraph, redacted, in the creator's
-            # phrasing. Anything after it is new material in the same paste —
-            # appended to the same story rather than dropped, which is what
-            # made an amendment look applied while changing nothing.
+            # phrasing. On a routed amend anything after it is new material in
+            # the same paste — appended to the same story rather than dropped,
+            # which is what made an amendment look applied while changing
+            # nothing. A merge asked for one paragraph and gets no additions:
+            # the creator named a paragraph, not a place to grow the story.
+            extra = parsed["events"][1:]
+            if merge and extra:
+                st.caption(
+                    f"The pass returned {len(extra)} extra segment(s); a named "
+                    "paragraph is rewritten in place, so they were not added."
+                )
             proposal = propose_amendment(
                 routing.story,
                 routing.event_id,
                 parsed["events"][0]["text"],
-                additions=[(e["title"], e["text"]) for e in parsed["events"][1:]],
+                additions=[] if merge else [(e["title"], e["text"]) for e in extra],
             )
         elif routing.branch == "append":
             # Every segment is new material — none of it replaces anything, so

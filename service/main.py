@@ -42,7 +42,7 @@ from runtime.bible import (
     build_procedure,
 )
 from runtime.model import Model, ModelNotDownloaded
-from runtime.story_tools import INGEST_PROMPT, read_policy
+from runtime.story_tools import AMEND_PROMPT, INGEST_PROMPT, read_policy
 from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
@@ -121,6 +121,13 @@ class IngestRequest(BaseModel):
     # On the amend branch, the paragraph being edited, so the pass rewrites it
     # rather than inventing a replacement for text it never saw.
     existing: str = ""
+    # Which prompt runs. False segments the text into events, which is what a
+    # paste routed to a story needs — it may be a whole expanded story. True
+    # merges the text into `existing` and returns that one paragraph, which is
+    # what the creator naming `ST-###/E-###` asked for. Two different tasks;
+    # the segmentation prompt does the merge badly, by reducing the new detail
+    # instead of working it in.
+    merge: bool = False
     # None means auto: sized from the input, because the reply restates it.
     max_tokens: int | None = Field(default=None, ge=1, le=8192)
 
@@ -410,7 +417,15 @@ def ingest(request: IngestRequest) -> dict:
             "\n\n---\nThe paragraph this amends currently reads:\n\n" + request.existing
         )
 
-    persona = INGEST_PROMPT.format(policy=policy)
+    # `merge` needs something to merge into. Without it the amend prompt
+    # describes a paragraph that was never sent, and the model invents one.
+    if request.merge and not request.existing:
+        raise HTTPException(
+            status_code=422,
+            detail="merge=true needs `existing` — there is no paragraph to merge into.",
+        )
+
+    persona = (AMEND_PROMPT if request.merge else INGEST_PROMPT).format(policy=policy)
     persona_tokens = model.count_tokens(persona)
     input_tokens = model.count_tokens(text)
     cap = ingest_cap(model.context_tokens, persona_tokens)
@@ -638,6 +653,27 @@ def _self_check() -> None:
         "the reserve ingest() passes to assemble() must leave room for "
         "persona + input at exactly the cap"
     )
+
+    # Merging and segmenting are two different tasks, and running the
+    # segmentation prompt over a fragment plus its paragraph made the model
+    # reduce the new detail instead of working it in — dropped on one run,
+    # written as `[~popcorn mentioned]` on the next.
+    assert "rewritten so the new information is part of it" in AMEND_PROMPT
+    assert "brackets mark a value you fuzzed" in AMEND_PROMPT
+    assert "{policy}" in AMEND_PROMPT, "the policy still governs merged detail"
+    # A merge is still ingestion, so the agent gate comes first.
+    merge_only = {"text": "the wave had popcorn", "merge": True}
+    response = client.post("/ingest", json=merge_only)
+    assert response.status_code == 403, (response.status_code, response.text)
+    # Past the gate, a merge with nothing to merge into describes a paragraph
+    # that was never sent, and the model invents one. Refused before the call.
+    _model.agent = True
+    try:
+        response = client.post("/ingest", json=merge_only)
+    finally:
+        _model.agent = False
+    assert response.status_code == 422, (response.status_code, response.text)
+    assert "existing" in response.json()["detail"], response.text
 
     # Summarisation is available on a fan deployment — compaction is not a
     # write, and the prompt is server-held, so no client can choose it.
