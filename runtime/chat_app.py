@@ -26,15 +26,25 @@ import streamlit as st
 
 from runtime.agent import followup, resumed, run as run_agent
 from runtime.backend import Message
+from runtime.bible import plan_compaction
 from runtime.convert import ConversionFailed, to_markdown
 from runtime.embed import EmbeddingNotConfigured, bge_embedder
 from runtime.index import all_chunks, build, load_index
-from runtime.stories import STORIES_DIR
-from runtime.story_tools import keep_logged, propose_amendment, propose_new_story, route
+from runtime.stories import STORIES_DIR, load_story
+from runtime.story_tools import (
+    Routing,
+    keep_logged,
+    parse_story_command,
+    propose_addition,
+    propose_amendment,
+    propose_new_story,
+    route,
+)
 from runtime.tools import (
     FOLLOWUP_SCHEMAS,
     SOURCES_PATH,
     TOOL_SCHEMAS,
+    NoChange,
     StaleProposal,
     entry_id_of,
     list_backups,
@@ -133,27 +143,53 @@ def confirm_dialog(proposal) -> None:
             # The file moved under the proposal. Never merge, never overwrite —
             # the creator re-asks and the agent re-reads.
             resolved(f"not applied — {exc}", f"[not applied: {exc}]")
-        # A story's snapshot lands beside the story, not beside the bible, so
-        # the note points at the directory that actually holds it.
-        st.session_state["applied_note"] = f"Wrote {path} (snapshot in {path.parent}/.backups/)"
+        else:
+            # Everything below reads `path`, so it belongs to the branch where
+            # `path` was bound. `resolved()` does halt — it ends in st.rerun() —
+            # but that makes the whole block's safety turn on the last line of
+            # a function two screens up. `else` is the same guarantee stated
+            # where it can be checked.
 
-        # The index is derived from the files, so it follows the write rather
-        # than being written alongside it. `refresh` re-embeds only what
-        # changed, which for one approved story is one story.
-        if path.parent == STORIES_DIR and st.session_state.get("story_index") is not None:
-            index = st.session_state["story_index"]
-            index.refresh(all_chunks(), st.session_state["story_embed"])
-            index.save()
+            # A story landing somewhere new scopes the context to it. Only on
+            # Apply: the creator saw the gate and ratified the routing, so an
+            # uncalibrated threshold can propose a wrong landing but never act
+            # on one unobserved.
+            if path.parent == STORIES_DIR:
+                landed = path.stem
+                if landed != st.session_state.get("current_story"):
+                    st.session_state["current_story"] = landed
+                    # The previous story is on disk, parsed and indexed. Keeping
+                    # its turns in the prompt duplicates a file route() reaches
+                    # in one call, so they stop being sent — and stay on screen.
+                    st.session_state["prompt_floor"] = len(st.session_state["history"])
+                    st.session_state.pop("summary", None)
+                    logged = st.session_state.setdefault("logged_stories", [])
+                    if landed not in logged:
+                        logged.append(landed)
 
-        # A logged entry is only half the procedure. The entry itself names the
-        # sections it feeds, so the second half needs the entry — not the
-        # conversation that produced it.
-        if path.name == SOURCES_PATH.name and entry_id_of(proposal.after):
-            st.session_state["followup_entry"] = proposal.after
-        resolved(
-            f"applied — {proposal.summary}. This write is done; do not repeat it.",
-            f"[applied: {proposal.summary}]",
-        )
+            # A story's snapshot lands beside the story, not beside the bible, so
+            # the note points at the directory that actually holds it.
+            st.session_state["applied_note"] = (
+                f"Wrote {path} (snapshot in {path.parent}/.backups/)"
+            )
+
+            # The index is derived from the files, so it follows the write rather
+            # than being written alongside it. `refresh` re-embeds only what
+            # changed, which for one approved story is one story.
+            if path.parent == STORIES_DIR and st.session_state.get("story_index") is not None:
+                index = st.session_state["story_index"]
+                index.refresh(all_chunks(), st.session_state["story_embed"])
+                index.save()
+
+            # A logged entry is only half the procedure. The entry itself names the
+            # sections it feeds, so the second half needs the entry — not the
+            # conversation that produced it.
+            if path.name == SOURCES_PATH.name and entry_id_of(proposal.after):
+                st.session_state["followup_entry"] = proposal.after
+            resolved(
+                f"applied — {proposal.summary}. This write is done; do not repeat it.",
+                f"[applied: {proposal.summary}]",
+            )
     if right.button("Decline", width="stretch"):
         resolved(
             f"declined by the creator — {proposal.summary}. Do not retry it.",
@@ -323,8 +359,14 @@ if status.get("agent"):
 columns = st.columns([1, 1, 6])
 if columns[0].button("Clear"):
     st.session_state["history"] = []
+    for key in ("prompt_floor", "summary", "current_story", "logged_stories"):
+        st.session_state.pop(key, None)
     st.rerun()
-columns[1].caption(f"{len(st.session_state['history'])} turns")
+columns[1].caption(
+    f"{len(st.session_state['history'])} turns"
+    + (f" · sending {len(st.session_state['history']) - st.session_state.get('prompt_floor', 0)}"
+       if st.session_state.get("prompt_floor") else "")
+)
 
 for message in st.session_state["history"]:
     with st.chat_message(message["role"]):
@@ -372,6 +414,7 @@ if story_command:
         st.session_state.pop(key, None)
 
     text = (prompt or "").removeprefix("/story").strip()
+    wanted_id, wanted_event, text = parse_story_command(text)
     for upload in attachments:
         # `to_markdown` reads the file's own bytes, so the upload — a buffer in
         # memory — needs a real path carrying its real suffix.
@@ -400,10 +443,37 @@ if story_command:
     # The raw text never enters `history`. It is pre-redaction by definition,
     # and history is replayed to the model on every later turn.
     routing = None
-    try:
-        routing = route(text, st.session_state["story_index"], _embed)
-    except Exception as exc:
-        st.error(f"Routing failed — {type(exc).__name__}: {exc}")
+    if wanted_id:
+        target_path = STORIES_DIR / f"{wanted_id}.md"
+        if not target_path.exists():
+            # A typo must not silently become a new story.
+            st.error(f"No story {wanted_id} in the corpus. Drop the id to log a new story.")
+            st.stop()
+        story = load_story(target_path)
+        if wanted_event:
+            # The creator named the paragraph. Nothing is picked by similarity
+            # on this path — an event id that does not exist is a typo, and
+            # falling back to the nearest match would rewrite a paragraph they
+            # did not name.
+            if not any(e.id == wanted_event for e in story.events):
+                st.error(
+                    f"{wanted_id} has no {wanted_event}. Events present: "
+                    + (", ".join(e.id for e in story.events) or "none")
+                )
+                st.stop()
+            routing = Routing(branch="amend", story=story, event_id=wanted_event)
+            st.caption(f"Rewriting {wanted_id}/{wanted_event} — routing skipped.")
+        else:
+            # A bare story id is new material for that story. Appending never
+            # overwrites the creator's words, so it is what an unqualified id
+            # means; `ST-###/E-###` is how they ask for the destructive one.
+            routing = Routing(branch="append", story=story)
+            st.caption(f"Adding to {wanted_id} — routing skipped.")
+    else:
+        try:
+            routing = route(text, st.session_state["story_index"], _embed)
+        except Exception as exc:
+            st.error(f"Routing failed — {type(exc).__name__}: {exc}")
     if routing is None:
         st.stop()
 
@@ -433,11 +503,21 @@ if story_command:
                 "Other candidates: "
                 + ", ".join(f"{h.chunk.story_id} ({h.score:.2f})" for h in routing.runners_up)
             )
+    elif routing.branch == "append":
+        # No `existing`: nothing in the story is being rewritten, so the
+        # ingestion pass has no paragraph to work against.
+        st.info(f"Adding to {routing.story.id} — {routing.story.title}")
     else:
         st.info("New story — nothing in the corpus matches this closely.")
 
-    with st.spinner("Redacting and segmenting"):
-        response = post("/ingest", {"text": text, "existing": existing})
+    # The creator naming the paragraph is what makes this a merge. A routed
+    # amend keeps the segmentation prompt: nothing said the paste is a fragment,
+    # and it is often a whole expanded story whose later segments get appended.
+    merge = bool(wanted_event)
+    with st.spinner("Merging into the paragraph" if merge else "Redacting and segmenting"):
+        response = post(
+            "/ingest", {"text": text, "existing": existing, "merge": merge}
+        )
     if response.status_code >= 400:
         st.error(response.json().get("detail", response.text))
         st.stop()
@@ -452,10 +532,30 @@ if story_command:
     proposal = None
     try:
         if routing.branch == "amend":
-            # Only `events[0]`: the amended paragraph, redacted, in the
-            # creator's phrasing — not a whole story rebuilt around it.
+            # `events[0]` is the amended paragraph, redacted, in the creator's
+            # phrasing. On a routed amend anything after it is new material in
+            # the same paste — appended to the same story rather than dropped,
+            # which is what made an amendment look applied while changing
+            # nothing. A merge asked for one paragraph and gets no additions:
+            # the creator named a paragraph, not a place to grow the story.
+            extra = parsed["events"][1:]
+            if merge and extra:
+                st.caption(
+                    f"The pass returned {len(extra)} extra segment(s); a named "
+                    "paragraph is rewritten in place, so they were not added."
+                )
             proposal = propose_amendment(
-                routing.story, routing.event_id, parsed["events"][0]["text"]
+                routing.story,
+                routing.event_id,
+                parsed["events"][0]["text"],
+                additions=[] if merge else [(e["title"], e["text"]) for e in extra],
+            )
+        elif routing.branch == "append":
+            # Every segment is new material — none of it replaces anything, so
+            # there is no first-segment special case here.
+            proposal = propose_addition(
+                routing.story,
+                [(e["title"], e["text"]) for e in parsed["events"]],
             )
         else:
             proposal = propose_new_story(
@@ -466,6 +566,16 @@ if story_command:
                 logged=keep_logged(parsed.get("logged", ""), text),
                 events=[(e["title"], e["text"]) for e in parsed["events"]],
             )
+    except NoChange:
+        # The ingestion pass handed back the paragraph it was given. Nothing to
+        # confirm, and a gate over an empty diff would report a write that never
+        # happened.
+        where = f"{routing.story.id}/{routing.event_id}" if routing.event_id else routing.story.id
+        st.warning(
+            f"The redacted text is identical to {where} as it already stands — "
+            "nothing ingested. Re-send with the new detail spelled out, or log "
+            "it as its own story."
+        )
     except Exception as exc:
         st.error(f"The reply parsed but does not fit a story — {type(exc).__name__}: {exc}")
         st.code(raw)
@@ -491,15 +601,56 @@ elif prompt or resume:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-    messages = list(st.session_state["history"])
+    floor = st.session_state.get("prompt_floor", 0)
+    scoped = list(st.session_state["history"][floor:])
+
+    # Compact before the wall. `room` is the context minus the persona and the
+    # reply reserve; the service holds the real persona, so this is the client
+    # estimating its own share conservatively.
+    room = max(512, int(status.get("context_tokens", 8192)) - 5500 - max_tokens)
+    turns = [Message(m["role"], m["content"]) for m in scoped]
+    planned = plan_compaction(turns, room=room)
+    if planned is not None:
+        older, newer = planned
+        with st.spinner("Compacting older turns"):
+            response = post(
+                "/summarize",
+                {"messages": [m.as_dict() for m in older], "max_tokens": 256},
+            )
+        if response.status_code == 200:
+            fresh = response.json()["content"].strip()
+            previous = st.session_state.get("summary", "")
+            # Fold, don't nest: the old summary is material for the new one.
+            st.session_state["summary"] = (
+                f"{previous} {fresh}".strip() if previous else fresh
+            )
+            # Those turns are now represented by the summary. Drop them from
+            # what is *sent*; `history` keeps them for the visible transcript.
+            st.session_state["prompt_floor"] = floor + len(older)
+            scoped = [{"role": m.role, "content": m.content} for m in newer]
+        else:
+            # A failed compaction must not lose history. Keep sending it all
+            # and let `assemble()` trim as it did before.
+            st.caption("Compaction failed — older turns will be trimmed instead.")
+
+    messages = scoped
     if override_allowed and system_prompt:
         messages.insert(0, {"role": "system", "content": system_prompt})
+
+    logged = st.session_state.get("logged_stories", [])
+    parts = []
+    if logged:
+        parts.append("Earlier this session you logged: " + ", ".join(logged) + ".")
+    if st.session_state.get("summary"):
+        parts.append(st.session_state["summary"])
+    summary_note = "\n\n".join(parts)
 
     payload = {
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "thinking": thinking,
+        "summary": summary_note,
     }
 
     if bool(status.get("agent")):
@@ -515,6 +666,7 @@ elif prompt or resume:
                     "max_tokens": max_tokens,
                     "thinking": thinking,
                     "tools": tools,
+                    "summary": summary_note,
                 },
             )
             response.raise_for_status()

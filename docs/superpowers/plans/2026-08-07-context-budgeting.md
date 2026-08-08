@@ -66,6 +66,17 @@ Add to the end of `_self_check()` in `runtime/bible.py`, before the final `print
     if split is not None:
         assert split[1][0].role != "tool", "kept half must not open on an orphaned tool result"
 
+    # History that tails off in tool results — the agent loop's normal mid-run
+    # state. No split preserves the invariant, so it must refuse rather than
+    # clamp back onto the tool message.
+    trailing = [
+        Message("user", "do the thing " + "word " * 20),
+        Message("assistant", "", tool_calls=[{"id": "c2", "function": {"name": "t"}}]),
+        Message("tool", "the result " + "word " * 20, tool_call_id="c2"),
+    ]
+    tail = plan_compaction(trailing, room=estimate_tokens(trailing[0].content))
+    assert tail is None or tail[1][0].role != "tool", "must refuse rather than keep an orphan"
+
     # The summary is pinned: it survives a budget that evicts ordinary history.
     note = "Earlier in this conversation: they described a trip."
     out = assemble(turns, context_tokens=1400, persona=persona, summary=note)
@@ -147,6 +158,13 @@ def plan_compaction(
     # being summarized, and llama-server rejects a result with no call.
     while split < len(history) and history[split].role == "tool":
         split += 1
+
+    # Running off the end means the history tails off in tool results and no
+    # split preserves the invariant — refuse rather than clamp back onto one.
+    # A history ending on a raw tool message is the agent loop's normal
+    # mid-run state, so this is a live path, not a corner case.
+    if split >= len(history):
+        return None
 
     # The newest turn is the question this reply is for — always verbatim.
     split = min(split, len(history) - 1)
@@ -284,6 +302,18 @@ In `ingest()`, replace the block that builds `messages`. After `text` is assembl
     input_tokens = model.count_tokens(text)
     cap = ingest_cap(model.context_tokens, persona_tokens)
 
+    if cap <= 0:
+        # The persona alone leaves no room. Splitting the story cannot help,
+        # so say the thing that is actually wrong rather than the 413 below.
+        raise HTTPException(
+            status_code=507,
+            detail=(
+                f"The ingestion prompt is about {persona_tokens:,} tokens and the "
+                f"context window is {model.context_tokens:,}. No story of any "
+                "length fits. Load a model with a larger context window."
+            ),
+        )
+
     if input_tokens > cap:
         raise HTTPException(
             status_code=413,
@@ -307,7 +337,7 @@ Then change the `assemble()` call to use the local `persona`, and the `model.cha
             [Message("user", text)],
             context_tokens=model.context_tokens,
             count=model.count_tokens,
-            reserve_tokens=max(1024, max_tokens),
+            reserve_tokens=max_tokens,
             persona=persona,
         )
 ```
@@ -318,7 +348,21 @@ Then change the `assemble()` call to use the local `persona`, and the `model.cha
         )
 ```
 
-Note `reserve_tokens` is now `max(1024, max_tokens)` rather than `max_tokens * 2` — the doubling existed to guess at the reply, and `max_tokens` is now the real figure.
+Note `reserve_tokens` is now exactly `max_tokens`, not `max_tokens * 2` and not
+`max(1024, max_tokens)`. Both of those were guesses at a reply nobody had
+measured; `max_tokens` is now the real figure, and any floor over it silently
+breaks the cap's own invariant.
+
+The cap is derived from the reserve, so the two have to be the same number:
+
+    context - reserve >= persona + input          (what assemble() requires)
+    reserve = input * RATIO + FLOOR                (what max_tokens is)
+    => input <= (context - persona - FLOOR) / (1 + RATIO)   (which is ingest_cap)
+
+Put a floor of 1024 on the reserve and that last line stops being true. A small
+story passes the cap, then `assemble()` sees `budget = context - 1024` and
+raises `ProfileTooLarge` — a 507 telling the creator to shorten a profile they
+did not write, for a story the cap just promised would fit.
 
 - [ ] **Step 6: Run the self-check**
 
