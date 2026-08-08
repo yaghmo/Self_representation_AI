@@ -492,7 +492,9 @@ if story_command:
         if not routing.event_id:
             st.error(
                 f"{routing.story.id} matched, but no paragraph inside it did — there "
-                "is nothing to amend. Name the event, or log this as its own story."
+                f"is nothing to amend. Name the paragraph (`/story {routing.story.id}"
+                f"/E-001 …`), add it to the story (`/story {routing.story.id} …`), or "
+                "let it be its own story by dropping the id."
             )
             st.stop()
         target = next((e for e in routing.story.events if e.id == routing.event_id), None)
@@ -549,6 +551,7 @@ if story_command:
                 routing.event_id,
                 parsed["events"][0]["text"],
                 additions=[] if merge else [(e["title"], e["text"]) for e in extra],
+                keywords=parsed.get("keywords", []),
             )
         elif routing.branch == "append":
             # Every segment is new material — none of it replaces anything, so
@@ -556,6 +559,7 @@ if story_command:
             proposal = propose_addition(
                 routing.story,
                 [(e["title"], e["text"]) for e in parsed["events"]],
+                keywords=parsed.get("keywords", []),
             )
         else:
             proposal = propose_new_story(

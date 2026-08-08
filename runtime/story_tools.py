@@ -44,6 +44,24 @@ POLICY_PATH = REPO_ROOT / "data" / "redaction-policy.md"
 
 DUPLICATE_THRESHOLD = 0.95
 AMENDMENT_THRESHOLD = 0.60
+# The paragraph inside the story the coarse layer picked. Without a floor the
+# closest of a story's events wins however weak the match, so naming a story
+# and pasting unrelated material proposed overwriting whichever paragraph
+# happened to rank first. Below this the story resolves and the paragraph does
+# not, which `Routing` already treats as unresolved and the caller already
+# reports — no new failure path, just an honest one.
+#
+# Lower than AMENDMENT_THRESHOLD on purpose: the summary layer has already
+# established the story is relevant, so this only has to separate "this
+# paragraph" from "some other paragraph of the same story". Untuned against a
+# real corpus, like the two above it. Too high sends routed amendments to the
+# explicit `ST-###/E-###` syntax, which is the safe direction to be wrong in.
+#
+# Unvalidated, and not validatable here: the self-check's toy embedder scores a
+# legitimate match at 0.41, but its scale is a hash function's, not bge-m3's.
+# The tests below neutralise this constant rather than satisfy it, and prove
+# the floor gates by cranking it past 1.0. First real corpus decides the value.
+EVENT_THRESHOLD = 0.50
 
 
 @dataclass
@@ -254,11 +272,46 @@ def route(
     # story file cannot afford (see the module docstring).
     events = [h for h in index.search(text, embed, limit=None, kind="event")
               if h.chunk.story_id == target]
-    # No event of the target story matched at all — leave it unresolved
-    # rather than guessing. This cannot cross into another story: the list
-    # is already filtered to `target` before this is read.
-    event_id = events[0].chunk.event_id if events else ""
+    # No event of the target story matched *well enough* — leave it unresolved
+    # rather than guessing. This cannot cross into another story: the list is
+    # already filtered to `target` before this is read. The floor is what
+    # separates "this paragraph" from "the least bad of three": ranking always
+    # produces a winner, and a mutable story file cannot afford one picked by
+    # default (see the module docstring).
+    event_id = (
+        events[0].chunk.event_id
+        if events and events[0].score >= EVENT_THRESHOLD
+        else ""
+    )
     return Routing(branch="amend", story=story, event_id=event_id, runners_up=summaries[1:])
+
+
+def merge_keywords(existing: list[str], incoming: list[str]) -> list[str]:
+    """`existing` plus whatever `incoming` adds, in that order, no duplicates.
+
+    Keywords ride on every chunk of a story and feed the lexical term of the
+    score, so a story that grows while its keywords describe only its first
+    events gets harder to find as it gets richer. Unioning is free: `digest()`
+    hashes chunk *text*, so changed keywords re-embed nothing, and `refresh()`
+    swaps the chunk objects in anyway.
+
+    Order is existing-first so unchanged stories serialise to unchanged bytes.
+    Matching is case-insensitive, and the spelling already in the story wins —
+    a story is not re-rendered because the pass capitalised "Beach" this time.
+
+    ponytail: unions without a cap, so a heavily amended story accumulates
+    keywords and scores higher on generic queries than a fresh one. Cap it —
+    or weight by how many events carry the term — if that shows up in routing;
+    picking what to drop needs a real corpus, and there isn't one yet.
+    """
+    merged = list(existing)
+    seen = {k.strip().lower() for k in existing if k.strip()}
+    for keyword in incoming:
+        cleaned = keyword.strip()
+        if cleaned and cleaned.lower() not in seen:
+            merged.append(cleaned)
+            seen.add(cleaned.lower())
+    return merged
 
 
 def _append_events(story: Story, events: list[tuple[str, str]]) -> list[Event]:
@@ -283,6 +336,7 @@ def propose_addition(
     story: Story,
     events: list[tuple[str, str]],
     directory: Path | None = None,
+    keywords: list[str] | None = None,
 ) -> Proposal:
     """Add new events to a story that already exists, changing nothing in it.
 
@@ -303,6 +357,7 @@ def propose_addition(
     added = _append_events(grown, events)
     if not added:
         raise ValueError(f"nothing to add to {story.id} — the pass returned no events")
+    grown.keywords = merge_keywords(grown.keywords, keywords or [])
 
     return _propose(
         path=path,
@@ -321,6 +376,7 @@ def propose_amendment(
     new_text: str,
     directory: Path | None = None,
     additions: list[tuple[str, str]] | None = None,
+    keywords: list[str] | None = None,
 ) -> Proposal:
     """Rewrite one paragraph, and append whatever the paste added beyond it.
 
@@ -364,6 +420,9 @@ def propose_amendment(
     target.text = new_text if new_text.endswith("\n") else new_text + "\n"
 
     appended = _append_events(amended, additions or [])
+    # The rewritten paragraph is new material too — a detail merged into it is
+    # exactly what a later query would search for.
+    amended.keywords = merge_keywords(amended.keywords, keywords or [])
 
     summary = f"amend {story.id}/{event_id} — {target.title}"
     if appended:
@@ -473,6 +532,16 @@ def _self_check() -> None:
     )
     # A slash that is not an event id belongs to the narrative.
     assert parse_story_command("ST-003 he/she waved") == ("ST-003", "", "he/she waved")
+
+    # -- keywords -----------------------------------------------------------
+    # Existing first, so a story whose keywords did not change renders to the
+    # same bytes; the spelling already on disk wins a case-only collision.
+    assert merge_keywords(["beach", "waves"], ["Beach", "popcorn"]) == [
+        "beach", "waves", "popcorn",
+    ]
+    assert merge_keywords([], ["a", "a", " a ", "b"]) == ["a", "b"], "dedupes within incoming"
+    assert merge_keywords(["beach"], []) == ["beach"]
+    assert merge_keywords(["beach"], ["", "  "]) == ["beach"], "blanks are not keywords"
 
     # A period survives only when the creator's own words carry a time. The
     # observed failure is the model returning `[~mid-July]` for text with no
@@ -609,13 +678,37 @@ def _self_check() -> None:
                 (trunc_dir / f"{decoy.id}.md").write_text(render_story(decoy), encoding="utf-8")
             trunc_index = build(all_chunks(trunc_dir), fake_embed)
 
-            overlap = route(overlap_query, trunc_index, fake_embed, trunc_dir)
-            assert overlap.branch == "amend", overlap.branch
-            assert overlap.story is not None and overlap.story.id == "ST-001"
-            assert overlap.event_id == "E-001", (
-                "truncated before the filter — picked the wrong paragraph: "
-                f"{overlap.event_id}"
-            )
+            # EVENT_THRESHOLD is neutralised here, not satisfied. The real
+            # E-001 match scores 0.41 under the toy embedder, whose scale is a
+            # hash function's and has nothing to do with bge-m3's — a fixture
+            # built on it can show *which* paragraph ranks first, never whether
+            # a score clears an absolute floor. What is under test is the
+            # filter-before-truncate fix, so the floor is taken out of the way.
+            global EVENT_THRESHOLD
+            restore, EVENT_THRESHOLD = EVENT_THRESHOLD, 0.0
+            try:
+                overlap = route(overlap_query, trunc_index, fake_embed, trunc_dir)
+                assert overlap.branch == "amend", overlap.branch
+                assert overlap.story is not None and overlap.story.id == "ST-001"
+                assert overlap.event_id == "E-001", (
+                    "truncated before the filter — picked the wrong paragraph: "
+                    f"{overlap.event_id}"
+                )
+
+                # And the floor itself: the same query, the same ranked list,
+                # a threshold nothing can clear. The story still resolves, the
+                # paragraph does not, and unresolved is the outcome — never
+                # the best of a bad set.
+                EVENT_THRESHOLD = 1.01
+                floored = route(overlap_query, trunc_index, fake_embed, trunc_dir)
+                assert floored.branch == "amend", floored.branch
+                assert floored.story is not None and floored.story.id == "ST-001"
+                assert floored.event_id == "", (
+                    "a paragraph under the floor was picked anyway: "
+                    f"{floored.event_id}"
+                )
+            finally:
+                EVENT_THRESHOLD = restore
 
         # Amending composes a Proposal, never a write. Nothing lands until the
         # creator approves it at the gate.
@@ -672,8 +765,13 @@ def _self_check() -> None:
         # overwrite by guessing wrong.
         added = propose_addition(
             after, [("the drive home", "We got back after dark.\n")], directory,
+            keywords=["mountains", "headlights"],
         )
         with_new = parse_story(added.new_text)
+        # New events bring their keywords with them, or the story gets harder
+        # to find as it gets richer. Existing ones are kept, never replaced.
+        assert with_new.keywords[:3] == ["hiking", "mountains", "weather"], with_new.keywords
+        assert "headlights" in with_new.keywords, with_new.keywords
         assert [e.id for e in with_new.events] == ["E-001", "E-002", "E-003"], (
             f"append renumbered or dropped: {[e.id for e in with_new.events]}"
         )
