@@ -205,6 +205,20 @@ def restore_backup(backup: Path, directory: Path | None = None) -> Path:
     return target
 
 
+class NoChange(ValueError):
+    """The proposed text is what the file already holds.
+
+    Every write in this repo goes through a confirm gate, and a gate that
+    reports "applied" over an empty diff teaches the creator to trust a write
+    that did not happen. Observed on the amend branch: the ingestion pass
+    returned the target paragraph unchanged, the file round-tripped
+    byte-identical, a backup was taken, and the story was reported as amended.
+
+    Raised here rather than checked per caller — every proposal in the repo is
+    built by `_propose`, so this is the one place all of them pass through.
+    """
+
+
 def _propose(
     path: Path,
     old: str,
@@ -213,6 +227,12 @@ def _propose(
     before: str = "",
     after: str = "",
 ) -> Proposal:
+    if new == old:
+        raise NoChange(
+            f"{path.name} already reads exactly this — nothing to write. "
+            "Nothing was changed."
+        )
+
     diff = "".join(
         difflib.unified_diff(
             old.splitlines(keepends=True),
@@ -874,6 +894,17 @@ def _self_check() -> None:
     import tempfile
     from pathlib import Path
 
+    # A proposal that changes nothing is refused before it can reach a gate.
+    # Every write is built here, so this covers the bible tools and the story
+    # tools alike.
+    try:
+        _propose(path=Path("x.md"), old="same\n", new="same\n", summary="noop")
+    except NoChange:
+        pass
+    else:
+        raise AssertionError("a no-op write was proposed as if it changed something")
+    assert _propose(path=Path("x.md"), old="a\n", new="b\n", summary="real").diff
+
     # Declared once, up front: this function temporarily repoints these at
     # temp-directory fixtures in two places below (to exercise the
     # default-argument path and the run_tool path-injection guard) and
@@ -1302,7 +1333,13 @@ def _self_check() -> None:
             assert "S-009" in str(exc), str(exc)
         else:
             raise AssertionError("section replace must refuse silent cite loss too")
-        kept = "### 6. Voice\n- old line\n- sharper claim [S-009] [S-011]\n- claim two [S-012]"
+        # The replacement carries real new text, not just a demoted heading: a
+        # section rewritten to exactly what it already says is a no-op, and
+        # _propose refuses those outright.
+        kept = (
+            "### 6. Voice\n- old line\n- sharper claim [S-009] [S-011]\n"
+            "- claim two [S-012]\n- a third claim [S-012]"
+        )
         rewritten_section = replace_profile_section("6. Voice", kept, path=target)
         assert "### 6. Voice" not in rewritten_section.new_text, "heading must be normalised"
         assert rewritten_section.new_text.count("## 6. Voice") == 1, rewritten_section.new_text
