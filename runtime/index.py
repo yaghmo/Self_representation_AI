@@ -32,6 +32,27 @@ INDEX_PATH = REPO_ROOT / "data" / "index" / "stories.npz"
 
 Embedder = Callable[[list[str]], np.ndarray]
 
+# Events per chapter. A story's summary is a fixed-size compression of it, so
+# it gets lossier as events pile up: ST-002 grew from three events to seven
+# while its summary still described the first three, and a paste about the
+# later ones scored 0.511 against it — under the 0.60 routing threshold — while
+# the paragraph it actually belonged to sat at 0.804. It was logged as a new
+# story. Chapters keep the coarse layer's summary-to-content ratio roughly
+# constant instead.
+#
+# Counted in events, not tokens. `index.py` has no tokeniser and should not
+# grow one — that lives on the other side of the stack boundary — and at the
+# few-thousand-token size a chapter boundary is usually pitched at, no story in
+# a real corpus this age would split at all. Four is small enough to bite.
+#
+# Membership is a pure function of the event's own number, never of its
+# position in the list, so it cannot shift: ids are allocated from the maximum
+# and never reused, so E-005 belongs to chapter 2 for the life of the story
+# whatever is added or removed around it. A chapter's text does change while it
+# is filling up — one chapter re-embeds per append, never all of them — and is
+# frozen once full.
+CHAPTER_SIZE = 4
+
 
 @dataclass
 class Chunk:
@@ -52,8 +73,65 @@ class Hit:
     score: float
 
 
+def chapter_of(event_id: str) -> int:
+    """Which chapter an event belongs to, from its number alone."""
+    return (int(event_id.split("-")[1]) - 1) // CHAPTER_SIZE + 1
+
+
+def _chapters(story: Story) -> list[Chunk]:
+    """Coarse chunks for the spans of a story one summary can no longer cover.
+
+    A chapter is simply its events, in the same `title. body` shape the event
+    chunks use — derived, so it is deterministic, costs no model call, and
+    cannot drift in wording between edits the way a regenerated summary would.
+
+    Two things this deliberately does *not* do, both measured on the paste that
+    was misrouted into its own story (the correct chapter had to clear 0.60):
+
+    - No story-title prefix. It is identical across every chapter, so it
+      dominates the vector and flattens them together: with it the correct
+      chapter scored 0.509 and its sibling 0.495, and another story's two
+      chapters landed 0.008 apart. Without it, 0.699 and 0.062 of separation.
+    - Not titles alone. Titles are a handful of words and carry too little for
+      the embedder to work with — 0.480, worse than the stale story summary
+      they were meant to rescue.
+
+    Bodies do appear in the event chunks too. That repetition is the point: the
+    coarse layer answers "which span of which story", the fine layer answers
+    "which paragraph", and they need different amounts of text to do it.
+
+    Nothing below the threshold gets chapters. One chapter over a four-event
+    story would be a near-duplicate of the story summary, competing with it for
+    the same queries and telling the router nothing new.
+    """
+    if len(story.events) <= CHAPTER_SIZE:
+        return []
+
+    grouped: dict[int, list[Event]] = {}
+    for event in story.events:
+        grouped.setdefault(chapter_of(event.id), []).append(event)
+
+    return [
+        Chunk(
+            key=f"{story.id}/C-{number:03d}",
+            kind="summary",
+            story_id=story.id,
+            event_id="",
+            text=" ".join(f"{e.title}. {e.text.strip()}" for e in members),
+            keywords=list(story.keywords),
+        )
+        for number, members in sorted(grouped.items())
+    ]
+
+
 def chunks_of(story: Story) -> list[Chunk]:
-    """One summary chunk, then one chunk per event, in id order."""
+    """One summary chunk, its chapters, then one chunk per event, in id order.
+
+    Chapters are `kind="summary"` on purpose: they are the coarse layer, and
+    `route()` reads `story_id` off whichever coarse chunk wins. So a chapter
+    match resolves to its story exactly like a story match, and routing needs
+    no idea that chapters exist.
+    """
     summary = Chunk(
         key=f"{story.id}/summary",
         kind="summary",
@@ -73,7 +151,7 @@ def chunks_of(story: Story) -> list[Chunk]:
         )
         for event in story.events
     ]
-    return [summary, *events]
+    return [summary, *_chapters(story), *events]
 
 
 def all_chunks(directory: Path | None = None) -> list[Chunk]:
@@ -232,6 +310,48 @@ def _self_check() -> None:
     assert [c.key for c in chunks] == ["ST-001/summary", "ST-001/E-001", "ST-001/E-002"]
     assert chunks[0].kind == "summary" and chunks[1].kind == "event"
     assert chunks[1].event_id == "E-001"
+
+    # -- chapters ------------------------------------------------------------
+    # A short story gets none: one chapter over it would be a near-duplicate of
+    # the story summary, competing for the same queries.
+    short = Story(id="ST-009", title="short", summary="s", keywords=[], logged="",
+                  events=[Event(f"E-{n:03d}", f"t{n}", f"body {n}\n")
+                          for n in range(1, CHAPTER_SIZE + 1)])
+    assert not [c for c in chunks_of(short) if "/C-" in c.key], "chaptered below the threshold"
+
+    long_story = Story(
+        id="ST-010", title="a long one", summary="the original three events",
+        keywords=["k"], logged="",
+        events=[Event(f"E-{n:03d}", f"title {n}", f"body {n}\n") for n in range(1, 8)],
+    )
+    chaptered = chunks_of(long_story)
+    assert [c.key for c in chaptered if "/C-" in c.key] == ["ST-010/C-001", "ST-010/C-002"]
+    first = next(c for c in chaptered if c.key == "ST-010/C-001")
+    # Chapters are coarse chunks, so routing sees them as it sees any summary
+    # and resolves them to their story with no idea chapters exist.
+    assert first.kind == "summary" and first.story_id == "ST-010" and first.event_id == ""
+    assert first.text == "title 1. body 1 title 2. body 2 title 3. body 3 title 4. body 4", (
+        first.text
+    )
+    # No story-title prefix: it is the same in every chapter of a story, so it
+    # dominates the vector and flattens them into each other. Measured — see
+    # `_chapters`.
+    assert not first.text.startswith("a long one"), first.text
+
+    # The invariant the whole scheme rests on. Membership comes from the
+    # event's own number, so appending cannot move an earlier event into a
+    # different chapter and re-embed content that never changed. Ids are
+    # allocated from the maximum and never reused, so this holds under
+    # deletion too.
+    before = {c.key: c.digest() for c in chunks_of(long_story) if "/C-" in c.key}
+    long_story.events.append(Event("E-008", "title 8", "body 8\n"))
+    after = {c.key: c.digest() for c in chunks_of(long_story) if "/C-" in c.key}
+    assert before["ST-010/C-001"] == after["ST-010/C-001"], "a full chapter was rewritten"
+    assert before["ST-010/C-002"] != after["ST-010/C-002"], "the filling chapter must grow"
+    assert chapter_of("E-001") == 1 and chapter_of("E-004") == 1
+    assert chapter_of("E-005") == 2 and chapter_of("E-008") == 2
+    # A gap left by a deleted event does not renumber what follows it.
+    assert chapter_of("E-009") == 3
 
     index = build(chunks, fake_embed)
 
