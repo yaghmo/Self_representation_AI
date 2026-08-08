@@ -48,6 +48,7 @@ class Model:
     context_tokens: int
     agent: bool = False
     bible_strategy: str = "retrieval"
+    history_window: int = 20
     port: int = 8080
 
     _backend: Backend | None = field(default=None, init=False, repr=False)
@@ -77,6 +78,7 @@ class Model:
             context_tokens=config.get("context_tokens", 8192),
             agent=config.get("agent", False),
             bible_strategy=config.get("bible_strategy", "retrieval"),
+            history_window=config.get("history_window", 20),
             port=port,
         )
 
@@ -194,6 +196,7 @@ class Model:
             "source": "api" if self.is_api else "local",
             "context_tokens": self.context_tokens,
             "bible_strategy": self.bible_strategy,
+            "history_window": self.history_window,
             "loaded": self.loaded,
         }
         if self.is_api:
