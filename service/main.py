@@ -267,6 +267,10 @@ class ApplyResponse(BaseModel):
     path: str
 
 
+class RestoreRequest(BaseModel):
+    name: str
+
+
 # -------------------------------------------------------------------- model --
 
 
@@ -755,6 +759,32 @@ def admin_proposal_apply(request: ProposalPayload) -> ApplyResponse:
     return ApplyResponse(path=str(written))
 
 
+@app.get("/admin/snapshots")
+def admin_snapshots() -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    return {"snapshots": [p.name for p in list_backups()]}
+
+
+@app.post("/admin/snapshots/restore")
+def admin_snapshots_restore(request: RestoreRequest) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    # Resolved by name against list_backups()'s own output, not built from
+    # the client's string directly — restore_backup() validates the closed
+    # bible/story pair too, but there is no reason to hand it a path it has
+    # to prove is safe when the safe set is already in hand.
+    candidates = {p.name: p for p in list_backups()}
+    backup = candidates.get(request.name)
+    if backup is None:
+        raise HTTPException(status_code=404, detail=f"no snapshot named {request.name!r}")
+    try:
+        restored = restore_backup(backup)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"restored": restored.name}
+
+
 def _self_check() -> None:
     """The trust boundary, without weights.
 
@@ -1145,6 +1175,54 @@ def _self_check() -> None:
             )
             SOURCES_PATH, PROFILE_PATH = original_main_sources, original_main_profile
 
+    _model.agent = False
+
+    # -- /admin/snapshots ------------------------------------------------------
+    _model.agent = True
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        profile = root / "character.md"
+        profile.write_text("# Placeholder\n## 6. Voice\n- old line\n", encoding="utf-8")
+
+        # list_backups()/restore_backup() are called with directory=None from
+        # these routes, so `_corpus_roots()` derives the bible dir from
+        # `SOURCES_PATH.parent` — not from `PROFILE_PATH`. Both bindings have
+        # to move into the tmp dir together, or list_backups() keeps looking
+        # for `.backups` next to the real (or, in this worktree, nonexistent)
+        # data/ instead of next to the snapshot this test just wrote.
+        original_tools_profile = tools_module.PROFILE_PATH
+        original_tools_sources = tools_module.SOURCES_PATH
+        tools_module.PROFILE_PATH = profile
+        tools_module.SOURCES_PATH = root / "sources.md"
+        try:
+            # Nothing snapshotted yet in this fresh directory.
+            response = client.get("/admin/snapshots")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["snapshots"] == []
+
+            # snapshot() (called from inside Proposal.apply, exercised via
+            # Task 1's flow) is what populates .backups/ — reproduce that
+            # directly here rather than re-driving a whole tool call.
+            from runtime.tools import snapshot
+
+            snapshot(profile)
+            profile.write_text("# Placeholder\n## 6. Voice\n- changed\n", encoding="utf-8")
+
+            response = client.get("/admin/snapshots")
+            assert response.status_code == 200, (response.status_code, response.text)
+            names = response.json()["snapshots"]
+            assert len(names) == 1, names
+
+            response = client.post("/admin/snapshots/restore", json={"name": names[0]})
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert "old line" in profile.read_text(encoding="utf-8")
+
+            # An unknown name is refused, not treated as "nothing to restore".
+            response = client.post("/admin/snapshots/restore", json={"name": "not-a-real-one"})
+            assert response.status_code == 404, (response.status_code, response.text)
+        finally:
+            tools_module.PROFILE_PATH = original_tools_profile
+            tools_module.SOURCES_PATH = original_tools_sources
     _model.agent = False
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
