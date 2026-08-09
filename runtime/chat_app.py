@@ -32,6 +32,7 @@ from runtime.convert import ConversionFailed, to_markdown
 from runtime.embed import EmbeddingNotConfigured, bge_embedder
 from runtime.index import all_chunks, build, load_index
 from runtime.stories import STORIES_DIR, load_story
+from runtime.voice_sample import LANGUAGES, PHRASES, sample_status, save_sample
 from runtime.story_tools import (
     Routing,
     keep_logged,
@@ -207,6 +208,35 @@ def confirm_dialog(proposal) -> None:
         )
 
 
+@st.dialog("Record voice sample", width="large")
+def record_voice_dialog() -> None:
+    """Nothing reaches disk until Save. Cancel closes with no write — the
+    admin can also just hit the widget's own re-record control before
+    deciding either way.
+    """
+    phrase_by_code = dict(LANGUAGES)
+    lang = st.selectbox(
+        "Language",
+        [code for code, _ in LANGUAGES],
+        format_func=lambda code: phrase_by_code[code],
+        key="voice_lang",
+    )
+    st.markdown(f"> {PHRASES[lang]}")
+    audio = st.audio_input("Record")
+
+    left, right = st.columns(2)
+    if left.button(
+        "Save", type="primary", width="stretch", disabled=audio is None
+    ):
+        save_sample(audio.getvalue())
+        st.session_state["voice_dialog_open"] = False
+        st.session_state["applied_note"] = f"Saved voice sample ({sample_status()})"
+        st.rerun()
+    if right.button("Cancel", width="stretch"):
+        st.session_state["voice_dialog_open"] = False
+        st.rerun()
+
+
 # ---------------------------------------------------------------- sidebar ---
 
 with st.sidebar:
@@ -318,6 +348,13 @@ with st.sidebar:
                     "the history described a file that no longer says that."
                 )
                 st.rerun()
+
+        st.divider()
+        st.header("Voice sample")
+        st.caption(sample_status() or "Not recorded yet.")
+        if st.button("Record voice sample", width="stretch"):
+            st.session_state["voice_dialog_open"] = True
+            st.rerun()
 
 # ------------------------------------------------------------------- main ---
 
@@ -802,3 +839,6 @@ if st.session_state.get("applied_note"):
 pending = st.session_state.get("pending")
 if pending is not None:
     confirm_dialog(pending)
+
+if st.session_state.get("voice_dialog_open"):
+    record_voice_dialog()
