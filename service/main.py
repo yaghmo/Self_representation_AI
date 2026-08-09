@@ -48,7 +48,17 @@ from runtime.embed import EmbeddingNotConfigured, bge_embedder
 from runtime.index import Embedder, Index, all_chunks, load_index
 from runtime.model import Model, ModelNotDownloaded
 from runtime.recall import RECALL_SCHEMA, recall
-from runtime.story_tools import AMEND_PROMPT, INGEST_PROMPT, read_policy
+from runtime.story_tools import (
+    AMEND_PROMPT,
+    INGEST_PROMPT,
+    keep_logged,
+    parse_story_command,
+    propose_addition,
+    propose_amendment,
+    propose_new_story,
+    read_policy,
+    route,
+)
 from runtime.stories import STORIES_DIR, load_story
 from runtime.tools import (
     SOURCES_PATH,
@@ -269,6 +279,31 @@ class ApplyResponse(BaseModel):
 
 class RestoreRequest(BaseModel):
     name: str
+
+
+class StoryRouteRequest(BaseModel):
+    text: str
+
+
+class StoryEvent(BaseModel):
+    title: str
+    text: str
+
+
+class StoryProposeRequest(BaseModel):
+    branch: str  # "new" | "append" | "amend"
+    story_id: str = ""
+    event_id: str = ""
+    # Original source text — only used on branch="new", as keep_logged's
+    # fallback when the ingestion pass didn't extract a date.
+    text: str = ""
+    # branch="amend" only: True means events[1:] are NOT appended (a merge
+    # asked for one paragraph rewritten, not the story grown).
+    merge: bool = False
+    summary: str = ""   # branch="new" only
+    logged: str = ""    # branch="new" only
+    keywords: list[str] = Field(default_factory=list)
+    events: list[StoryEvent] = Field(default_factory=list)
 
 
 # -------------------------------------------------------------------- model --
@@ -785,6 +820,104 @@ def admin_snapshots_restore(request: RestoreRequest) -> dict:
     return {"restored": restored.name}
 
 
+@app.post("/admin/story/route")
+def admin_story_route(request: StoryRouteRequest) -> dict:
+    """Same decision `chat_app.py`'s `/story` handling makes today: an
+    explicit `ST-###[/E-###]` prefix short-circuits routing; otherwise the
+    story index decides.
+    """
+    model = _require_loaded()
+    _require_agent(model)
+
+    story_id, event_id, text = parse_story_command(request.text)
+    if story_id:
+        target = STORIES_DIR / f"{story_id}.md"
+        if not target.exists():
+            raise HTTPException(status_code=404, detail=f"no story {story_id} in the corpus")
+        story = load_story(target)
+        if event_id:
+            if not any(e.id == event_id for e in story.events):
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"{story_id} has no {event_id}. Events present: "
+                        + (", ".join(e.id for e in story.events) or "none")
+                    ),
+                )
+            return {
+                "branch": "amend",
+                "story_id": story_id,
+                "story_title": story.title,
+                "event_id": event_id,
+                "text": text,
+                "runners_up": [],
+            }
+        return {
+            "branch": "append",
+            "story_id": story_id,
+            "story_title": story.title,
+            "event_id": "",
+            "text": text,
+            "runners_up": [],
+        }
+
+    pair = _get_recall()
+    if pair is None:
+        raise HTTPException(
+            status_code=424, detail=_story_unavailable or "story retrieval unavailable"
+        )
+    index, embed = pair
+    routing = route(text, index, embed)
+    return {
+        "branch": routing.branch,
+        "story_id": routing.story.id if routing.story else "",
+        "story_title": routing.story.title if routing.story else "",
+        "event_id": routing.event_id,
+        "text": text,
+        "runners_up": [
+            {"story_id": h.chunk.story_id, "score": h.score} for h in routing.runners_up
+        ],
+    }
+
+
+@app.post("/admin/story/propose", response_model=ToolResponse)
+def admin_story_propose(request: StoryProposeRequest) -> ToolResponse:
+    model = _require_loaded()
+    _require_agent(model)
+
+    pairs = [(e.title, e.text) for e in request.events]
+    try:
+        if request.branch == "amend":
+            if not pairs:
+                raise HTTPException(status_code=422, detail="amend needs at least one event")
+            story = load_story(STORIES_DIR / f"{request.story_id}.md")
+            proposal = propose_amendment(
+                story,
+                request.event_id,
+                pairs[0][1],
+                additions=[] if request.merge else pairs[1:],
+                keywords=request.keywords,
+            )
+        elif request.branch == "append":
+            story = load_story(STORIES_DIR / f"{request.story_id}.md")
+            proposal = propose_addition(story, pairs, keywords=request.keywords)
+        elif request.branch == "new":
+            proposal = propose_new_story(
+                summary=request.summary,
+                keywords=request.keywords,
+                logged=keep_logged(request.logged, request.text),
+                events=pairs,
+            )
+        else:
+            raise HTTPException(status_code=422, detail=f"unknown branch {request.branch!r}")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return ToolResponse(proposal=_proposal_dict(proposal))
+
+
 def _self_check() -> None:
     """The trust boundary, without weights.
 
@@ -1223,6 +1356,124 @@ def _self_check() -> None:
         finally:
             tools_module.PROFILE_PATH = original_tools_profile
             tools_module.SOURCES_PATH = original_tools_sources
+    _model.agent = False
+
+    # -- /admin/story/route + /admin/story/propose ----------------------------
+    _model.agent = True
+    # Force the "no embedder" state directly rather than relying on whatever
+    # this machine happens to have configured — on a machine WITH bge-m3
+    # set up, an unforced _get_recall() would hit the real data/index/*
+    # corpus and make the 424 assertion below flaky (or outright wrong)
+    # depending on what's actually indexed there. The point under test is
+    # the endpoint's 424 wiring, not route()'s scoring — that's already
+    # covered by story_tools.py's own self-check.
+    # (already `global`-declared for this whole function by the recall-loop
+    # block above, and already used there — a second `global` statement here
+    # would itself be a SyntaxError: "used prior to global declaration".)
+    saved_index, saved_embed, saved_unavailable = _story_index, _story_embed, _story_unavailable
+    _story_index, _story_embed, _story_unavailable = None, None, "no embedder configured"
+    with tempfile.TemporaryDirectory() as tmp:
+        stories_dir = Path(tmp) / "stories"
+        stories_dir.mkdir()
+        # The brief's fixture used a YAML-frontmatter shape; the real story
+        # format (`parse_story`/`render_story` in runtime/stories.py) is
+        # `# ST-### — title` + `**Field:**` lines + `## E-### — title`
+        # sections, so the fixture is written in that shape instead.
+        (stories_dir / "ST-001.md").write_text(
+            "# ST-001 — A day at the beach\n"
+            "**Summary:** a day at the beach\n"
+            "**Keywords:** \n"
+            "**Logged:** \n"
+            "\n"
+            "## E-001 — arriving\n"
+            "We got there at noon.\n",
+            encoding="utf-8",
+        )
+
+        import runtime.stories as stories_module
+        import runtime.story_tools as story_tools_module
+
+        original_stories_dir = stories_module.STORIES_DIR
+        stories_module.STORIES_DIR = stories_dir
+        # `service.main` imported STORIES_DIR by value, so the module-level
+        # name here must be repointed too, not just the source module's.
+        global STORIES_DIR
+        original_main_stories_dir = STORIES_DIR
+        STORIES_DIR = stories_dir
+        # A third, independent binding: `runtime.story_tools` also did
+        # `from runtime.stories import STORIES_DIR`, and `propose_addition`
+        # / `propose_amendment` / `propose_new_story` default their
+        # `directory` param to *this* module-level name when the endpoint
+        # calls them without `directory=` (which it does, per the brief).
+        # Same "separate binding" lesson as Tasks 1-2, a third instance of
+        # it — without this, propose_addition() resolves ST-001's path
+        # against the real (in this worktree, nonexistent) data/stories
+        # instead of the tmp fixture dir, and 422s with "not in the corpus".
+        original_tools_stories_dir = story_tools_module.STORIES_DIR
+        story_tools_module.STORIES_DIR = stories_dir
+        try:
+            # No embedder (forced above) — an unqualified route() call is
+            # expected to come back 424, the same "unavailable, not an
+            # error" contract _get_recall() already gives the fan path.
+            response = client.post("/admin/story/route", json={"text": "something new happened"})
+            assert response.status_code == 424, (response.status_code, response.text)
+
+            # An explicit ST-### prefix bypasses the embedder entirely.
+            response = client.post(
+                "/admin/story/route", json={"text": "ST-001 and then we went home"}
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            body = response.json()
+            assert body["branch"] == "append", body
+            assert body["story_id"] == "ST-001", body
+            assert body["text"] == "and then we went home", body
+
+            # An explicit ST-###/E-### prefix names the paragraph directly.
+            response = client.post(
+                "/admin/story/route", json={"text": "ST-001/E-001 we actually got there at noon"}
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            body = response.json()
+            assert body["branch"] == "amend", body
+            assert body["event_id"] == "E-001", body
+
+            # A story id that doesn't exist is a 404, not a silent new story.
+            response = client.post("/admin/story/route", json={"text": "ST-099 nothing here"})
+            assert response.status_code == 404, (response.status_code, response.text)
+
+            # Proposing an addition to ST-001 returns a proposal, writes nothing.
+            response = client.post(
+                "/admin/story/propose",
+                json={
+                    "branch": "append",
+                    "story_id": "ST-001",
+                    "events": [{"title": "leaving", "text": "We left at four."}],
+                },
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            proposal = response.json()["proposal"]
+            assert proposal is not None
+            assert "We left at four." in proposal["new_text"]
+            assert "We left at four." not in (stories_dir / "ST-001.md").read_text(
+                encoding="utf-8"
+            ), "proposing must not write"
+
+            # A brand new story needs no story_id.
+            response = client.post(
+                "/admin/story/propose",
+                json={
+                    "branch": "new",
+                    "summary": "a trip to the mountains",
+                    "events": [{"title": "arriving", "text": "We arrived at dusk."}],
+                },
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["proposal"]["path"].endswith("ST-002.md"), response.json()
+        finally:
+            stories_module.STORIES_DIR = original_stories_dir
+            STORIES_DIR = original_main_stories_dir
+            story_tools_module.STORIES_DIR = original_tools_stories_dir
+    _story_index, _story_embed, _story_unavailable = saved_index, saved_embed, saved_unavailable
     _model.agent = False
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
