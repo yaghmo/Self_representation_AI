@@ -79,6 +79,10 @@ def _get_recall() -> tuple[Index, Embedder] | None:
             _story_unavailable = str(exc)
             logger.warning("fan retrieval unavailable: %s", exc)
             return None
+        except Exception as exc:  # a torch or weights failure, not a config one
+            _story_unavailable = f"{type(exc).__name__}: {exc}"
+            logger.warning("fan retrieval unavailable: %s", exc)
+            return None
     return _story_index, _story_embed
 
 
@@ -844,9 +848,12 @@ def _self_check() -> None:
             "function": {"name": "recall", "arguments": json.dumps({"query": "Tuesday"})},
         }]
         script = iter([("", recall_call), ("it happened on a Tuesday, per what I found.", [])])
+        seen_second_call_messages: list = []
 
         def calls_recall_once(messages, **kwargs):
             content, calls = next(script)
+            if not calls:  # this is the second call — messages should now carry the tool result
+                seen_second_call_messages.extend(messages)
             fake_backend.last_tool_calls = calls
             return content
 
@@ -857,6 +864,16 @@ def _self_check() -> None:
             body = response.json()
             assert body["content"] == "it happened on a Tuesday, per what I found.", body
             assert body["tool_calls"] == [], "the tool exchange must not leak into the response"
+            # The loop must have actually run recall() and appended its real
+            # result — not just replayed the script. The fixture index has one
+            # event about "the fixture event ... Tuesday", hydrated with its
+            # story's summary ("a fixture story. nothing eventful").
+            tool_messages = [m for m in seen_second_call_messages if m.role == "tool"]
+            assert tool_messages, "no tool-result message was appended before the second model call"
+            assert "fixture event" in tool_messages[-1].content, tool_messages[-1].content
+            assert "a fixture story" in tool_messages[-1].content, (
+                "the hydrated summary header must be present, not just the bare event"
+            )
 
         # The iteration cap: a model that keeps calling recall forever still
         # gets bounded to MAX_RECALL_ITERATIONS searches, then one final call
