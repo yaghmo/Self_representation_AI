@@ -22,6 +22,7 @@ Endpoints are deliberately few:
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import asynccontextmanager
 
@@ -41,7 +42,10 @@ from runtime.bible import (
     build_persona,
     build_procedure,
 )
+from runtime.embed import EmbeddingNotConfigured, bge_embedder
+from runtime.index import Embedder, Index, load_index
 from runtime.model import Model, ModelNotDownloaded
+from runtime.recall import RECALL_SCHEMA, recall
 from runtime.story_tools import AMEND_PROMPT, INGEST_PROMPT, read_policy
 from service.logging_config import log_payload, setup_logging
 
@@ -50,6 +54,87 @@ logger = setup_logging("service")
 # One model per process. Concurrency comes from llama-server, not from loading
 # the weights twice.
 _model: Model | None = None
+
+# Independent of `_model` — the embedder and story index have nothing to do
+# with the LLM's load state, so they are never unloaded together.
+_story_index: Index | None = None
+_story_embed = None
+_story_unavailable: str = ""
+
+MAX_RECALL_ITERATIONS = 3
+
+
+def _get_recall() -> tuple[Index, Embedder] | None:
+    """Lazily load the story index + embedder once. None means unavailable —
+    the tool is then simply never offered, never an error surfaced to a fan.
+    """
+    global _story_index, _story_embed, _story_unavailable
+    if _story_unavailable:
+        return None
+    if _story_index is None or _story_embed is None:
+        try:
+            _story_embed = bge_embedder()
+            _story_index = load_index()
+        except EmbeddingNotConfigured as exc:
+            _story_unavailable = str(exc)
+            logger.warning("fan retrieval unavailable: %s", exc)
+            return None
+    return _story_index, _story_embed
+
+
+def _run_recall_loop(
+    model: Model,
+    messages: list[Message],
+    temperature: float,
+    max_tokens: int,
+    thinking: bool,
+    index: Index,
+    embed: Embedder,
+) -> str:
+    """Let the model call `recall` a bounded number of times before
+    returning a final answer. Entirely internal to one /chat request — the
+    tool exchange is appended to `messages` in place and never reaches the
+    client; only the returned string does.
+
+    ponytail: the loop does not re-check the token budget between rounds.
+    `assemble()` already sized `messages` for one reply; a very chatty
+    exchange (several recall rounds, each a `RESULT_LIMIT`-chunk result)
+    could in principle overrun the model's context. Caught the same way any
+    other overrun is today — the caller's `except Exception` turns it into
+    a 502 — not silently corrupted. Revisit if a real corpus makes this
+    common; nothing to tune it against yet (corpus is empty).
+    """
+    for _ in range(MAX_RECALL_ITERATIONS):
+        content = model.chat(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            thinking=thinking,
+            tools=[RECALL_SCHEMA],
+        )
+        calls = getattr(model._backend, "last_tool_calls", []) or []
+        if not calls:
+            return content
+
+        messages.append(Message("assistant", content, tool_calls=calls))
+        for call in calls:
+            function = call.get("function") or {}
+            call_id = call.get("id", "")
+            raw = function.get("arguments") or "{}"
+            try:
+                arguments = json.loads(raw) if isinstance(raw, str) else raw
+                query = arguments.get("query", "") if isinstance(arguments, dict) else ""
+                result = recall(query, index, embed)
+            except Exception as exc:
+                result = f"recall failed: {exc}"
+            messages.append(Message("tool", result, tool_call_id=call_id))
+
+    # Cap hit and still calling tools — force a real answer, no tools offered
+    # this time, so the model cannot loop again.
+    return model.chat(
+        messages, temperature=temperature, max_tokens=max_tokens, thinking=thinking
+    )
+
 
 # The ingestion reply echoes the creator's text back redacted — policy
 # preserves phrasing, so it barely shrinks — plus a summary, keywords, event
@@ -320,32 +405,44 @@ def chat(request: ChatRequest) -> ChatResponse:
         },
     )
     messages = _prompt_for(model, request)
+    recall_ctx = None if model.agent else _get_recall()
     try:
-        content = model.chat(
-            messages,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            thinking=request.thinking,
-            tools=request.tools,
-        )
+        if recall_ctx is not None:
+            index, embed = recall_ctx
+            content = _run_recall_loop(
+                model, messages, request.temperature, request.max_tokens,
+                request.thinking, index, embed,
+            )
+        else:
+            content = model.chat(
+                messages,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                thinking=request.thinking,
+                tools=request.tools,
+            )
     except Exception as exc:
         logger.exception("chat failed")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     backend = model._backend
+    # The internal recall loop's own tool exchange never reaches the client
+    # — only agent mode's tool_calls are real callbacks the client must act
+    # on and render.
+    tool_calls = (getattr(backend, "last_tool_calls", []) or []) if model.agent else []
     log_payload(
         logger,
         "POST /chat >>",
         {
             "content": content,
             "reasoning": getattr(backend, "last_reasoning", ""),
-            "tool_calls": getattr(backend, "last_tool_calls", []) or [],
+            "tool_calls": tool_calls,
         },
     )
     return ChatResponse(
         content=content,
         reasoning=getattr(backend, "last_reasoning", ""),
-        tool_calls=getattr(backend, "last_tool_calls", []) or [],
+        tool_calls=tool_calls,
         prompt_tokens=getattr(backend, "last_usage", None).prompt_tokens if backend else 0,
         completion_tokens=getattr(backend, "last_usage", None).completion_tokens if backend else 0,
     )
@@ -683,6 +780,125 @@ def _self_check() -> None:
     )
     assert response.status_code == 200, (response.status_code, response.text)
     assert "content" in response.json(), response.text
+
+    # -- the internal recall loop (non-agent /chat only) ---------------------
+    import re
+    import zlib
+
+    import numpy as np
+
+    from runtime.index import Chunk, build as build_index
+
+    def fake_embed(texts: list[str]) -> "np.ndarray":
+        width = 64
+        out = np.zeros((len(texts), width), dtype=np.float32)
+        for row, text in enumerate(texts):
+            for word in re.findall(r"\w+", text.lower()):
+                out[row, zlib.crc32(word.encode("utf-8")) % width] += 1.0
+        norms = np.linalg.norm(out, axis=1, keepdims=True)
+        return out / np.maximum(norms, 1e-9)
+
+    fixture_chunks = [
+        Chunk(key="ST-009/summary", kind="summary", story_id="ST-009", event_id="",
+              text="a fixture story. nothing eventful", keywords=[]),
+        Chunk(key="ST-009/E-001", kind="event", story_id="ST-009", event_id="E-001",
+              text="the fixture event. it happened on a Tuesday", keywords=[]),
+    ]
+    fixture_index = build_index(fixture_chunks, fake_embed)
+
+    global _story_index, _story_embed, _story_unavailable
+    real_story_index, real_story_embed, real_story_unavailable = (
+        _story_index, _story_embed, _story_unavailable,
+    )
+    _story_index, _story_embed, _story_unavailable = fixture_index, fake_embed, ""
+
+    class FakeBackend:
+        def __init__(self):
+            self.last_tool_calls: list = []
+            self.last_reasoning = ""
+            self.last_usage = SimpleNamespace(prompt_tokens=0, completion_tokens=0)
+
+    fake_backend = FakeBackend()
+
+    try:
+        # A non-agent turn where the model answers immediately: recall must
+        # never be invoked, and behaviour matches today exactly.
+        def answers_immediately(messages, **kwargs):
+            fake_backend.last_tool_calls = []
+            return "no search needed"
+
+        _model.chat = answers_immediately
+        _model._backend = fake_backend
+        _model.agent = False
+        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        if response.status_code == 424:
+            pass  # no data/character.md on this clone — persona checks already skipped above
+        else:
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["content"] == "no search needed", response.text
+            assert response.json()["tool_calls"] == [], "recall exchange must never reach the client"
+
+        # A non-agent turn where the model calls recall once, then answers.
+        recall_call = [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "recall", "arguments": json.dumps({"query": "Tuesday"})},
+        }]
+        script = iter([("", recall_call), ("it happened on a Tuesday, per what I found.", [])])
+
+        def calls_recall_once(messages, **kwargs):
+            content, calls = next(script)
+            fake_backend.last_tool_calls = calls
+            return content
+
+        _model.chat = calls_recall_once
+        response = client.post("/chat", json={"messages": [{"role": "user", "content": "what happened Tuesday?"}]})
+        if response.status_code != 424:
+            assert response.status_code == 200, (response.status_code, response.text)
+            body = response.json()
+            assert body["content"] == "it happened on a Tuesday, per what I found.", body
+            assert body["tool_calls"] == [], "the tool exchange must not leak into the response"
+
+        # The iteration cap: a model that keeps calling recall forever still
+        # gets bounded to MAX_RECALL_ITERATIONS searches, then one final call
+        # with no `tools` offered at all — forcing an answer rather than
+        # looping forever. call_log proves the exact shape, not just that
+        # the request eventually returned.
+        call_log: list[bool] = []
+
+        def always_calls_recall(messages, **kwargs):
+            call_log.append("tools" in kwargs)
+            fake_backend.last_tool_calls = recall_call
+            return "fallback answer"
+
+        _model.chat = always_calls_recall
+        response = client.post("/chat", json={"messages": [{"role": "user", "content": "keep searching"}]})
+        if response.status_code != 424:
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert call_log == [True] * MAX_RECALL_ITERATIONS + [False], call_log
+            assert response.json()["content"] == "fallback answer", response.text
+
+        # Agent-mode requests are unaffected: recall is never in their tool
+        # list, and the loop is not entered.
+        def agent_reply(messages, **kwargs):
+            fake_backend.last_tool_calls = []
+            return "agent answer"
+
+        _model.chat = agent_reply
+        _model.agent = True
+        response = client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hi"}], "tools": schema},
+        )
+        _model.agent = False
+        if response.status_code != 424:
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["content"] == "agent answer", response.text
+    finally:
+        _model.chat = record
+        _model._backend = None
+        _story_index, _story_embed, _story_unavailable = (
+            real_story_index, real_story_embed, real_story_unavailable,
+        )
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
 
