@@ -214,11 +214,11 @@ def record_voice_dialog() -> None:
     admin can also just hit the widget's own re-record control before
     deciding either way.
     """
-    phrase_by_code = dict(LANGUAGES)
+    name_by_code = dict(LANGUAGES)
     lang = st.selectbox(
         "Language",
         [code for code, _ in LANGUAGES],
-        format_func=lambda code: phrase_by_code[code],
+        format_func=lambda code: name_by_code[code],
         key="voice_lang",
     )
     st.markdown(f"> {PHRASES[lang]}")
@@ -839,6 +839,5 @@ if st.session_state.get("applied_note"):
 pending = st.session_state.get("pending")
 if pending is not None:
     confirm_dialog(pending)
-
-if st.session_state.get("voice_dialog_open"):
+elif st.session_state.get("voice_dialog_open"):
     record_voice_dialog()

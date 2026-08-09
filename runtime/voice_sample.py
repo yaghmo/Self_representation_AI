@@ -65,6 +65,8 @@ PHRASES: dict[str, str] = {
 
 def save_sample(data: bytes) -> Path:
     """Snapshot the existing clip (if any), then write `data` over it."""
+    if not data.startswith(b"RIFF"):
+        raise ValueError(f"not a WAV container — starts with {data[:4]!r}")
     VOICE_DIR.mkdir(parents=True, exist_ok=True)
     if SAMPLE_PATH.exists():
         snapshot(SAMPLE_PATH)
@@ -92,24 +94,31 @@ def _self_check() -> None:
 
             assert sample_status() is None, "a fresh directory has no sample"
 
-            first = save_sample(b"first-take")
+            first = save_sample(b"RIFF" + b"first-take")
             assert first == SAMPLE_PATH
-            assert SAMPLE_PATH.read_bytes() == b"first-take"
+            assert SAMPLE_PATH.read_bytes() == b"RIFF" + b"first-take"
             assert sample_status() is not None
             assert not (VOICE_DIR / ".backups").exists(), (
                 "the first write has nothing to snapshot"
             )
 
-            save_sample(b"second-take")
-            assert SAMPLE_PATH.read_bytes() == b"second-take"
+            save_sample(b"RIFF" + b"second-take")
+            assert SAMPLE_PATH.read_bytes() == b"RIFF" + b"second-take"
             backups = list((VOICE_DIR / ".backups").iterdir())
             assert len(backups) == 1, "the second write must snapshot the first take"
-            assert backups[0].read_bytes() == b"first-take"
+            assert backups[0].read_bytes() == b"RIFF" + b"first-take"
 
             assert set(PHRASES) == {code for code, _ in LANGUAGES}, (
                 "every language in the picker needs a phrase, and vice versa"
             )
             assert all(text.strip() for text in PHRASES.values())
+
+            try:
+                save_sample(b"not-a-wav")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("save_sample accepted non-WAV bytes")
     finally:
         VOICE_DIR, SAMPLE_PATH = original_dir, original_sample
 
