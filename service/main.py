@@ -25,8 +25,9 @@ from __future__ import annotations
 import json
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -34,6 +35,7 @@ from cookbook.config import read_config
 from runtime.backend import Message
 from runtime.bible import (
     MessageTooLarge,
+    PROFILE_PATH,
     ProcedureMissing,
     ProfileMissing,
     ProfileTooLarge,
@@ -43,10 +45,21 @@ from runtime.bible import (
     build_procedure,
 )
 from runtime.embed import EmbeddingNotConfigured, bge_embedder
-from runtime.index import Embedder, Index, load_index
+from runtime.index import Embedder, Index, all_chunks, load_index
 from runtime.model import Model, ModelNotDownloaded
 from runtime.recall import RECALL_SCHEMA, recall
 from runtime.story_tools import AMEND_PROMPT, INGEST_PROMPT, read_policy
+from runtime.stories import STORIES_DIR, load_story
+from runtime.tools import (
+    SOURCES_PATH,
+    STORY_NAME,
+    Proposal,
+    StaleProposal,
+    list_backups,
+    restore_backup,
+    run_tool,
+)
+from runtime.voice_sample import SAMPLE_PATH, sample_status, save_sample
 from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
@@ -230,6 +243,30 @@ class LoadRequest(BaseModel):
     port: int = Field(default=8080, ge=1024, le=65535)
 
 
+class ToolRequest(BaseModel):
+    name: str
+    arguments: dict = Field(default_factory=dict)
+
+
+class ToolResponse(BaseModel):
+    result: str | None = None
+    proposal: dict | None = None
+
+
+class ProposalPayload(BaseModel):
+    path: str
+    new_text: str
+    summary: str
+    diff: str = ""
+    before: str = ""
+    after: str = ""
+    old: str = ""
+
+
+class ApplyResponse(BaseModel):
+    path: str
+
+
 # -------------------------------------------------------------------- model --
 
 
@@ -246,6 +283,56 @@ def _require_loaded() -> Model:
     if _model is None or not _model.loaded:
         raise HTTPException(status_code=409, detail="no model loaded — POST /model/load first")
     return _model
+
+
+def _require_agent(model: Model) -> None:
+    """Shared gate for every /admin/* route — these write the corpus or
+    execute a tool, so they are admin-side only, the same rule `/ingest`
+    already enforces per-request rather than at route-registration time.
+    """
+    if not model.agent:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "this route writes the corpus, so it is admin-side only and "
+                "this deployment is not in agent mode."
+            ),
+        )
+
+
+def _validate_proposal_path(raw_path: str) -> Path:
+    """The closed set of files `/admin/proposal/apply` may ever write to.
+
+    `Proposal.path` is only ever server-constructed everywhere else in this
+    codebase — `add_profile_line`, `propose_addition`, etc. Here it arrives
+    from the client, echoed back from an earlier response, so before it is
+    trusted it must resolve (`.resolve()`, so `..` cannot escape it) to
+    exactly one of the files this admin surface is allowed to write. Same
+    closed-set discipline `_corpus_roots`/`restore_backup` already apply to
+    snapshot restores, extended here to cover `apply()`'s destinations.
+    """
+    resolved = Path(raw_path).resolve()
+    fixed = {PROFILE_PATH.resolve(), SOURCES_PATH.resolve(), SAMPLE_PATH.resolve()}
+    if resolved in fixed:
+        return resolved
+    if resolved.parent == STORIES_DIR.resolve() and STORY_NAME.fullmatch(resolved.name):
+        return resolved
+    raise HTTPException(
+        status_code=400,
+        detail=f"{raw_path!r} is not a file this admin surface may write.",
+    )
+
+
+def _proposal_dict(proposal: Proposal) -> dict:
+    return {
+        "path": str(proposal.path),
+        "new_text": proposal.new_text,
+        "summary": proposal.summary,
+        "diff": proposal.diff,
+        "before": proposal.before,
+        "after": proposal.after,
+        "old": proposal.old,
+    }
 
 
 def _reject_client_system(messages: list[ChatMessage]) -> None:
@@ -312,11 +399,11 @@ def _prompt_for(model: Model, request: ChatRequest) -> list[Message]:
         for m in request.messages
         if m.role != "system"
     ]
-    if override:
-        persona = override[0].content
-    else:
-        persona = build_procedure() if model.agent else build_persona()
     try:
+        if override:
+            persona = override[0].content
+        else:
+            persona = build_procedure() if model.agent else build_persona()
         return assemble(
             history,
             context_tokens=model.context_tokens,
@@ -618,6 +705,56 @@ def summarize(request: SummarizeRequest) -> dict:
     return {"content": content}
 
 
+@app.post("/admin/tool", response_model=ToolResponse)
+def admin_tool(request: ToolRequest) -> ToolResponse:
+    """Execute one tool call — the exact dispatcher the agent loop already
+    calls for every tool. Read tools return a string; write tools return a
+    proposal for the client to render and, on confirm, echo back to
+    /admin/proposal/apply. Nothing is written here.
+    """
+    model = _require_loaded()
+    _require_agent(model)
+    outcome = run_tool(request.name, request.arguments)
+    if isinstance(outcome, Proposal):
+        return ToolResponse(proposal=_proposal_dict(outcome))
+    return ToolResponse(result=outcome)
+
+
+@app.post("/admin/proposal/apply", response_model=ApplyResponse)
+def admin_proposal_apply(request: ProposalPayload) -> ApplyResponse:
+    """The confirm gate's Apply button, relocated from Streamlit. Decline
+    needs no endpoint — the client already never calls anything on Decline
+    today either.
+    """
+    model = _require_loaded()
+    _require_agent(model)
+
+    path = _validate_proposal_path(request.path)
+    proposal = Proposal(
+        path=path,
+        new_text=request.new_text,
+        summary=request.summary,
+        diff=request.diff,
+        before=request.before,
+        after=request.after,
+        old=request.old,
+    )
+    try:
+        written = proposal.apply()
+    except StaleProposal as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # A story landing under STORIES_DIR invalidates the cached index the same
+    # way chat_app.py's confirm_dialog already refreshes it after an apply —
+    # the index is derived from the files, so it follows the write.
+    global _story_index
+    if written.parent == STORIES_DIR and _story_index is not None:
+        _story_index.refresh(all_chunks(), _story_embed)
+        _story_index.save()
+
+    return ApplyResponse(path=str(written))
+
+
 def _self_check() -> None:
     """The trust boundary, without weights.
 
@@ -625,7 +762,7 @@ def _self_check() -> None:
     `context_tokens` and `count_tokens`, and `chat()` is never reached on the
     rejection cases. Run it with `python -m service.main`.
     """
-    global _model
+    global _model, PROFILE_PATH, SOURCES_PATH
     from types import SimpleNamespace
 
     from fastapi.testclient import TestClient
@@ -916,6 +1053,99 @@ def _self_check() -> None:
         _story_index, _story_embed, _story_unavailable = (
             real_story_index, real_story_embed, real_story_unavailable,
         )
+
+    # -- /admin/tool + /admin/proposal/apply ----------------------------------
+    import tempfile
+
+    import runtime.tools as tools_module
+
+    # Refused like every other /admin/* route when not in agent mode.
+    # `_model.agent` is already False here — every prior block that set it
+    # True reset it before returning control.
+    response = client.post("/admin/tool", json={"name": "search_sources", "arguments": {}})
+    assert response.status_code == 403, (response.status_code, response.text)
+    _model.agent = True
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        sources = root / "sources.md"
+        profile = root / "character.md"
+        sources.write_text(
+            "# Sources\n\n## Source log\n\n"
+            "### S-001\n- **Q:** placeholder\n- **A:** an answer about baking\n\n",
+            encoding="utf-8",
+        )
+        profile.write_text(
+            "# Placeholder\n# CHARACTER\n## 6. Voice\n- old line\n\n## Changelog\n- v1\n",
+            encoding="utf-8",
+        )
+
+        # Two separate bindings need repointing: `runtime.tools`'s own
+        # module globals (what the tool handlers actually read/write through
+        # their `path = path or PROFILE_PATH` defaults) and this module's own
+        # `PROFILE_PATH`/`SOURCES_PATH` names (what `_validate_proposal_path`
+        # checks the client-supplied path against, per its docstring). Each
+        # was bound independently at import time, so patching one leaves the
+        # other pointing at the real data/ files.
+        original_tools_sources, original_tools_profile = (
+            tools_module.SOURCES_PATH, tools_module.PROFILE_PATH,
+        )
+        original_main_sources, original_main_profile = SOURCES_PATH, PROFILE_PATH
+        tools_module.SOURCES_PATH = sources
+        tools_module.PROFILE_PATH = profile
+        SOURCES_PATH = sources
+        PROFILE_PATH = profile
+        try:
+            # A read tool returns a string result, no proposal.
+            response = client.post(
+                "/admin/tool", json={"name": "search_sources", "arguments": {"query": "baking"}}
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            body = response.json()
+            assert body["proposal"] is None, body
+            assert "S-001" in body["result"], body
+
+            # A write tool returns a proposal, and nothing is written yet.
+            response = client.post(
+                "/admin/tool",
+                json={
+                    "name": "add_profile_line",
+                    "arguments": {"heading": "6. Voice", "line": "- a new line [S-001]"},
+                },
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            proposal = response.json()["proposal"]
+            assert proposal is not None
+            assert "a new line" in proposal["new_text"]
+            assert profile.read_text(encoding="utf-8") == (
+                "# Placeholder\n# CHARACTER\n## 6. Voice\n- old line\n\n## Changelog\n- v1\n"
+            ), "the tool call alone must not write anything"
+
+            # A path outside the allowlist is refused before Proposal() is
+            # even built — proves the guard fires on client-supplied paths,
+            # not just on the ones this codebase happens to construct.
+            forged = dict(proposal)
+            forged["path"] = str(root / "not-a-corpus-file.txt")
+            response = client.post("/admin/proposal/apply", json=forged)
+            assert response.status_code == 400, (response.status_code, response.text)
+            assert not (root / "not-a-corpus-file.txt").exists()
+
+            # Applying the real proposal writes it.
+            response = client.post("/admin/proposal/apply", json=proposal)
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert "a new line" in profile.read_text(encoding="utf-8")
+
+            # Re-applying the same (now stale) proposal is refused, not
+            # silently merged or overwritten.
+            response = client.post("/admin/proposal/apply", json=proposal)
+            assert response.status_code == 409, (response.status_code, response.text)
+        finally:
+            tools_module.SOURCES_PATH, tools_module.PROFILE_PATH = (
+                original_tools_sources, original_tools_profile,
+            )
+            SOURCES_PATH, PROFILE_PATH = original_main_sources, original_main_profile
+
+    _model.agent = False
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
 
