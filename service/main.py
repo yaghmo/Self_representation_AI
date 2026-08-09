@@ -918,6 +918,25 @@ def admin_story_propose(request: StoryProposeRequest) -> ToolResponse:
     return ToolResponse(proposal=_proposal_dict(proposal))
 
 
+@app.get("/admin/voice/status")
+def admin_voice_status() -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    return {"status": sample_status()}
+
+
+@app.post("/admin/voice/sample")
+async def admin_voice_sample(request: Request) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    data = await request.body()
+    try:
+        save_sample(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": sample_status()}
+
+
 def _self_check() -> None:
     """The trust boundary, without weights.
 
@@ -1474,6 +1493,45 @@ def _self_check() -> None:
             STORIES_DIR = original_main_stories_dir
             story_tools_module.STORIES_DIR = original_tools_stories_dir
     _story_index, _story_embed, _story_unavailable = saved_index, saved_embed, saved_unavailable
+    _model.agent = False
+
+    # -- /admin/voice --------------------------------------------------------
+    _model.agent = True
+    with tempfile.TemporaryDirectory() as tmp:
+        import runtime.voice_sample as voice_module
+
+        original_voice_dir = voice_module.VOICE_DIR
+        original_sample_path = voice_module.SAMPLE_PATH
+        voice_module.VOICE_DIR = Path(tmp) / "voice"
+        voice_module.SAMPLE_PATH = voice_module.VOICE_DIR / "sample.wav"
+        try:
+            response = client.get("/admin/voice/status")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["status"] is None
+
+            # Non-WAV bytes are refused, not written.
+            response = client.post(
+                "/admin/voice/sample",
+                content=b"not-a-wav",
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            assert response.status_code == 400, (response.status_code, response.text)
+            assert not voice_module.SAMPLE_PATH.exists()
+
+            response = client.post(
+                "/admin/voice/sample",
+                content=b"RIFF" + b"fake-wav-bytes",
+                headers={"Content-Type": "audio/wav"},
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["status"] is not None
+
+            response = client.get("/admin/voice/status")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["status"] is not None
+        finally:
+            voice_module.VOICE_DIR = original_voice_dir
+            voice_module.SAMPLE_PATH = original_sample_path
     _model.agent = False
 
     print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
