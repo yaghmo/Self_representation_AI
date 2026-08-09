@@ -285,6 +285,12 @@ In the browser, with the stack in agent mode (`config/stack.json` ->
 - Re-open, record a second clip, Save again — confirm
   `data/voice/.backups/` now holds one snapshot of the first clip, and
   `data/voice/sample.wav` holds the second.
+- Confirm the saved file is a real WAV: open `data/voice/sample.wav` in a
+  hex viewer (or `python -c "print(open('data/voice/sample.wav','rb').read(4))"`)
+  and check it starts with `RIFF`.
+- Open the dialog and press Esc instead of Cancel — confirm the dialog
+  reopens rather than closing (same behavior as the existing `confirm_dialog`;
+  only the Cancel button actually closes it).
 
 If the fan surface is what this machine's `stack.json` currently serves
 (`"agent": false`), temporarily flip it to verify, then flip it back — do

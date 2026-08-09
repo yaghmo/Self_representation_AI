@@ -131,3 +131,9 @@ binary audio; the widget's own playback is the "before you commit" check.
 - Recording quality checks (silence detection, clipping, duration minimums) —
   can be added later if a bad take turns out to produce bad clones; not
   guessed at now.
+- `data/voice/sample.wav` is the most directly identifying artifact in the
+  repo — a voiceprint of a real person. It's gitignored and unreachable from
+  any surface today (this feature adds no HTTP endpoint). Whatever eventually
+  serves TTS inference must expose synthesis only, never this file, and any
+  future backup/export tooling must exclude `data/voice/` explicitly — not
+  designed now, just flagged so it isn't rediscovered later.
