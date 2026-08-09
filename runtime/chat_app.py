@@ -252,7 +252,14 @@ with st.sidebar:
     st.header("Generation")
     temperature = st.slider("Temperature", 0.0, 1.5, 0.7, 0.05)
     max_tokens = st.slider("Max tokens", 64, 2048, 512, 64)
-    use_stream = st.checkbox("Stream", value=True)
+    if status.get("agent"):
+        use_stream = st.checkbox("Stream", value=True)
+    else:
+        use_stream = False
+        st.caption(
+            "Streaming is off on the fan surface — recall needs the model's "
+            "full turn (including any searches) before there's anything to show."
+        )
     thinking = st.checkbox(
         "Reasoning",
         value=False,
