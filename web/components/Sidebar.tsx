@@ -2,9 +2,18 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { getHealth, getModelStatus, getSnapshots, loadModel, postSnapshotRestore, unloadModel } from "@/lib/api";
+import type { GenerationParams } from "@/hooks/useAgentLoop";
 import type { HealthStatus, ModelStatus } from "@/lib/types";
 
-export function Sidebar({ onRestored }: { onRestored: () => void }) {
+export function Sidebar({
+  generation,
+  onGeneration,
+  onRestored,
+}: {
+  generation: GenerationParams;
+  onGeneration: (next: Partial<GenerationParams>) => void;
+  onRestored: () => void;
+}) {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [status, setStatus] = useState<ModelStatus | null>(null);
   const [snapshots, setSnapshots] = useState<string[]>([]);
@@ -78,6 +87,40 @@ export function Sidebar({ onRestored }: { onRestored: () => void }) {
           {loading ? "Loading..." : "Load model"}
         </button>
       )}
+
+      <h3>Generation</h3>
+      <label style={{ display: "block" }}>
+        Temperature: {generation.temperature.toFixed(2)}
+        <input
+          type="range"
+          min={0}
+          max={1.5}
+          step={0.05}
+          value={generation.temperature}
+          onChange={(e) => onGeneration({ temperature: Number(e.target.value) })}
+          style={{ width: "100%" }}
+        />
+      </label>
+      <label style={{ display: "block" }}>
+        Max tokens: {generation.maxTokens}
+        <input
+          type="range"
+          min={64}
+          max={2048}
+          step={64}
+          value={generation.maxTokens}
+          onChange={(e) => onGeneration({ maxTokens: Number(e.target.value) })}
+          style={{ width: "100%" }}
+        />
+      </label>
+      <label style={{ display: "block" }}>
+        <input
+          type="checkbox"
+          checked={generation.thinking}
+          onChange={(e) => onGeneration({ thinking: e.target.checked })}
+        />{" "}
+        Reasoning
+      </label>
 
       {status?.agent && (
         <>
