@@ -80,6 +80,34 @@ describe("runAgentLoop", () => {
     expect(results[1]).toContain("already called");
     expect(steps[steps.length - 1].text).toBe("moved on");
   });
+
+  it("distinguishes calls with different nested argument values as separate invocations", async () => {
+    let postCalls = 0;
+    const post = async () => {
+      postCalls += 1;
+      if (postCalls === 1) {
+        return { content: "", tool_calls: [call("c1", "append_source", JSON.stringify({ question: "q1", answer: "a1", entry_type: "direct answer", tags: [], date: "unknown", feeds: [] }))] };
+      }
+      if (postCalls === 2) {
+        return { content: "", tool_calls: [call("c2", "append_source", JSON.stringify({ question: "q1", answer: "a2", entry_type: "direct answer", tags: [], date: "unknown", feeds: [] }))] };
+      }
+      return { content: "done", tool_calls: [] };
+    };
+    let dispatchCount = 0;
+    const dispatch = async (name: string, args: Record<string, unknown>) => {
+      dispatchCount += 1;
+      if (dispatchCount === 1) {
+        expect((args as Record<string, unknown>).answer).toBe("a1");
+      } else if (dispatchCount === 2) {
+        expect((args as Record<string, unknown>).answer).toBe("a2");
+      }
+      return { kind: "result" as const, text: `result ${dispatchCount}` };
+    };
+
+    const steps = await collect(runAgentLoop(post, [{ role: "user", content: "hi" }], { dispatch }));
+    expect(dispatchCount).toBe(2);
+    expect(steps[steps.length - 1].text).toBe("done");
+  });
 });
 
 describe("proposal pause and resume", () => {

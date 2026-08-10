@@ -23,6 +23,17 @@ function resultMessage(callId: string, text: string): Message {
   return { role: "tool", content: text, toolCallId: callId };
 }
 
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value as object).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 export async function* runAgentLoop(
   post: PostTurn,
   messages: Message[],
@@ -78,7 +89,7 @@ export async function* runAgentLoop(
         continue;
       }
 
-      const signature = `${name}:${JSON.stringify(args, Object.keys(args as object).sort())}`;
+      const signature = `${name}:${stableStringify(args)}`;
       const count = (seen.get(signature) ?? 0) + 1;
       seen.set(signature, count);
       if (count > 1) {
