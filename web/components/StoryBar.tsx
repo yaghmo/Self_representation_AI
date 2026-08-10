@@ -13,16 +13,23 @@ function parseStoryCommand(text: string): { wantedId: string; wantedEvent: strin
 export function StoryBar({ onProposal }: { onProposal: (proposal: Proposal) => void }) {
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState("");
+  const [isError, setIsError] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  function fail(message: string) {
+    setStatus(message);
+    setIsError(true);
+  }
 
   async function submit() {
     const text = draft.replace(/^\/story/, "").trim();
     if (!text) {
-      setStatus("`/story` needs the narrative — type it after the command.");
+      fail("`/story` needs the narrative — type it after the command.");
       return;
     }
     setBusy(true);
     setStatus("");
+    setIsError(false);
     try {
       const { wantedId, wantedEvent, rest } = parseStoryCommand(text);
       const routing = await postStoryRoute(rest);
@@ -56,10 +63,10 @@ export function StoryBar({ onProposal }: { onProposal: (proposal: Proposal) => v
         onProposal(proposeResult.proposal);
         setDraft("");
       } else {
-        setStatus("No proposal came back — nothing to confirm.");
+        fail("No proposal came back — nothing to confirm.");
       }
     } catch (exc) {
-      setStatus(String(exc));
+      fail(exc instanceof Error ? exc.message : String(exc));
     } finally {
       setBusy(false);
     }
@@ -76,7 +83,7 @@ export function StoryBar({ onProposal }: { onProposal: (proposal: Proposal) => v
       <button onClick={submit} disabled={busy}>
         {busy ? "Working..." : "Log story"}
       </button>
-      {status && <span>{status}</span>}
+      {status && <span style={{ color: isError ? "red" : "#060" }}>{status}</span>}
     </div>
   );
 }
