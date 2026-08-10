@@ -1117,7 +1117,7 @@ git commit -m "feat: port the follow-up phase (entry_id_of, entry_feeds, followu
 
 **Interfaces:**
 - Consumes: `runAgentLoop`, `resumed`, `ToolOutcome` from `lib/agentLoop.ts` (Task 3); `buildFollowup`, `entryIdOf` from `lib/followup.ts` (Task 4); `postChat`, `postAdminTool`, `postProposalApply` from `lib/api.ts` (Task 2); `TOOL_SCHEMAS`, `FOLLOWUP_SCHEMAS` from `lib/toolSchemas.ts`.
-- Produces: `useAgentLoop(genParams: { temperature: number; maxTokens: number; thinking: boolean }) => { steps: Step[]; pending: Proposal | null; currentStory: string | null; send: (text: string) => Promise<void>; applyPending: () => Promise<void>; declinePending: () => void }`.
+- Produces: `useAgentLoop(genParams: { temperature: number; maxTokens: number; thinking: boolean }) => { transcript: Message[]; steps: Step[]; pending: Proposal | null; currentStory: string | null; send: (text: string) => Promise<void>; applyPending: () => Promise<void>; declinePending: () => void; reset: () => void }`. `transcript` is the persisted user/assistant turns for the scrollback (mirrors `chat_app.py`'s `session_state["history"]`, rendered by `st.chat_message` at lines 438-441); `steps` is only the *current* turn's live trace (tool_call/tool_result/proposal/stopped — reset at the start of every `drive()` call), matching how `chat_app.py`'s per-`Step` rendering (lines 782-797) only ever shows what one script run just produced, never a growing log across turns.
 
 - [ ] **Step 1: Implement the hook**
 
@@ -1145,6 +1145,10 @@ interface PendingState {
 }
 
 export function useAgentLoop(params: GenerationParams) {
+  // The persisted transcript (user + assistant turns) the UI renders as
+  // chat bubbles — mirrors `session_state["history"]`. Separate from
+  // `steps`, which is only the current turn's live tool-call trace.
+  const [transcript, setTranscript] = useState<Message[]>([]);
   const [steps, setSteps] = useState<Step[]>([]);
   const [pending, setPending] = useState<PendingState | null>(null);
   const [currentStory, setCurrentStory] = useState<string | null>(null);
@@ -1161,6 +1165,7 @@ export function useAgentLoop(params: GenerationParams) {
 
   const drive = useCallback(
     async (history: Message[], tools: Record<string, unknown>[]) => {
+      setSteps([]); // a fresh turn starts with an empty trace
       const post = async (turnHistory: Message[], turnTools: Record<string, unknown>[]) =>
         postChat({
           messages: turnHistory,
@@ -1176,7 +1181,9 @@ export function useAgentLoop(params: GenerationParams) {
           setPending({ proposal: step.proposal as Proposal, step });
         }
         if (step.kind === "answer") {
-          historyRef.current = [...history, { role: "assistant", content: step.text }];
+          const assistantMessage: Message = { role: "assistant", content: step.text };
+          historyRef.current = [...history, assistantMessage];
+          setTranscript((prev) => [...prev, assistantMessage]);
         }
       }
     },
@@ -1188,7 +1195,7 @@ export function useAgentLoop(params: GenerationParams) {
       const userMessage: Message = { role: "user", content: text };
       const nextHistory = [...historyRef.current, userMessage];
       historyRef.current = nextHistory;
-      setSteps((prev) => [...prev, { kind: "answer", text: "", name: "" } as Step].slice(0, -1)); // no-op placeholder removed below
+      setTranscript((prev) => [...prev, userMessage]);
       await drive(nextHistory, TOOL_SCHEMAS);
     },
     [drive]
@@ -1250,13 +1257,24 @@ export function useAgentLoop(params: GenerationParams) {
     void resolveProposal(`declined by the creator — ${pending.proposal.summary}. Do not retry it.`);
   }, [pending, resolveProposal]);
 
+  const reset = useCallback(() => {
+    setTranscript([]);
+    setSteps([]);
+    setPending(null);
+    setCurrentStory(null);
+    historyRef.current = [];
+    seenRef.current = new Map();
+  }, []);
+
   return {
+    transcript,
     steps,
     pending: pending?.proposal ?? null,
     currentStory,
     send,
     applyPending,
     declinePending,
+    reset,
   };
 }
 ```
@@ -1283,23 +1301,25 @@ git commit -m "feat: add useAgentLoop hook wiring the loop, follow-up phase, and
 - Modify: `web/app/page.tsx`
 
 **Interfaces:**
-- Consumes: `useAgentLoop` (Task 5).
+- Consumes: `useAgentLoop`'s `transcript` and `steps` (Task 5).
 - Produces: a working chat UI — this is the first task where a human can type a message and see the model answer.
 
 - [ ] **Step 1: Implement `ChatPanel`**
 
-`web/components/ChatPanel.tsx` — renders `steps`, mirrors `chat_app.py`'s message loop (lines 438-441) plus the per-`Step`-kind rendering inside the agent-mode branch (lines 782-797):
+`web/components/ChatPanel.tsx` — renders `transcript` as chat bubbles, mirroring `chat_app.py`'s message loop (lines 438-441), and `steps` as the current turn's live trace below it, mirroring the per-`Step`-kind rendering inside the agent-mode branch (lines 782-797). A `stepped` `"answer"` is never rendered a second time here — it already landed in `transcript` via the hook, and `steps` is cleared at the start of the next turn regardless:
 
 ```typescript
 "use client";
 
 import { useState } from "react";
-import type { Step } from "@/lib/types";
+import type { Message, Step } from "@/lib/types";
 
 export function ChatPanel({
+  transcript,
   steps,
   onSend,
 }: {
+  transcript: Message[];
   steps: Step[];
   onSend: (text: string) => void;
 }) {
@@ -1315,9 +1335,19 @@ export function ChatPanel({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {steps.map((step, i) => (
-          <StepView key={i} step={step} />
+        {transcript.map((message, i) => (
+          <div key={i}>
+            <strong>{message.role}: </strong>
+            {message.content}
+          </div>
         ))}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {steps
+          .filter((step) => step.kind !== "answer")
+          .map((step, i) => (
+            <StepView key={i} step={step} />
+          ))}
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <input
@@ -1346,10 +1376,10 @@ function StepView({ step }: { step: Step }) {
       );
     case "proposal":
       return <div style={{ color: "#a60" }}>{step.text}</div>;
-    case "answer":
-      return <div>{step.text}</div>;
     case "stopped":
       return <div style={{ color: "red" }}>{step.text}</div>;
+    default:
+      return null;
   }
 }
 ```
@@ -1385,7 +1415,7 @@ export default function Page() {
       <h1>Admin</h1>
       <p>health: {health ? JSON.stringify(health) : "loading..."}</p>
       <p>model: {status ? JSON.stringify(status) : "loading..."}</p>
-      <ChatPanel steps={loop.steps} onSend={loop.send} />
+      <ChatPanel transcript={loop.transcript} steps={loop.steps} onSend={loop.send} />
     </main>
   );
 }
@@ -1608,19 +1638,7 @@ export function Sidebar({ onRestored }: { onRestored: () => void }) {
 
 - [ ] **Step 2: Wire it into the page**
 
-Modify `web/app/page.tsx`: import `Sidebar`, lay it out alongside the chat panel, and pass an `onRestored` callback that clears local chat state (matching `chat_app.py:344-345`'s `history = []` on restore, since persistence is out of scope this simply resets `loop`'s in-memory steps — expose a `reset()` from `useAgentLoop` for this):
-
-Add to `web/hooks/useAgentLoop.ts`, inside the returned object:
-
-```typescript
-    reset: useCallback(() => {
-      setSteps([]);
-      setPending(null);
-      setCurrentStory(null);
-      historyRef.current = [];
-      seenRef.current = new Map();
-    }, []),
-```
+Modify `web/app/page.tsx`: import `Sidebar`, lay it out alongside the chat panel, and pass `loop.reset` (already produced by Task 5's `useAgentLoop`) as `onRestored` — matching `chat_app.py:344-345`'s `history = []` on restore. Since persistence is out of scope, this clears the in-memory transcript rather than an on-disk log.
 
 Update `web/app/page.tsx`:
 
@@ -1632,7 +1650,7 @@ return (
   <div style={{ display: "flex" }}>
     <main style={{ padding: 24, maxWidth: 800, flex: 1 }}>
       <h1>Admin</h1>
-      <ChatPanel steps={loop.steps} onSend={loop.send} />
+      <ChatPanel transcript={loop.transcript} steps={loop.steps} onSend={loop.send} />
       {loop.pending && (
         <ConfirmDialog proposal={loop.pending} onApply={loop.applyPending} onDecline={loop.declinePending} />
       )}
@@ -1803,3 +1821,5 @@ git commit -m "feat: add StoryBar for text-only /story logging"
 **Placeholder scan:** no "TBD"/"TODO"/"add appropriate" phrasing in any step; every code block is complete, runnable TypeScript or Python, not a sketch.
 
 **Type consistency:** `Step`, `Proposal`, `Message` (with `toolCalls`/`toolCallId`, camelCase per Task 2's `lib/types.ts`) are used identically across Tasks 3, 5, 6, 7, 9. `ToolOutcome`'s two-variant shape (Task 3) matches exactly how Task 5's `dispatch` constructs it from `ToolResponse`. `PendingState.step: Step | null` (Task 5) is read the same way by both Task 7's Apply/Decline (closes a real step) and Task 9's `proposeExternal` (passes `null`, matching `confirm_dialog`'s "a `/story` proposal has no paused tool call" comment in `chat_app.py:140-144`).
+
+**Pre-flight fix (caught before dispatching Task 1):** the first draft of Task 5 only exposed `steps` (the live `Step` stream) with no persisted, role-tagged transcript — `ChatPanel` would never have rendered what the user typed, since user messages never become `Step`s. Fixed by adding `transcript: Message[]` to `useAgentLoop`'s return (populated in `send()` and on every `"answer"` step), with `steps` narrowed to mean only the current turn's live trace, cleared at the start of each `drive()` call. `ChatPanel` (Task 6) now renders both. Also removed a dead no-op line (`setSteps(...).slice(0, -1)`) that was accidentally left in the first draft of `send()`.
