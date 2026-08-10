@@ -55,6 +55,7 @@ describe("buildFollowup", () => {
       throw new Error(`no section ${heading}`);
     };
     const task = await buildFollowup(ENTRY, readSection);
-    expect(task[0].content).toContain("could not read this section");
+    expect(task[0].content).toContain("could not read this section: no section");
+    expect(task[0].content).not.toContain("Error: no section");
   });
 });

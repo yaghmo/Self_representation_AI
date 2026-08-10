@@ -42,7 +42,7 @@ export async function buildFollowup(
     try {
       current.push(await readSection(name));
     } catch (exc) {
-      current.push(`## ${name}\n[could not read this section: ${exc}]`);
+      current.push(`## ${name}\n[could not read this section: ${exc instanceof Error ? exc.message : exc}]`);
     }
   }
   const joined = current.join("\n\n");
