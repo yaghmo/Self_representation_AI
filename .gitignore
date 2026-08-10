@@ -36,6 +36,7 @@
 !cookbook/**
 !runtime/**
 !service/**
+!web/**
 
 # ---------------------------------------------------------------
 # 4. HARD BLOCK — filled-in creator data. Never tracked, no matter
