@@ -4,6 +4,7 @@ import { useAgentLoop } from "@/hooks/useAgentLoop";
 import { ChatPanel } from "@/components/ChatPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Sidebar } from "@/components/Sidebar";
+import { StoryBar } from "@/components/StoryBar";
 
 export default function Page() {
   const loop = useAgentLoop({ temperature: 0.7, maxTokens: 512, thinking: false });
@@ -13,6 +14,7 @@ export default function Page() {
       <main style={{ padding: 24, maxWidth: 800, flex: 1 }}>
         <h1>Admin</h1>
         <ChatPanel transcript={loop.transcript} steps={loop.steps} onSend={loop.send} />
+        <StoryBar onProposal={loop.proposeExternal} />
         {loop.pending && (
           <ConfirmDialog proposal={loop.pending} onApply={loop.applyPending} onDecline={loop.declinePending} />
         )}

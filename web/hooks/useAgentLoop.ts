@@ -147,6 +147,13 @@ export function useAgentLoop(params: GenerationParams) {
     seenRef.current = new Map();
   }, []);
 
+  // A /story proposal arrives fully formed from StoryBar, with no paused
+  // tool call in the agent loop to resume — step is null, matching
+  // PendingState's modeling of chat_app.py's confirm_dialog.
+  const proposeExternal = useCallback((proposal: Proposal) => {
+    setPending({ proposal, step: null });
+  }, []);
+
   return {
     transcript,
     steps,
@@ -156,5 +163,6 @@ export function useAgentLoop(params: GenerationParams) {
     applyPending,
     declinePending,
     reset,
+    proposeExternal,
   };
 }
