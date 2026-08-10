@@ -18,6 +18,11 @@ interface PendingState {
   step: Step | null; // null for a /story-originated proposal — nothing paused to close
 }
 
+function messageOf(exc: unknown): string {
+  if (exc instanceof ApiError) return exc.detail;
+  return exc instanceof Error ? exc.message : String(exc);
+}
+
 export function useAgentLoop(params: GenerationParams) {
   // The persisted transcript (user + assistant turns) the UI renders as
   // chat bubbles — mirrors `session_state["history"]`. Separate from
@@ -26,8 +31,21 @@ export function useAgentLoop(params: GenerationParams) {
   const [steps, setSteps] = useState<Step[]>([]);
   const [pending, setPending] = useState<PendingState | null>(null);
   const [currentStory, setCurrentStory] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // The persistent conversation, mirroring `session_state["history"]`: only
+  // user turns and finished assistant replies ever land here. A run's own
+  // transient history (a resumed tool exchange, a follow-up task) is passed
+  // to `drive()` and never assigned back — chat_app.py:801-802 is the only
+  // place Python appends, and it appends one assistant reply.
   const historyRef = useRef<Message[]>([]);
   const seenRef = useRef(new Map<string, number>());
+  // chat_app.py:764-767 — once the follow-up phase is open, resuming a call
+  // inside it re-offers FOLLOWUP_SCHEMAS, never append_source.
+  const followupActiveRef = useRef(false);
+  // chat_app.py:175 — a landed story is on disk and indexed, so its turns
+  // stop being sent while staying on screen.
+  const promptFloorRef = useRef(0);
 
   const dispatch = useCallback(async (name: string, args: Record<string, unknown>): Promise<ToolOutcome> => {
     const response = await postAdminTool(name, args);
@@ -40,6 +58,7 @@ export function useAgentLoop(params: GenerationParams) {
   const drive = useCallback(
     async (history: Message[], tools: Record<string, unknown>[]) => {
       setSteps([]); // a fresh turn starts with an empty trace
+      setBusy(true);
       const post = async (turnHistory: Message[], turnTools: Record<string, unknown>[]) =>
         postChat({
           messages: turnHistory,
@@ -49,16 +68,25 @@ export function useAgentLoop(params: GenerationParams) {
           tools: turnTools,
         });
 
-      for await (const step of runAgentLoop(post, history, { dispatch, tools, seen: seenRef.current })) {
-        setSteps((prev) => [...prev, step]);
-        if (step.kind === "proposal") {
-          setPending({ proposal: step.proposal as Proposal, step });
+      try {
+        for await (const step of runAgentLoop(post, history, { dispatch, tools, seen: seenRef.current })) {
+          setSteps((prev) => [...prev, step]);
+          if (step.kind === "proposal") {
+            setPending({ proposal: step.proposal as Proposal, step });
+          }
+          if (step.kind === "answer" || step.kind === "stopped") {
+            // `history` is this run's own material — it may carry a tool
+            // exchange or a synthetic follow-up task. Only the reply is
+            // persisted, onto the real conversation.
+            const assistantMessage: Message = { role: "assistant", content: step.text };
+            historyRef.current = [...historyRef.current, assistantMessage];
+            setTranscript((prev) => [...prev, assistantMessage]);
+          }
         }
-        if (step.kind === "answer" || step.kind === "stopped") {
-          const assistantMessage: Message = { role: "assistant", content: step.text };
-          historyRef.current = [...history, assistantMessage];
-          setTranscript((prev) => [...prev, assistantMessage]);
-        }
+      } catch (exc) {
+        setError(messageOf(exc));
+      } finally {
+        setBusy(false);
       }
     },
     [dispatch, params.maxTokens, params.temperature, params.thinking]
@@ -66,15 +94,17 @@ export function useAgentLoop(params: GenerationParams) {
 
   const send = useCallback(
     async (text: string) => {
-      // Typing instead of deciding abandons the paused turn — mirrors
-      // chat_app.py:662-668.
+      // Typing instead of deciding abandons the paused turn and any open
+      // phase — mirrors chat_app.py:662-668.
       setPending(null);
+      setError(null);
       seenRef.current = new Map();
+      followupActiveRef.current = false;
       const userMessage: Message = { role: "user", content: text };
-      const nextHistory = [...historyRef.current, userMessage];
-      historyRef.current = nextHistory;
+      historyRef.current = [...historyRef.current, userMessage];
       setTranscript((prev) => [...prev, userMessage]);
-      await drive(nextHistory, TOOL_SCHEMAS);
+      // chat_app.py:673-674 — send only what is above the floor.
+      await drive(historyRef.current.slice(promptFloorRef.current), TOOL_SCHEMAS);
     },
     [drive]
   );
@@ -84,52 +114,68 @@ export function useAgentLoop(params: GenerationParams) {
       const current = pending;
       setPending(null);
       if (!current) return;
+      setError(null);
 
-      // Story-landing scoping: a proposal that landed under stories/ resets
-      // what gets resent on later turns, per the design doc's Data flow.
-      if (appliedPath && /[/\\]stories[/\\][^/\\]+\.md$/.test(appliedPath)) {
-        const landed = appliedPath.replace(/\.md$/, "").split(/[/\\]/).pop() ?? null;
-        if (landed && landed !== currentStory) {
-          setCurrentStory(landed);
+      try {
+        // Story-landing scoping: a proposal that landed under stories/ resets
+        // what gets resent on later turns, per chat_app.py:167-179.
+        if (appliedPath && /[/\\]stories[/\\][^/\\]+\.md$/.test(appliedPath)) {
+          const landed = appliedPath.replace(/\.md$/, "").split(/[/\\]/).pop() ?? null;
+          if (landed && landed !== currentStory) {
+            setCurrentStory(landed);
+            promptFloorRef.current = historyRef.current.length;
+          }
         }
+
+        // A /story-originated proposal has no paused tool call to close.
+        if (!current.step) return;
+
+        // Follow-up phase: an applied sources.md proposal carrying an entry id
+        // starts a fresh bounded conversation instead of a plain resume.
+        const isSourceEntry = appliedPath?.endsWith("sources.md") && entryIdOf(current.proposal.after);
+        if (isSourceEntry) {
+          const entryText = current.proposal.after;
+          const task = await buildFollowup(entryText, async (heading) => {
+            const result = await postAdminTool("read_profile_section", { heading });
+            return result.result ?? "";
+          });
+          followupActiveRef.current = true;
+          await drive(task, FOLLOWUP_SCHEMAS);
+          return;
+        }
+
+        // Applying one line of a follow-up resumes the follow-up — the phase,
+        // and its tool set, have not changed (chat_app.py:766-767).
+        await drive(
+          resumed(current.step, outcome),
+          followupActiveRef.current ? FOLLOWUP_SCHEMAS : TOOL_SCHEMAS
+        );
+      } catch (exc) {
+        setError(messageOf(exc));
       }
-
-      // A /story-originated proposal has no paused tool call to close.
-      if (!current.step) return;
-
-      let continuedHistory = resumed(current.step, outcome);
-
-      // Follow-up phase: an applied sources.md proposal carrying an entry id
-      // starts a fresh bounded conversation instead of a plain resume.
-      const isSourceEntry = appliedPath?.endsWith("sources.md") && entryIdOf(current.proposal.after);
-      if (isSourceEntry) {
-        const entryText = current.proposal.after;
-        const task = await buildFollowup(entryText, async (heading) => {
-          const result = await postAdminTool("read_profile_section", { heading });
-          return result.result ?? "";
-        });
-        historyRef.current = task;
-        await drive(task, FOLLOWUP_SCHEMAS);
-        return;
-      }
-
-      historyRef.current = continuedHistory;
-      await drive(continuedHistory, TOOL_SCHEMAS);
     },
     [currentStory, drive, pending]
   );
 
   const applyPending = useCallback(async () => {
     if (!pending) return;
+    setError(null);
+    const summary = pending.proposal.summary;
+    let path: string | undefined;
+    let failure = "";
     try {
-      const result = await postProposalApply(pending.proposal);
-      setTranscript((prev) => [...prev, { role: "user", content: `[applied: ${pending.proposal.summary}]` }]);
-      await resolveProposal(`applied — ${pending.proposal.summary}. This write is done; do not repeat it.`, result.path);
+      path = (await postProposalApply(pending.proposal)).path;
     } catch (exc) {
-      const message = exc instanceof ApiError ? exc.detail : String(exc);
-      setTranscript((prev) => [...prev, { role: "user", content: `[not applied: ${message}]` }]);
-      await resolveProposal(`not applied — ${message}`);
+      failure = messageOf(exc);
     }
+    const shown = failure ? `[not applied: ${failure}]` : `[applied: ${summary}]`;
+    setTranscript((prev) => [...prev, { role: "user", content: shown }]);
+    await resolveProposal(
+      failure
+        ? `not applied — ${failure}`
+        : `applied — ${summary}. This write is done; do not repeat it.`,
+      path
+    );
   }, [pending, resolveProposal]);
 
   const declinePending = useCallback(() => {
@@ -143,8 +189,11 @@ export function useAgentLoop(params: GenerationParams) {
     setSteps([]);
     setPending(null);
     setCurrentStory(null);
+    setError(null);
     historyRef.current = [];
     seenRef.current = new Map();
+    followupActiveRef.current = false;
+    promptFloorRef.current = 0;
   }, []);
 
   // A /story proposal arrives fully formed from StoryBar, with no paused
@@ -159,6 +208,8 @@ export function useAgentLoop(params: GenerationParams) {
     steps,
     pending: pending?.proposal ?? null,
     currentStory,
+    error,
+    busy,
     send,
     applyPending,
     declinePending,
