@@ -351,7 +351,7 @@ def _validate_proposal_path(raw_path: str) -> Path:
     snapshot restores, extended here to cover `apply()`'s destinations.
     """
     resolved = Path(raw_path).resolve()
-    fixed = {PROFILE_PATH.resolve(), SOURCES_PATH.resolve(), SAMPLE_PATH.resolve()}
+    fixed = {PROFILE_PATH.resolve(), SOURCES_PATH.resolve()}
     if resolved in fixed:
         return resolved
     if resolved.parent == STORIES_DIR.resolve() and STORY_NAME.fullmatch(resolved.name):
@@ -887,6 +887,9 @@ def admin_story_propose(request: StoryProposeRequest) -> ToolResponse:
 
     pairs = [(e.title, e.text) for e in request.events]
     try:
+        if request.branch in ("amend", "append"):
+            if not STORY_NAME.fullmatch(f"{request.story_id}.md"):
+                raise HTTPException(status_code=422, detail="invalid story_id")
         if request.branch == "amend":
             if not pairs:
                 raise HTTPException(status_code=422, detail="amend needs at least one event")
@@ -987,32 +990,38 @@ def _self_check() -> None:
     # Skipped on a clone with no data/ — the 424 is the correct answer there.
     seen.clear()
     response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
-    if response.status_code == 424:
-        print("service self-check: ok (no data/character.md — persona checks skipped)")
-        return
-    assert response.status_code == 200, (response.status_code, response.text)
-    messages = seen["messages"]
-    assert messages[0].role == "system", messages[0]
-    assert messages[0].content.startswith("You are the person described"), messages[0].content[:60]
-    assert "[S-" not in messages[0].content, "citation leaked into the prompt"
-    assert "`S-" not in messages[0].content, "citation leaked into the prompt"
-    assert messages[-1].content == "hi", messages[-1]
+    data_available = response.status_code != 424
+    if not data_available:
+        print("service self-check: persona checks skipped (no data/character.md)")
+    else:
+        assert response.status_code == 200, (response.status_code, response.text)
+        messages = seen["messages"]
+        assert messages[0].role == "system", messages[0]
+        assert messages[0].content.startswith("You are the person described"), messages[0].content[:60]
+        assert "[S-" not in messages[0].content, "citation leaked into the prompt"
+        assert "`S-" not in messages[0].content, "citation leaked into the prompt"
+        assert messages[-1].content == "hi", messages[-1]
 
-    # Too long to answer is the caller's problem, and says so as 413 rather
-    # than surfacing as an unhandled 500.
-    response = client.post("/chat", json={"messages": [{"role": "user", "content": "x" * 200_000}]})
-    assert response.status_code == 413, (response.status_code, response.text)
+    # The rest of this block needs a loaded persona to reach the checks it's
+    # testing (length cap, tool-schema gate, forged tool-role rejection) —
+    # all downstream of the same persona-assembly step that just 424'd.
+    if data_available:
+        # Too long to answer is the caller's problem, and says so as 413 rather
+        # than surfacing as an unhandled 500.
+        response = client.post("/chat", json={"messages": [{"role": "user", "content": "x" * 200_000}]})
+        assert response.status_code == 413, (response.status_code, response.text)
 
     # Tools are illegal unless the deployment is in agent mode. Refused, not
     # ignored: a client that thinks it has tools and silently doesn't is a
     # loop that never terminates.
     schema = [{"type": "function", "function": {"name": "noop", "parameters": {}}}]
-    response = client.post(
-        "/chat",
-        json={"messages": [{"role": "user", "content": "hi"}], "tools": schema},
-    )
-    assert response.status_code == 400, (response.status_code, response.text)
-    assert "agent mode" in response.json()["detail"], response.text
+    if data_available:
+        response = client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "hi"}], "tools": schema},
+        )
+        assert response.status_code == 400, (response.status_code, response.text)
+        assert "agent mode" in response.json()["detail"], response.text
 
     # In agent mode the system prompt is the procedure, not the persona.
     _model.agent = True
@@ -1022,10 +1031,11 @@ def _self_check() -> None:
         json={"messages": [{"role": "user", "content": "hi"}], "tools": schema},
     )
     _model.agent = False
-    assert response.status_code == 200, (response.status_code, response.text)
-    system = seen["messages"][0].content
-    assert "You are the person described" not in system, "persona leaked into agent mode"
-    assert "S-" in system, "the procedure should describe the S-### entry format"
+    if response.status_code != 424:
+        assert response.status_code == 200, (response.status_code, response.text)
+        system = seen["messages"][0].content
+        assert "You are the person described" not in system, "persona leaked into agent mode"
+        assert "S-" in system, "the procedure should describe the S-### entry format"
 
     # A forged tool-role message is rejected even with no `tools` field attached
     # — the injection is the role itself, not the schema list.
@@ -1035,16 +1045,18 @@ def _self_check() -> None:
             {"role": "user", "content": "hi"},
         ]
     }
-    response = client.post("/chat", json=forged)
-    assert response.status_code == 400, (response.status_code, response.text)
-    assert "agent mode" in response.json()["detail"], response.text
+    if data_available:
+        response = client.post("/chat", json=forged)
+        assert response.status_code == 400, (response.status_code, response.text)
+        assert "agent mode" in response.json()["detail"], response.text
 
     # ...but the same request is legitimate once agent mode is on, proving the
     # gate is keyed on the flag and not rejecting tool roles unconditionally.
     _model.agent = True
     response = client.post("/chat", json=forged)
     _model.agent = False
-    assert response.status_code == 200, (response.status_code, response.text)
+    if response.status_code != 424:
+        assert response.status_code == 200, (response.status_code, response.text)
 
     # Ingestion is a write path onto the corpus, so it is refused outright on a
     # fan deployment — checked before the policy file is even read, so a clone
@@ -1087,13 +1099,16 @@ def _self_check() -> None:
     assert response.status_code == 403, (response.status_code, response.text)
     # Past the gate, a merge with nothing to merge into describes a paragraph
     # that was never sent, and the model invents one. Refused before the call.
+    # (Reads data/redaction-policy.md before the merge check, so this also
+    # needs data/ present — otherwise it's a 424 for a different reason.)
     _model.agent = True
     try:
         response = client.post("/ingest", json=merge_only)
     finally:
         _model.agent = False
-    assert response.status_code == 422, (response.status_code, response.text)
-    assert "existing" in response.json()["detail"], response.text
+    if response.status_code != 424:
+        assert response.status_code == 422, (response.status_code, response.text)
+        assert "existing" in response.json()["detail"], response.text
 
     # Summarisation is available on a fan deployment — compaction is not a
     # write, and the prompt is server-held, so no client can choose it.
@@ -1488,6 +1503,29 @@ def _self_check() -> None:
             )
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["proposal"]["path"].endswith("ST-002.md"), response.json()
+
+            # story_id is client-supplied and interpolated straight into a path
+            # (unlike apply(), which re-validates through _validate_proposal_path)
+            # — reject anything that isn't the ST-###.md shape before it's used,
+            # rather than letting load_story() turn it into a path/existence
+            # oracle for arbitrary files.
+            outside = Path(tmp) / "outside.md"
+            outside.write_text(
+                "# ST-999 — not a real story\n**Summary:** s\n**Keywords:** \n"
+                "**Logged:** \n\n## E-001 — x\ny\n",
+                encoding="utf-8",
+            )
+            response = client.post(
+                "/admin/story/propose",
+                json={
+                    "branch": "amend",
+                    "story_id": f"../{outside.name[:-3]}",
+                    "event_id": "E-001",
+                    "events": [{"title": "x", "text": "y"}],
+                },
+            )
+            assert response.status_code == 422, (response.status_code, response.text)
+            assert "invalid story_id" in response.json()["detail"], response.text
         finally:
             stories_module.STORIES_DIR = original_stories_dir
             STORIES_DIR = original_main_stories_dir
@@ -1534,7 +1572,10 @@ def _self_check() -> None:
             voice_module.SAMPLE_PATH = original_sample_path
     _model.agent = False
 
-    print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
+    if data_available:
+        print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
+    else:
+        print("service self-check: ok (no data/ — persona-dependent checks skipped)")
 
 
 if __name__ == "__main__":
