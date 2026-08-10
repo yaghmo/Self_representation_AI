@@ -54,7 +54,7 @@ export function useAgentLoop(params: GenerationParams) {
         if (step.kind === "proposal") {
           setPending({ proposal: step.proposal as Proposal, step });
         }
-        if (step.kind === "answer") {
+        if (step.kind === "answer" || step.kind === "stopped") {
           const assistantMessage: Message = { role: "assistant", content: step.text };
           historyRef.current = [...history, assistantMessage];
           setTranscript((prev) => [...prev, assistantMessage]);
@@ -66,6 +66,10 @@ export function useAgentLoop(params: GenerationParams) {
 
   const send = useCallback(
     async (text: string) => {
+      // Typing instead of deciding abandons the paused turn — mirrors
+      // chat_app.py:662-668.
+      setPending(null);
+      seenRef.current = new Map();
       const userMessage: Message = { role: "user", content: text };
       const nextHistory = [...historyRef.current, userMessage];
       historyRef.current = nextHistory;
@@ -119,15 +123,18 @@ export function useAgentLoop(params: GenerationParams) {
     if (!pending) return;
     try {
       const result = await postProposalApply(pending.proposal);
+      setTranscript((prev) => [...prev, { role: "user", content: `[applied: ${pending.proposal.summary}]` }]);
       await resolveProposal(`applied — ${pending.proposal.summary}. This write is done; do not repeat it.`, result.path);
     } catch (exc) {
       const message = exc instanceof ApiError ? exc.detail : String(exc);
+      setTranscript((prev) => [...prev, { role: "user", content: `[not applied: ${message}]` }]);
       await resolveProposal(`not applied — ${message}`);
     }
   }, [pending, resolveProposal]);
 
   const declinePending = useCallback(() => {
     if (!pending) return;
+    setTranscript((prev) => [...prev, { role: "user", content: `[declined: ${pending.proposal.summary}]` }]);
     void resolveProposal(`declined by the creator — ${pending.proposal.summary}. Do not retry it.`);
   }, [pending, resolveProposal]);
 
