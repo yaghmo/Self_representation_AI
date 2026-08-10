@@ -28,6 +28,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -196,6 +197,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Character chat service", version="0.1.0", lifespan=lifespan)
 
+# The Next.js admin UI (sub-project 2) calls this service from the browser,
+# not server-to-server like chat_app.py's httpx client did — browsers enforce
+# CORS, curl and httpx don't. Restricted to the dev server's own origin; a
+# deployed instance's origin is a later, Docker-time decision.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[os.environ.get("ADMIN_UI_ORIGIN", "http://localhost:3000")],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 # ------------------------------------------------------------------ schemas --
 
