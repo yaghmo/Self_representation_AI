@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { getHealth, getModelStatus } from "@/lib/api";
 import { useAgentLoop } from "@/hooks/useAgentLoop";
 import { ChatPanel } from "@/components/ChatPanel";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { HealthStatus, ModelStatus } from "@/lib/types";
 
 export default function Page() {
@@ -25,6 +26,9 @@ export default function Page() {
       <p>health: {health ? JSON.stringify(health) : "loading..."}</p>
       <p>model: {status ? JSON.stringify(status) : "loading..."}</p>
       <ChatPanel transcript={loop.transcript} steps={loop.steps} onSend={loop.send} />
+      {loop.pending && (
+        <ConfirmDialog proposal={loop.pending} onApply={loop.applyPending} onDecline={loop.declinePending} />
+      )}
     </main>
   );
 }
