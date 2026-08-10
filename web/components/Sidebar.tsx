@@ -10,6 +10,7 @@ export function Sidebar({ onRestored }: { onRestored: () => void }) {
   const [snapshots, setSnapshots] = useState<string[]>([]);
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [h, s] = await Promise.all([getHealth(), getModelStatus()]);
@@ -23,34 +24,48 @@ export function Sidebar({ onRestored }: { onRestored: () => void }) {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    refresh().catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [refresh]);
 
   async function handleLoad() {
     setLoading(true);
+    setError(null);
     try {
       await loadModel();
       await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
   }
 
   async function handleUnload() {
-    await unloadModel();
-    await refresh();
+    setError(null);
+    try {
+      await unloadModel();
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   async function handleRestore() {
     if (!selected) return;
-    await postSnapshotRestore(selected);
-    await refresh();
-    onRestored();
+    setError(null);
+    try {
+      await postSnapshotRestore(selected);
+      await refresh();
+      onRestored();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   return (
     <aside style={{ width: 260, padding: 16, borderLeft: "1px solid #ddd" }}>
       <h3>Service</h3>
+      {error && <p style={{ color: "red" }}>{error}</p>}
       {health ? <p>{health.status === "ok" ? "Backend up" : health.status}</p> : <p>...</p>}
 
       <h3>Model</h3>
