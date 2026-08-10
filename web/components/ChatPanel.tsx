@@ -33,7 +33,7 @@ export function ChatPanel({
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {steps
-          .filter((step) => step.kind !== "answer")
+          .filter((step) => step.kind !== "answer" && step.kind !== "stopped")
           .map((step, i) => (
             <StepView key={i} step={step} />
           ))}
