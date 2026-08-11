@@ -453,13 +453,13 @@ export default function CookbookPage() {
                 </div>
                 <Button
                   variant="ghost"
-                  size="icon-sm"
                   onClick={reProbe}
                   disabled={reprobing}
-                  className="absolute right-3 top-3"
+                  className="absolute right-3 top-3 h-8 gap-1.5 text-xs text-muted-foreground"
                   title="Re-probe hardware"
                 >
-                  <RefreshCw className={cn("size-4", reprobing && "animate-spin")} />
+                  <RefreshCw className={cn("size-3.5", reprobing && "animate-spin")} />
+                  Re-probe
                 </Button>
               </CardContent>
             </Card>
