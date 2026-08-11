@@ -34,6 +34,7 @@
 
 # Application code. Generic — holds no creator data, so it is tracked.
 !cookbook/**
+!cookbook-web/**
 !runtime/**
 !service/**
 !web/**

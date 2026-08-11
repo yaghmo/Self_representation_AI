@@ -1,0 +1,21 @@
+{
+  "0": "api.ts",
+  "1": "dependencies",
+  "2": "components.json",
+  "3": "devDependencies",
+  "4": "cn",
+  "5": "compilerOptions",
+  "6": "CookbookPage.tsx",
+  "7": "package.json",
+  "8": "dialog.tsx",
+  "9": "utils.ts",
+  "10": "include",
+  "11": "table.tsx",
+  "12": "alert.tsx",
+  "13": "tabs.tsx",
+  "14": "Next.js template",
+  "15": "AGENTS.md",
+  "16": "eslint.config.mjs",
+  "17": "next.config.ts",
+  "18": "postcss.config.mjs"
+}
