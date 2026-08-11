@@ -280,7 +280,7 @@ def _candidates(
 ) -> list[Placement]:
     out: list[Placement] = []
     for model in catalogue.by_role(role):
-        if role == "tts" and require_cloning and not model.cloning:
+        if role == "tts" and model.cloning is not require_cloning:
             continue
         for device in model.devices:
             if device == "gpu" and not budget.has_gpu:
@@ -367,7 +367,7 @@ def largest_shortfall(
         options = [
             m
             for m in catalogue.by_role(role)
-            if not (role == "tts" and require_cloning and not m.cloning)
+            if not (role == "tts" and m.cloning is not require_cloning)
         ]
         if not options and role == "llm":
             return (

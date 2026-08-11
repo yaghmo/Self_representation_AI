@@ -53,6 +53,24 @@ class KVGeometry:
 
 
 @dataclass(frozen=True)
+class Voice:
+    """One selectable voice for a TTS model.
+
+    The mechanism differs by model class:
+      cloning models (xtts, f5, qwen3-base) — there is no male/female flag at
+        inference, the reference clip *is* the voice. `src` points at the
+        creator's recorded clip (data/voice/*.wav).
+      fixed-voice models (kokoro) — the model ships named speakers and `src`
+        is that speaker id (e.g. "af_bella").
+    """
+
+    id: str
+    label: str
+    gender: Literal["female", "male"]
+    src: str = ""
+
+
+@dataclass(frozen=True)
 class Download:
     """Where the weights actually come from.
 
@@ -86,6 +104,7 @@ class ModelEntry:
     max_context: int | None = None
     kv: KVGeometry | None = None
     cloning: bool | None = None  # tts only: can it clone a voice
+    voices: tuple[Voice, ...] = ()  # tts only: selectable voices (see Voice)
     tool_calling: ToolCalling = "none"  # llm only: gates the admin surface
     download: Download | None = None
     # estimated — derived from parameter counts and quant ratios
@@ -180,6 +199,7 @@ def _model_from_dict(d: dict) -> ModelEntry:
         raw["allow_patterns"] = tuple(raw.get("allow_patterns", ()))
         raw["ignore_patterns"] = tuple(raw.get("ignore_patterns", ()))
         download = Download(**raw)
+    voices = tuple(Voice(**v) for v in d.get("voices", ()))
     return ModelEntry(
         id=d["id"],
         role=d["role"],
@@ -192,6 +212,7 @@ def _model_from_dict(d: dict) -> ModelEntry:
         max_context=d.get("max_context"),
         kv=kv,
         cloning=d.get("cloning"),
+        voices=voices,
         tool_calling=d.get("tool_calling", "none"),
         download=download,
         figures=d.get("figures", "estimated"),
