@@ -29,6 +29,8 @@ This app talks to two separate FastAPI processes:
 
 Copy `.env.local.example` to `.env.local` and adjust if either backend runs on a different host/port.
 
+`service/main.py` only allows one CORS origin at a time (`ADMIN_UI_ORIGIN` env var, default `http://localhost:3000`). The older `web/` admin app also runs `next dev` with no fixed port, so if it starts first it can claim port 3000 and push `cookbook-web` onto 3001 — every `/admin` request then fails as an opaque `TypeError: Failed to fetch` (a CORS rejection, not an HTTP error `ApiError` can describe). Make sure `cookbook-web` actually lands on port 3000, or set `ADMIN_UI_ORIGIN` on the backend to match whatever port it got.
+
 ## Admin chat
 
 `/admin` is the creator's chat interface: the model, a tool-call trace, and a confirm-gate dialog before any write touches `data/character.md` or `data/sources.md`. Requires `service/main.py` running in agent mode.

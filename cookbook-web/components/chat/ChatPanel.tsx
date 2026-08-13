@@ -79,7 +79,7 @@ export function ChatPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <ScrollArea className="flex-1 px-6 py-4">
+      <ScrollArea className="min-h-0 flex-1 px-6 py-4">
         <div className="mx-auto flex max-w-2xl flex-col gap-4">
           {transcript.map((message, i) => (
             <MessageBubble key={i} message={message} />
