@@ -27,10 +27,15 @@ function ChatWidget({ botName }: { botName: string }) {
   const [draft, setDraft] = useState("")
   const [isTyping, setIsTyping] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages, isTyping, isOpen])
+
+  useEffect(() => {
+    if (isOpen && !isTyping) inputRef.current?.focus()
+  }, [isOpen, isTyping])
 
   function sendMessage() {
     const text = draft.trim()
@@ -68,7 +73,7 @@ function ChatWidget({ botName }: { botName: string }) {
       </button>
 
       {isOpen && (
-        <div className="fixed right-4 bottom-36 z-30 flex h-[28rem] w-[22rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl sm:right-6">
+        <div className="fixed right-4 bottom-36 z-30 flex h-[28rem] max-h-[calc(100dvh-10rem)] w-[22rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl sm:right-6">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <span className="font-medium">{botName}</span>
             <button
@@ -93,7 +98,7 @@ function ChatWidget({ botName }: { botName: string }) {
               <div
                 key={message.id}
                 className={cn(
-                  "max-w-[80%] rounded-2xl px-3 py-2 text-sm",
+                  "max-w-[80%] rounded-2xl px-3 py-2 text-sm break-words",
                   message.role === "user"
                     ? "ml-auto bg-primary text-primary-foreground"
                     : "mr-auto bg-muted text-foreground"
@@ -119,6 +124,7 @@ function ChatWidget({ botName }: { botName: string }) {
             className="flex items-center gap-2 border-t border-border p-3"
           >
             <Input
+              ref={inputRef}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               placeholder="Send a message..."
