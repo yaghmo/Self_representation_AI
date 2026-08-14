@@ -30,7 +30,7 @@ function ChatWidget({ botName }: { botName: string }) {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
-  }, [messages, isTyping])
+  }, [messages, isTyping, isOpen])
 
   function sendMessage() {
     const text = draft.trim()
