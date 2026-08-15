@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { useAgentLoop, type GenerationParams } from "@/hooks/useAgentLoop";
-import { ChatPanel } from "@/components/ChatPanel";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { Sidebar } from "@/components/Sidebar";
-import { StoryBar } from "@/components/StoryBar";
+import { ChatPanel } from "@/components/admin/ChatPanel";
+import { ConfirmDialog } from "@/components/admin/ConfirmDialog";
+import { Sidebar } from "@/components/admin/Sidebar";
+import { StoryBar } from "@/components/admin/StoryBar";
 
 export default function Page() {
   // chat_app.py:283-301 — the sidebar sliders own these, and they are what
