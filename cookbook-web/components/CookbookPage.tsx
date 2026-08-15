@@ -304,8 +304,8 @@ export default function CookbookPage() {
       const next = { ...prev }
       for (const role of ROLES) {
         let options = catalogue.models.filter((m) => m.role === role)
-        if (role === "tts" && requireCloning) {
-          options = options.filter((m) => m.cloning)
+        if (role === "tts") {
+          options = options.filter((m) => m.cloning === requireCloning)
         }
         const cur = next[role]
         if (!options.length) {
@@ -414,7 +414,7 @@ export default function CookbookPage() {
   const manualOptionsFor = (role: Role) => {
     if (!catalogue) return []
     let options = catalogue.models.filter((m) => m.role === role)
-    if (role === "tts" && requireCloning) options = options.filter((m) => m.cloning)
+    if (role === "tts") options = options.filter((m) => m.cloning === requireCloning)
     return options
   }
 
