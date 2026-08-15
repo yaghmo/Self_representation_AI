@@ -4,6 +4,8 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 
+// Admin link is unconditional — a future deployment-gating pass (config/stack.json's agent flag)
+// needs to update this list too, not just gate the route.
 const LINKS = [
   { href: "/", label: "Cookbook" },
   { href: "/fan", label: "Fan" },

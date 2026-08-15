@@ -22,7 +22,7 @@ export function ConfirmDialog({
         justifyContent: "center",
       }}
     >
-      <div style={{ background: "white", padding: 24, maxWidth: 900, width: "90%", maxHeight: "80vh", overflow: "auto" }}>
+      <div style={{ background: "white", color: "#111", padding: 24, maxWidth: 900, width: "90%", maxHeight: "80vh", overflow: "auto" }}>
         <h2>Confirm this change</h2>
         <p>{proposal.summary} — nothing has been written yet.</p>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>

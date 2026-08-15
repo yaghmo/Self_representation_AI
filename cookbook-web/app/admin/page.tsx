@@ -18,7 +18,7 @@ export default function Page() {
   const loop = useAgentLoop(generation);
 
   return (
-    <div style={{ display: "flex" }}>
+    <div className="admin-root" style={{ display: "flex" }}>
       <main style={{ padding: 24, maxWidth: 800, flex: 1 }}>
         <h1>Admin</h1>
         <ChatPanel
