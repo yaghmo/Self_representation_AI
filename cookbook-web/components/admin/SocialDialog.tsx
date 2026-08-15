@@ -9,6 +9,27 @@ import {
   type Social,
 } from "@/lib/admin/socialApi";
 import { parseSocialUrl } from "@/lib/admin/socialUrl";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Separator } from "@/components/ui/separator";
 
 const COMMON_PLATFORMS = ["instagram", "tiktok", "x", "youtube", "linkedin"];
 
@@ -143,156 +164,147 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
     form?.platform === "other" ? form.platformOther : form?.platform ?? "";
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.4)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <div
-        style={{
-          background: "white",
-          color: "#111",
-          padding: 24,
-          maxWidth: 600,
-          width: "90%",
-          maxHeight: "80vh",
-          overflow: "auto",
-        }}
-      >
-        <h2>Profile</h2>
-        {error && <p style={{ color: "red" }}>{error}</p>}
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Profile</DialogTitle>
+        </DialogHeader>
+
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
 
         {loading ? (
-          <p>Loading...</p>
+          <p className="text-sm text-muted-foreground">Loading…</p>
         ) : socials.length === 0 && !form ? (
-          <p>No profile linked to this account yet</p>
+          <p className="text-sm text-muted-foreground">
+            No profile linked to this account yet
+          </p>
         ) : (
-          socials.map((social) => (
-            <div
-              key={social.id}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 0",
-                borderBottom: "1px solid #eee",
-              }}
-            >
-              <span>{social.platform}</span>
-              <span>{social.username}</span>
-              {social.followerCount != null && (
-                <span>{social.followerCount} followers</span>
-              )}
-              {social.isAlt && (
-                <span style={{ fontSize: 11, color: "#888" }}>-Alt</span>
-              )}
-              <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                <button onClick={() => startEdit(social)}>Update</button>
-                <button onClick={() => handleDelete(social.id)}>Delete</button>
+          <div className="space-y-1">
+            {socials.map((social) => (
+              <div
+                key={social.id}
+                className="flex items-center gap-2 border-b py-2 text-sm last:border-b-0"
+              >
+                <span className="font-medium">{social.platform}</span>
+                <span className="text-muted-foreground">{social.username}</span>
+                {social.followerCount != null && (
+                  <span className="text-xs text-muted-foreground">
+                    {social.followerCount} followers
+                  </span>
+                )}
+                {social.isAlt && (
+                  <span className="text-xs text-muted-foreground">-Alt</span>
+                )}
+                <div className="ml-auto flex gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => startEdit(social)}>
+                    Update
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => handleDelete(social.id)}>
+                    Delete
+                  </Button>
+                </div>
               </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
 
         {form ? (
-          <div style={{ marginTop: 16 }}>
-            <h3>{form.id ? "Update social" : "Add social"}</h3>
-            <label style={{ display: "block" }}>
-              Link
-              <input
-                value={form.url}
-                onChange={(e) => handleUrlChange(e.target.value)}
-                style={{ width: "100%" }}
-              />
-            </label>
-            <label style={{ display: "block" }}>
-              Platform
-              <select
+          <div className="space-y-3 pt-2">
+            <Separator />
+            <p className="text-sm font-medium">{form.id ? "Update social" : "Add social"}</p>
+            <div className="space-y-1">
+              <Label>Link</Label>
+              <Input value={form.url} onChange={(e) => handleUrlChange(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label>Platform</Label>
+              <Select
                 value={form.platform}
-                onChange={(e) => setForm({ ...form, platform: e.target.value })}
+                onValueChange={(v) => v !== null && setForm({ ...form, platform: v })}
               >
-                {COMMON_PLATFORMS.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-                <option value="other">Other</option>
-              </select>
-            </label>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {COMMON_PLATFORMS.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {p}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             {form.platform === "other" && (
-              <label style={{ display: "block" }}>
-                Platform name
-                <input
+              <div className="space-y-1">
+                <Label>Platform name</Label>
+                <Input
                   value={form.platformOther}
-                  onChange={(e) =>
-                    setForm({ ...form, platformOther: e.target.value })
-                  }
+                  onChange={(e) => setForm({ ...form, platformOther: e.target.value })}
                 />
-              </label>
+              </div>
             )}
-            <label style={{ display: "block" }}>
-              Username
-              <input
+            <div className="space-y-1">
+              <Label>Username</Label>
+              <Input
                 value={form.username}
                 onChange={(e) => setForm({ ...form, username: e.target.value })}
               />
-            </label>
-            <label style={{ display: "block" }}>
-              Bio
-              <textarea
+            </div>
+            <div className="space-y-1">
+              <Label>Bio</Label>
+              <Textarea
                 value={form.bio}
                 onChange={(e) => setForm({ ...form, bio: e.target.value })}
               />
-            </label>
-            <label style={{ display: "block" }}>
-              Follower count
-              <input
+            </div>
+            <div className="space-y-1">
+              <Label>Follower count</Label>
+              <Input
                 type="number"
                 value={form.followerCount}
-                onChange={(e) =>
-                  setForm({ ...form, followerCount: e.target.value })
-                }
+                onChange={(e) => setForm({ ...form, followerCount: e.target.value })}
               />
-            </label>
-            <label style={{ display: "block" }}>
-              Profile picture URL
-              <input
+            </div>
+            <div className="space-y-1">
+              <Label>Profile picture URL</Label>
+              <Input
                 value={form.pfpUrl}
                 onChange={(e) => setForm({ ...form, pfpUrl: e.target.value })}
               />
-            </label>
+            </div>
             {activePlatform && platformHasOtherEntry(activePlatform) && (
-              <label style={{ display: "block" }}>
-                <input
-                  type="checkbox"
+              <div className="flex items-center gap-2">
+                <Checkbox
                   checked={form.isAlt}
-                  onChange={(e) =>
-                    setForm({ ...form, isAlt: e.target.checked })
-                  }
-                />{" "}
-                -Alt (a second account for this platform)
-              </label>
+                  onCheckedChange={(checked) => setForm({ ...form, isAlt: checked === true })}
+                />
+                <Label className="font-normal">-Alt (a second account for this platform)</Label>
+              </div>
             )}
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button onClick={handleSave}>Save</button>
-              <button onClick={() => setForm(null)}>Cancel</button>
+            <div className="flex gap-2 pt-2">
+              <Button onClick={handleSave}>Save</Button>
+              <Button variant="outline" onClick={() => setForm(null)}>
+                Cancel
+              </Button>
             </div>
           </div>
         ) : (
-          <button onClick={startAdd} style={{ marginTop: 16 }}>
+          <Button variant="outline" onClick={startAdd}>
             Add social
-          </button>
+          </Button>
         )}
 
-        <div style={{ marginTop: 16 }}>
-          <button onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { VoiceRecorder } from "@/components/chat/VoiceRecorder";
+import { SocialCard } from "@/components/admin/SocialCard";
 
 export function ModelSidebar({
   generation,
@@ -157,6 +158,8 @@ export function ModelSidebar({
       </Card>
 
       <VoiceRecorder />
+
+      <SocialCard />
 
       {status?.agent && (
         <Card>
