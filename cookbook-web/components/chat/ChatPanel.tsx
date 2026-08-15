@@ -165,8 +165,8 @@ export function ChatPanel({
                 submit();
               }
             }}
-            placeholder="Tell it about yourself, or what to do…"
-            className="min-h-10 flex-1 resize-none border-0 shadow-none focus-visible:ring-0"
+            placeholder="Tell it about yourself, or ask it to check the profile…"
+            className="min-h-10 flex-1 resize-none border-0 py-2.5 shadow-none focus-visible:ring-0"
           />
           <Button
             onClick={submit}
