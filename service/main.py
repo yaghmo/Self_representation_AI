@@ -50,6 +50,13 @@ from runtime.embed import EmbeddingNotConfigured, bge_embedder
 from runtime.index import Embedder, Index, all_chunks, load_index
 from runtime.model import Model, ModelNotDownloaded
 from runtime.recall import RECALL_SCHEMA, recall
+from runtime.social import (
+    SocialNotFound,
+    add_social,
+    delete_social,
+    list_socials,
+    update_social,
+)
 from runtime.story_tools import (
     AMEND_PROMPT,
     INGEST_PROMPT,
@@ -320,6 +327,34 @@ class StoryProposeRequest(BaseModel):
     events: list[StoryEvent] = Field(default_factory=list)
 
 
+class SocialAddRequest(BaseModel):
+    # camelCase deliberately — see Global Constraints in the plan this
+    # implements: this feature's wire format matches profile.json's on-disk
+    # shape exactly, no translation layer.
+    platform: str
+    username: str
+    url: str
+    bio: str | None = None
+    followerCount: int | None = None
+    pfpUrl: str | None = None
+    isAlt: bool = False
+
+
+class SocialUpdateRequest(BaseModel):
+    id: str
+    platform: str | None = None
+    username: str | None = None
+    url: str | None = None
+    bio: str | None = None
+    followerCount: int | None = None
+    pfpUrl: str | None = None
+    isAlt: bool | None = None
+
+
+class SocialDeleteRequest(BaseModel):
+    id: str
+
+
 # -------------------------------------------------------------------- model --
 
 
@@ -536,6 +571,14 @@ def model_unload() -> dict:
     _model.unload()
     logger.info("unloaded %s", name)
     return {"status": "unloaded", "model": name}
+
+
+@app.get("/social/list")
+def social_list() -> dict:
+    """Public, unauthenticated — the fan `BottomBar` calls this directly.
+    A flat file read, nothing to do with the model, so no `_require_loaded()`
+    and no agent gate."""
+    return {"socials": list_socials()}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -998,6 +1041,46 @@ async def admin_voice_sample(request: Request) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": sample_status()}
+
+
+@app.get("/admin/social/list")
+def admin_social_list() -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    return {"socials": list_socials()}
+
+
+@app.post("/admin/social/add")
+def admin_social_add(request: SocialAddRequest) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    return add_social(request.model_dump())
+
+
+@app.post("/admin/social/update")
+def admin_social_update(request: SocialUpdateRequest) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    fields = request.model_dump(exclude_unset=True, exclude={"id"})
+    try:
+        return update_social(request.id, fields)
+    except SocialNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"no social with id {exc}"
+        ) from exc
+
+
+@app.post("/admin/social/delete")
+def admin_social_delete(request: SocialDeleteRequest) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    try:
+        delete_social(request.id)
+    except SocialNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"no social with id {exc}"
+        ) from exc
+    return {"deleted": request.id}
 
 
 def _self_check() -> None:
@@ -1649,11 +1732,81 @@ def _self_check() -> None:
             response = client.get("/admin/voice/phrases")
             assert response.status_code == 200, (response.status_code, response.text)
             body = response.json()
-            assert body["languages"] == LANGUAGES
+            assert [tuple(x) for x in body["languages"]] == LANGUAGES
             assert body["phrases"] == PHRASES
         finally:
             voice_module.VOICE_DIR = original_voice_dir
             voice_module.SAMPLE_PATH = original_sample_path
+    _model.agent = False
+
+    # -- /social + /admin/social ----------------------------------------------
+    import runtime.social as social_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        original_profile_json = social_module.PROFILE_JSON_PATH
+        social_module.PROFILE_JSON_PATH = Path(tmp) / "profile.json"
+        try:
+            # The public route needs no loaded model and no agent mode —
+            # it must work even in whatever state `_model` is currently in.
+            response = client.get("/social/list")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"socials": []}
+
+            # The admin routes are refused like every other /admin/* route
+            # when not in agent mode.
+            _model.agent = False
+            response = client.get("/admin/social/list")
+            assert response.status_code == 403, (response.status_code, response.text)
+
+            _model.agent = True
+            response = client.post(
+                "/admin/social/add",
+                json={
+                    "platform": "instagram",
+                    "username": "handle",
+                    "url": "https://instagram.com/handle",
+                    "followerCount": 100,
+                },
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            created = response.json()
+            assert created["id"].startswith("instagram-")
+            assert created["isAlt"] is False
+
+            # The public route now reflects the admin-added entry.
+            response = client.get("/social/list")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert len(response.json()["socials"]) == 1
+
+            response = client.post(
+                "/admin/social/update",
+                json={"id": created["id"], "followerCount": 200},
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["followerCount"] == 200
+
+            # An unknown id is a 404, not a silent no-op.
+            response = client.post(
+                "/admin/social/update", json={"id": "no-such-id", "bio": "x"}
+            )
+            assert response.status_code == 404, (response.status_code, response.text)
+
+            response = client.post(
+                "/admin/social/delete", json={"id": created["id"]}
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"deleted": created["id"]}
+
+            response = client.get("/admin/social/list")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"socials": []}
+
+            response = client.post(
+                "/admin/social/delete", json={"id": "no-such-id"}
+            )
+            assert response.status_code == 404, (response.status_code, response.text)
+        finally:
+            social_module.PROFILE_JSON_PATH = original_profile_json
     _model.agent = False
 
     if data_available:
