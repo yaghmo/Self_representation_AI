@@ -62,7 +62,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
   const [socials, setSocials] = useState<Social[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState<FormState | null>(null);
+  const [form, setForm] = useState<FormState>({ ...EMPTY_FORM });
 
   useEffect(() => {
     refresh();
@@ -79,10 +79,6 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
     } finally {
       setLoading(false);
     }
-  }
-
-  function startAdd() {
-    setForm({ ...EMPTY_FORM });
   }
 
   function startEdit(social: Social) {
@@ -102,7 +98,6 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
   }
 
   function handleUrlChange(url: string) {
-    if (!form) return;
     const parsed = parseSocialUrl(url);
     if (!parsed) {
       setForm({ ...form, url });
@@ -119,7 +114,6 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
   }
 
   async function handleSave() {
-    if (!form) return;
     const platform =
       form.platform === "other" ? form.platformOther.trim() : form.platform;
     if (!platform || !form.username || !form.url) {
@@ -145,7 +139,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       } else {
         await addSocial(params);
       }
-      setForm(null);
+      setForm({ ...EMPTY_FORM });
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -182,9 +176,97 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
           </Alert>
         )}
 
+        <div className="space-y-3">
+          <p className="text-sm font-medium">{form.id ? "Update social" : "Add social"}</p>
+          <div className="space-y-1">
+            <Label>Link</Label>
+            <Input value={form.url} onChange={(e) => handleUrlChange(e.target.value)} />
+          </div>
+          {form.id && (
+            <>
+              <div className="space-y-1">
+                <Label>Platform</Label>
+                <Select
+                  value={form.platform}
+                  onValueChange={(v) => v !== null && setForm({ ...form, platform: v })}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {COMMON_PLATFORMS.map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {p}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {form.platform === "other" && (
+                <div className="space-y-1">
+                  <Label>Platform name</Label>
+                  <Input
+                    value={form.platformOther}
+                    onChange={(e) => setForm({ ...form, platformOther: e.target.value })}
+                  />
+                </div>
+              )}
+              <div className="space-y-1">
+                <Label>Username</Label>
+                <Input
+                  value={form.username}
+                  onChange={(e) => setForm({ ...form, username: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Bio</Label>
+                <Textarea
+                  value={form.bio}
+                  onChange={(e) => setForm({ ...form, bio: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Follower count</Label>
+                <Input
+                  type="number"
+                  value={form.followerCount}
+                  onChange={(e) => setForm({ ...form, followerCount: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Profile picture URL</Label>
+                <Input
+                  value={form.pfpUrl}
+                  onChange={(e) => setForm({ ...form, pfpUrl: e.target.value })}
+                />
+              </div>
+              {activePlatform && platformHasOtherEntry(activePlatform) && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    checked={form.isAlt}
+                    onCheckedChange={(checked) => setForm({ ...form, isAlt: checked === true })}
+                  />
+                  <Label className="font-normal">-Alt (a second account for this platform)</Label>
+                </div>
+              )}
+            </>
+          )}
+          <div className="flex gap-2">
+            <Button onClick={handleSave}>Save</Button>
+            {form.id && (
+              <Button variant="outline" onClick={() => setForm({ ...EMPTY_FORM })}>
+                Cancel
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <Separator />
+
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : socials.length === 0 && !form ? (
+        ) : socials.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No profile linked to this account yet
           </p>
@@ -243,97 +325,6 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
               );
             })}
           </div>
-        )}
-
-        {form ? (
-          <div className="space-y-3 pt-2">
-            <Separator />
-            <p className="text-sm font-medium">{form.id ? "Update social" : "Add social"}</p>
-            <div className="space-y-1">
-              <Label>Link</Label>
-              <Input value={form.url} onChange={(e) => handleUrlChange(e.target.value)} />
-            </div>
-            {form.id && (
-              <>
-                <div className="space-y-1">
-                  <Label>Platform</Label>
-                  <Select
-                    value={form.platform}
-                    onValueChange={(v) => v !== null && setForm({ ...form, platform: v })}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {COMMON_PLATFORMS.map((p) => (
-                        <SelectItem key={p} value={p}>
-                          {p}
-                        </SelectItem>
-                      ))}
-                      <SelectItem value="other">Other</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                {form.platform === "other" && (
-                  <div className="space-y-1">
-                    <Label>Platform name</Label>
-                    <Input
-                      value={form.platformOther}
-                      onChange={(e) => setForm({ ...form, platformOther: e.target.value })}
-                    />
-                  </div>
-                )}
-                <div className="space-y-1">
-                  <Label>Username</Label>
-                  <Input
-                    value={form.username}
-                    onChange={(e) => setForm({ ...form, username: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Bio</Label>
-                  <Textarea
-                    value={form.bio}
-                    onChange={(e) => setForm({ ...form, bio: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Follower count</Label>
-                  <Input
-                    type="number"
-                    value={form.followerCount}
-                    onChange={(e) => setForm({ ...form, followerCount: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Profile picture URL</Label>
-                  <Input
-                    value={form.pfpUrl}
-                    onChange={(e) => setForm({ ...form, pfpUrl: e.target.value })}
-                  />
-                </div>
-                {activePlatform && platformHasOtherEntry(activePlatform) && (
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      checked={form.isAlt}
-                      onCheckedChange={(checked) => setForm({ ...form, isAlt: checked === true })}
-                    />
-                    <Label className="font-normal">-Alt (a second account for this platform)</Label>
-                  </div>
-                )}
-              </>
-            )}
-            <div className="flex gap-2 pt-2">
-              <Button onClick={handleSave}>Save</Button>
-              <Button variant="outline" onClick={() => setForm(null)}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <Button variant="outline" onClick={startAdd}>
-            Add social
-          </Button>
         )}
 
         <DialogFooter>
