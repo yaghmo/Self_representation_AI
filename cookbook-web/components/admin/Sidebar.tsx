@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getHealth, getModelStatus, getSnapshots, loadModel, postSnapshotRestore, unloadModel } from "@/lib/admin/api";
 import type { GenerationParams } from "@/hooks/useAgentLoop";
 import type { HealthStatus, ModelStatus } from "@/lib/admin/types";
+import { SocialCard } from "./SocialCard";
 
 export function Sidebar({
   generation,
@@ -141,6 +142,8 @@ export function Sidebar({
           )}
         </>
       )}
+
+      <SocialCard />
     </aside>
   );
 }
