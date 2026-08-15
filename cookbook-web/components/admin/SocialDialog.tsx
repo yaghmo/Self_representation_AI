@@ -123,7 +123,11 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
     const platform =
       form.platform === "other" ? form.platformOther.trim() : form.platform;
     if (!platform || !form.username || !form.url) {
-      setError("platform, username, and url are required");
+      setError(
+        form.id
+          ? "platform, username, and url are required"
+          : "paste a link from a supported platform (instagram, tiktok, x, youtube, linkedin)"
+      );
       return;
     }
     const params = {
@@ -249,71 +253,75 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
               <Label>Link</Label>
               <Input value={form.url} onChange={(e) => handleUrlChange(e.target.value)} />
             </div>
-            <div className="space-y-1">
-              <Label>Platform</Label>
-              <Select
-                value={form.platform}
-                onValueChange={(v) => v !== null && setForm({ ...form, platform: v })}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {COMMON_PLATFORMS.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p}
-                    </SelectItem>
-                  ))}
-                  <SelectItem value="other">Other</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {form.platform === "other" && (
-              <div className="space-y-1">
-                <Label>Platform name</Label>
-                <Input
-                  value={form.platformOther}
-                  onChange={(e) => setForm({ ...form, platformOther: e.target.value })}
-                />
-              </div>
-            )}
-            <div className="space-y-1">
-              <Label>Username</Label>
-              <Input
-                value={form.username}
-                onChange={(e) => setForm({ ...form, username: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>Bio</Label>
-              <Textarea
-                value={form.bio}
-                onChange={(e) => setForm({ ...form, bio: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>Follower count</Label>
-              <Input
-                type="number"
-                value={form.followerCount}
-                onChange={(e) => setForm({ ...form, followerCount: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>Profile picture URL</Label>
-              <Input
-                value={form.pfpUrl}
-                onChange={(e) => setForm({ ...form, pfpUrl: e.target.value })}
-              />
-            </div>
-            {activePlatform && platformHasOtherEntry(activePlatform) && (
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  checked={form.isAlt}
-                  onCheckedChange={(checked) => setForm({ ...form, isAlt: checked === true })}
-                />
-                <Label className="font-normal">-Alt (a second account for this platform)</Label>
-              </div>
+            {form.id && (
+              <>
+                <div className="space-y-1">
+                  <Label>Platform</Label>
+                  <Select
+                    value={form.platform}
+                    onValueChange={(v) => v !== null && setForm({ ...form, platform: v })}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {COMMON_PLATFORMS.map((p) => (
+                        <SelectItem key={p} value={p}>
+                          {p}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {form.platform === "other" && (
+                  <div className="space-y-1">
+                    <Label>Platform name</Label>
+                    <Input
+                      value={form.platformOther}
+                      onChange={(e) => setForm({ ...form, platformOther: e.target.value })}
+                    />
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <Label>Username</Label>
+                  <Input
+                    value={form.username}
+                    onChange={(e) => setForm({ ...form, username: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Bio</Label>
+                  <Textarea
+                    value={form.bio}
+                    onChange={(e) => setForm({ ...form, bio: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Follower count</Label>
+                  <Input
+                    type="number"
+                    value={form.followerCount}
+                    onChange={(e) => setForm({ ...form, followerCount: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Profile picture URL</Label>
+                  <Input
+                    value={form.pfpUrl}
+                    onChange={(e) => setForm({ ...form, pfpUrl: e.target.value })}
+                  />
+                </div>
+                {activePlatform && platformHasOtherEntry(activePlatform) && (
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      checked={form.isAlt}
+                      onCheckedChange={(checked) => setForm({ ...form, isAlt: checked === true })}
+                    />
+                    <Label className="font-normal">-Alt (a second account for this platform)</Label>
+                  </div>
+                )}
+              </>
             )}
             <div className="flex gap-2 pt-2">
               <Button onClick={handleSave}>Save</Button>
