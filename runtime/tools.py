@@ -82,15 +82,18 @@ class Proposal:
         # yet, and `snapshot()` writes into a subdirectory of it. The bible
         # files always have a parent, so this only ever fires on a new corpus.
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        snapshot(self.path)
+        snapshot(self.path, summary=self.summary)
         self.path.write_text(self.new_text, encoding="utf-8")
         return self.path
 
 
-def snapshot(path: Path) -> Path | None:
+def snapshot(path: Path, summary: str = "") -> Path | None:
     """Copy a file into its sibling `.backups/` before it is overwritten.
 
     `data/` is gitignored, so these snapshots are the only undo that exists.
+    `summary`, if given, is the proposal that is about to overwrite `path` —
+    written as a sidecar `<name>.summary` so the restore list can show what a
+    snapshot is a state *before*, instead of a bare timestamp.
     """
     backups = path.parent / BACKUP_DIR
     backups.mkdir(exist_ok=True)
@@ -106,7 +109,14 @@ def snapshot(path: Path) -> Path | None:
         bump += 1
         destination = backups / f"{path.name}.{stamp}-{bump}"
     shutil.copy2(path, destination)
+    if summary:
+        summary_path(destination).write_text(summary, encoding="utf-8")
     return destination
+
+
+def summary_path(backup: Path) -> Path:
+    """The sidecar summary file a backup's own name implies."""
+    return backup.with_name(backup.name + ".summary")
 
 
 # Admits every id `next_story_id` can emit — three digits minimum
@@ -200,7 +210,7 @@ def restore_backup(backup: Path, directory: Path | None = None) -> Path:
         raise ValueError(f"{backup.name!r} is not in {target_dir / BACKUP_DIR}")
 
     target = target_dir / name
-    snapshot(target)
+    snapshot(target, summary=f"before restoring {backup.name}")
     shutil.copy2(backup, target)
     return target
 

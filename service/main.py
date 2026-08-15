@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -60,6 +61,7 @@ from runtime.story_tools import (
     read_policy,
     route,
 )
+from runtime.convert import ConversionFailed, to_markdown
 from runtime.stories import STORIES_DIR, load_story
 from runtime.tools import (
     SOURCES_PATH,
@@ -69,8 +71,9 @@ from runtime.tools import (
     list_backups,
     restore_backup,
     run_tool,
+    summary_path,
 )
-from runtime.voice_sample import SAMPLE_PATH, sample_status, save_sample
+from runtime.voice_sample import LANGUAGES, PHRASES, SAMPLE_PATH, sample_status, save_sample
 from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
@@ -458,7 +461,11 @@ def _prompt_for(model: Model, request: ChatRequest) -> list[Message]:
             history,
             context_tokens=model.context_tokens,
             count=model.count_tokens,
-            reserve_tokens=max(1024, request.max_tokens * 2),
+            # +1024 matches LocalBackend.reasoning_reserve — thinking bumps the
+            # actual completion request past max_tokens, so the prompt fit has
+            # to leave room for that too.
+            reserve_tokens=max(1024, request.max_tokens * 2)
+            + (1024 if request.thinking else 0),
             persona=persona,
             summary=request.summary,
         )
@@ -809,7 +816,12 @@ def admin_proposal_apply(request: ProposalPayload) -> ApplyResponse:
 def admin_snapshots() -> dict:
     model = _require_loaded()
     _require_agent(model)
-    return {"snapshots": [p.name for p in list_backups()]}
+    snapshots = []
+    for p in list_backups():
+        sidecar = summary_path(p)
+        summary = sidecar.read_text(encoding="utf-8").strip() if sidecar.exists() else ""
+        snapshots.append({"name": p.name, "summary": summary})
+    return {"snapshots": snapshots}
 
 
 @app.post("/admin/snapshots/restore")
@@ -829,6 +841,29 @@ def admin_snapshots_restore(request: RestoreRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"restored": restored.name}
+
+
+@app.post("/admin/story/convert-file")
+async def admin_story_convert_file(file: UploadFile = File(...)) -> dict:
+    """A document to markdown, so `/story` can take a file as well as a paste.
+
+    `to_markdown` reads the file's own bytes off disk, so the upload — a
+    buffer in memory — needs a real path carrying its real suffix first.
+    """
+    model = _require_loaded()
+    _require_agent(model)
+    suffix = Path(file.filename or "").suffix
+    data = await file.read()
+    handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        handle.write(data)
+        handle.close()
+        text = to_markdown(Path(handle.name))
+    except ConversionFailed as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        os.unlink(handle.name)
+    return {"text": text}
 
 
 @app.post("/admin/story/route")
@@ -937,6 +972,20 @@ def admin_voice_status() -> dict:
     model = _require_loaded()
     _require_agent(model)
     return {"status": sample_status()}
+
+
+@app.get("/admin/voice/phrases")
+def admin_voice_phrases() -> dict:
+    """The language picker's options and their read-aloud text.
+
+    Static reference scripts (see runtime/voice_sample.py), not character
+    content, so they need no agent-mode check on their own — but the route
+    lives under /admin/voice, and there is no reason to expose it beyond
+    that surface.
+    """
+    model = _require_loaded()
+    _require_agent(model)
+    return {"languages": LANGUAGES, "phrases": PHRASES}
 
 
 @app.post("/admin/voice/sample")
@@ -1383,15 +1432,16 @@ def _self_check() -> None:
             # directly here rather than re-driving a whole tool call.
             from runtime.tools import snapshot
 
-            snapshot(profile)
+            snapshot(profile, summary="test edit")
             profile.write_text("# Placeholder\n## 6. Voice\n- changed\n", encoding="utf-8")
 
             response = client.get("/admin/snapshots")
             assert response.status_code == 200, (response.status_code, response.text)
-            names = response.json()["snapshots"]
-            assert len(names) == 1, names
+            snapshots = response.json()["snapshots"]
+            assert len(snapshots) == 1, snapshots
+            assert snapshots[0]["summary"] == "test edit", snapshots
 
-            response = client.post("/admin/snapshots/restore", json={"name": names[0]})
+            response = client.post("/admin/snapshots/restore", json={"name": snapshots[0]["name"]})
             assert response.status_code == 200, (response.status_code, response.text)
             assert "old line" in profile.read_text(encoding="utf-8")
 
@@ -1401,6 +1451,23 @@ def _self_check() -> None:
         finally:
             tools_module.PROFILE_PATH = original_tools_profile
             tools_module.SOURCES_PATH = original_tools_sources
+    _model.agent = False
+
+    # -- /admin/story/convert-file ---------------------------------------------
+    _model.agent = True
+    response = client.post(
+        "/admin/story/convert-file",
+        files={"file": ("note.md", b"a plain markdown note", "text/markdown")},
+    )
+    assert response.status_code == 200, (response.status_code, response.text)
+    assert response.json()["text"] == "a plain markdown note"
+
+    # An unreadable format is refused with the reason, not a bare 500.
+    response = client.post(
+        "/admin/story/convert-file",
+        files={"file": ("note.docx", b"not really a docx", "application/octet-stream")},
+    )
+    assert response.status_code == 422, (response.status_code, response.text)
     _model.agent = False
 
     # -- /admin/story/route + /admin/story/propose ----------------------------
@@ -1578,6 +1645,12 @@ def _self_check() -> None:
             response = client.get("/admin/voice/status")
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["status"] is not None
+
+            response = client.get("/admin/voice/phrases")
+            assert response.status_code == 200, (response.status_code, response.text)
+            body = response.json()
+            assert body["languages"] == LANGUAGES
+            assert body["phrases"] == PHRASES
         finally:
             voice_module.VOICE_DIR = original_voice_dir
             voice_module.SAMPLE_PATH = original_sample_path
