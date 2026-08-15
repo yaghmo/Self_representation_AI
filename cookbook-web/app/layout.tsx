@@ -1,6 +1,7 @@
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { Nav } from "@/components/Nav"
 import { Geist, Geist_Mono } from "next/font/google"
 
 const geistSans = Geist({
@@ -26,6 +27,7 @@ export default function RootLayout({
     >
       <body>
         <ThemeProvider>
+          <Nav />
           <TooltipProvider>{children}</TooltipProvider>
         </ThemeProvider>
       </body>

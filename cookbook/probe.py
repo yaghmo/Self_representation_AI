@@ -236,7 +236,7 @@ def run_probe(model_dir: Path | None = None) -> Probe:
     warnings: list[str] = []
 
     if psutil is None:
-        raise RuntimeError("psutil is required — pip install -r cookbook/requirements.txt")
+        raise RuntimeError("psutil is required — uv sync")
 
     in_container = _detect_container()
     vm = psutil.virtual_memory()

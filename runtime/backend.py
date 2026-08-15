@@ -91,20 +91,28 @@ class LocalBackend:
     # mid-thought returns an EMPTY `content` and looks broken. For a persona bot
     # the reasoning is pure latency, so it is off unless asked for.
     thinking: bool = False
+    # llama.cpp has one token pool for reasoning_content + content combined —
+    # no separate reasoning budget. Add this on top of max_tokens when
+    # thinking is on so the <think> block can't eat the whole answer budget.
+    reasoning_reserve: int = 1024
     last_usage: Usage = field(default_factory=Usage)
     last_reasoning: str = ""
     last_tool_calls: list[dict] = field(default_factory=list)
 
     def _payload(self, messages: list[Message], stream: bool, **kwargs) -> dict:
+        thinking_on = kwargs.get("thinking", self.thinking)
+        max_tokens = kwargs.get("max_tokens", self.max_tokens)
+        if thinking_on:
+            max_tokens += self.reasoning_reserve
         payload = {
             "messages": [m.as_dict() for m in messages],
             "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "max_tokens": max_tokens,
             "stream": stream,
         }
         if self.model:
             payload["model"] = self.model
-        if not kwargs.get("thinking", self.thinking):
+        if not thinking_on:
             # Honoured when llama-server runs with --jinja, which it does.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         for key in ("top_p", "top_k", "repeat_penalty", "stop", "seed"):
@@ -283,6 +291,11 @@ def _self_check() -> None:
     schema = [{"type": "function", "function": {"name": "noop", "parameters": {}}}]
     assert "tools" not in backend._payload([plain], False)
     assert backend._payload([plain], False, tools=schema)["tools"] == schema
+
+    # Thinking gets extra room on top of max_tokens, so a <think> block can't
+    # eat the whole answer budget; off leaves max_tokens untouched.
+    assert backend._payload([plain], False, max_tokens=512, thinking=True)["max_tokens"] == 1536
+    assert backend._payload([plain], False, max_tokens=512, thinking=False)["max_tokens"] == 512
 
     print("backend self-check: ok")
 

@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -49,6 +50,13 @@ from runtime.embed import EmbeddingNotConfigured, bge_embedder
 from runtime.index import Embedder, Index, all_chunks, load_index
 from runtime.model import Model, ModelNotDownloaded
 from runtime.recall import RECALL_SCHEMA, recall
+from runtime.social import (
+    SocialNotFound,
+    add_social,
+    delete_social,
+    list_socials,
+    update_social,
+)
 from runtime.story_tools import (
     AMEND_PROMPT,
     INGEST_PROMPT,
@@ -60,6 +68,7 @@ from runtime.story_tools import (
     read_policy,
     route,
 )
+from runtime.convert import ConversionFailed, to_markdown
 from runtime.stories import STORIES_DIR, load_story
 from runtime.tools import (
     SOURCES_PATH,
@@ -69,8 +78,9 @@ from runtime.tools import (
     list_backups,
     restore_backup,
     run_tool,
+    summary_path,
 )
-from runtime.voice_sample import SAMPLE_PATH, sample_status, save_sample
+from runtime.voice_sample import LANGUAGES, PHRASES, SAMPLE_PATH, sample_status, save_sample
 from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
@@ -317,6 +327,34 @@ class StoryProposeRequest(BaseModel):
     events: list[StoryEvent] = Field(default_factory=list)
 
 
+class SocialAddRequest(BaseModel):
+    # camelCase deliberately — see Global Constraints in the plan this
+    # implements: this feature's wire format matches profile.json's on-disk
+    # shape exactly, no translation layer.
+    platform: str
+    username: str
+    url: str
+    bio: str | None = None
+    followerCount: int | None = None
+    pfpUrl: str | None = None
+    isAlt: bool = False
+
+
+class SocialUpdateRequest(BaseModel):
+    id: str
+    platform: str | None = None
+    username: str | None = None
+    url: str | None = None
+    bio: str | None = None
+    followerCount: int | None = None
+    pfpUrl: str | None = None
+    isAlt: bool | None = None
+
+
+class SocialDeleteRequest(BaseModel):
+    id: str
+
+
 # -------------------------------------------------------------------- model --
 
 
@@ -458,7 +496,11 @@ def _prompt_for(model: Model, request: ChatRequest) -> list[Message]:
             history,
             context_tokens=model.context_tokens,
             count=model.count_tokens,
-            reserve_tokens=max(1024, request.max_tokens * 2),
+            # +1024 matches LocalBackend.reasoning_reserve — thinking bumps the
+            # actual completion request past max_tokens, so the prompt fit has
+            # to leave room for that too.
+            reserve_tokens=max(1024, request.max_tokens * 2)
+            + (1024 if request.thinking else 0),
             persona=persona,
             summary=request.summary,
         )
@@ -529,6 +571,14 @@ def model_unload() -> dict:
     _model.unload()
     logger.info("unloaded %s", name)
     return {"status": "unloaded", "model": name}
+
+
+@app.get("/social/list")
+def social_list() -> dict:
+    """Public, unauthenticated — the fan `BottomBar` calls this directly.
+    A flat file read, nothing to do with the model, so no `_require_loaded()`
+    and no agent gate."""
+    return {"socials": list_socials()}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -809,7 +859,12 @@ def admin_proposal_apply(request: ProposalPayload) -> ApplyResponse:
 def admin_snapshots() -> dict:
     model = _require_loaded()
     _require_agent(model)
-    return {"snapshots": [p.name for p in list_backups()]}
+    snapshots = []
+    for p in list_backups():
+        sidecar = summary_path(p)
+        summary = sidecar.read_text(encoding="utf-8").strip() if sidecar.exists() else ""
+        snapshots.append({"name": p.name, "summary": summary})
+    return {"snapshots": snapshots}
 
 
 @app.post("/admin/snapshots/restore")
@@ -829,6 +884,29 @@ def admin_snapshots_restore(request: RestoreRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"restored": restored.name}
+
+
+@app.post("/admin/story/convert-file")
+async def admin_story_convert_file(file: UploadFile = File(...)) -> dict:
+    """A document to markdown, so `/story` can take a file as well as a paste.
+
+    `to_markdown` reads the file's own bytes off disk, so the upload — a
+    buffer in memory — needs a real path carrying its real suffix first.
+    """
+    model = _require_loaded()
+    _require_agent(model)
+    suffix = Path(file.filename or "").suffix
+    data = await file.read()
+    handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        handle.write(data)
+        handle.close()
+        text = to_markdown(Path(handle.name))
+    except ConversionFailed as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        os.unlink(handle.name)
+    return {"text": text}
 
 
 @app.post("/admin/story/route")
@@ -939,6 +1017,20 @@ def admin_voice_status() -> dict:
     return {"status": sample_status()}
 
 
+@app.get("/admin/voice/phrases")
+def admin_voice_phrases() -> dict:
+    """The language picker's options and their read-aloud text.
+
+    Static reference scripts (see runtime/voice_sample.py), not character
+    content, so they need no agent-mode check on their own — but the route
+    lives under /admin/voice, and there is no reason to expose it beyond
+    that surface.
+    """
+    model = _require_loaded()
+    _require_agent(model)
+    return {"languages": LANGUAGES, "phrases": PHRASES}
+
+
 @app.post("/admin/voice/sample")
 async def admin_voice_sample(request: Request) -> dict:
     model = _require_loaded()
@@ -949,6 +1041,46 @@ async def admin_voice_sample(request: Request) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": sample_status()}
+
+
+@app.get("/admin/social/list")
+def admin_social_list() -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    return {"socials": list_socials()}
+
+
+@app.post("/admin/social/add")
+def admin_social_add(request: SocialAddRequest) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    return add_social(request.model_dump())
+
+
+@app.post("/admin/social/update")
+def admin_social_update(request: SocialUpdateRequest) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    fields = request.model_dump(exclude_unset=True, exclude={"id"})
+    try:
+        return update_social(request.id, fields)
+    except SocialNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"no social with id {exc}"
+        ) from exc
+
+
+@app.post("/admin/social/delete")
+def admin_social_delete(request: SocialDeleteRequest) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    try:
+        delete_social(request.id)
+    except SocialNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail=f"no social with id {exc}"
+        ) from exc
+    return {"deleted": request.id}
 
 
 def _self_check() -> None:
@@ -1383,15 +1515,16 @@ def _self_check() -> None:
             # directly here rather than re-driving a whole tool call.
             from runtime.tools import snapshot
 
-            snapshot(profile)
+            snapshot(profile, summary="test edit")
             profile.write_text("# Placeholder\n## 6. Voice\n- changed\n", encoding="utf-8")
 
             response = client.get("/admin/snapshots")
             assert response.status_code == 200, (response.status_code, response.text)
-            names = response.json()["snapshots"]
-            assert len(names) == 1, names
+            snapshots = response.json()["snapshots"]
+            assert len(snapshots) == 1, snapshots
+            assert snapshots[0]["summary"] == "test edit", snapshots
 
-            response = client.post("/admin/snapshots/restore", json={"name": names[0]})
+            response = client.post("/admin/snapshots/restore", json={"name": snapshots[0]["name"]})
             assert response.status_code == 200, (response.status_code, response.text)
             assert "old line" in profile.read_text(encoding="utf-8")
 
@@ -1401,6 +1534,23 @@ def _self_check() -> None:
         finally:
             tools_module.PROFILE_PATH = original_tools_profile
             tools_module.SOURCES_PATH = original_tools_sources
+    _model.agent = False
+
+    # -- /admin/story/convert-file ---------------------------------------------
+    _model.agent = True
+    response = client.post(
+        "/admin/story/convert-file",
+        files={"file": ("note.md", b"a plain markdown note", "text/markdown")},
+    )
+    assert response.status_code == 200, (response.status_code, response.text)
+    assert response.json()["text"] == "a plain markdown note"
+
+    # An unreadable format is refused with the reason, not a bare 500.
+    response = client.post(
+        "/admin/story/convert-file",
+        files={"file": ("note.docx", b"not really a docx", "application/octet-stream")},
+    )
+    assert response.status_code == 422, (response.status_code, response.text)
     _model.agent = False
 
     # -- /admin/story/route + /admin/story/propose ----------------------------
@@ -1578,9 +1728,85 @@ def _self_check() -> None:
             response = client.get("/admin/voice/status")
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["status"] is not None
+
+            response = client.get("/admin/voice/phrases")
+            assert response.status_code == 200, (response.status_code, response.text)
+            body = response.json()
+            assert [tuple(x) for x in body["languages"]] == LANGUAGES
+            assert body["phrases"] == PHRASES
         finally:
             voice_module.VOICE_DIR = original_voice_dir
             voice_module.SAMPLE_PATH = original_sample_path
+    _model.agent = False
+
+    # -- /social + /admin/social ----------------------------------------------
+    import runtime.social as social_module
+
+    with tempfile.TemporaryDirectory() as tmp:
+        original_profile_json = social_module.PROFILE_JSON_PATH
+        social_module.PROFILE_JSON_PATH = Path(tmp) / "profile.json"
+        try:
+            # The public route needs no loaded model and no agent mode —
+            # it must work even in whatever state `_model` is currently in.
+            response = client.get("/social/list")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"socials": []}
+
+            # The admin routes are refused like every other /admin/* route
+            # when not in agent mode.
+            _model.agent = False
+            response = client.get("/admin/social/list")
+            assert response.status_code == 403, (response.status_code, response.text)
+
+            _model.agent = True
+            response = client.post(
+                "/admin/social/add",
+                json={
+                    "platform": "instagram",
+                    "username": "handle",
+                    "url": "https://instagram.com/handle",
+                    "followerCount": 100,
+                },
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            created = response.json()
+            assert created["id"].startswith("instagram-")
+            assert created["isAlt"] is False
+
+            # The public route now reflects the admin-added entry.
+            response = client.get("/social/list")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert len(response.json()["socials"]) == 1
+
+            response = client.post(
+                "/admin/social/update",
+                json={"id": created["id"], "followerCount": 200},
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["followerCount"] == 200
+
+            # An unknown id is a 404, not a silent no-op.
+            response = client.post(
+                "/admin/social/update", json={"id": "no-such-id", "bio": "x"}
+            )
+            assert response.status_code == 404, (response.status_code, response.text)
+
+            response = client.post(
+                "/admin/social/delete", json={"id": created["id"]}
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"deleted": created["id"]}
+
+            response = client.get("/admin/social/list")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"socials": []}
+
+            response = client.post(
+                "/admin/social/delete", json={"id": "no-such-id"}
+            )
+            assert response.status_code == 404, (response.status_code, response.text)
+        finally:
+            social_module.PROFILE_JSON_PATH = original_profile_json
     _model.agent = False
 
     if data_available:

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Message, Step } from "@/lib/types";
+import type { Message, Step } from "@/lib/admin/types";
 
 export function ChatPanel({
   transcript,
