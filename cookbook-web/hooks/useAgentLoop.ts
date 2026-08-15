@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { postAdminTool, postChat, postProposalApply, ApiError } from "@/lib/chat/api";
 import { runAgentLoop, resumed, type ToolOutcome } from "@/lib/chat/agentLoop";
-import { buildFollowup, entryIdOf } from "@/lib/chat/followup";
+import { buildFollowupTasks, entryIdOf } from "@/lib/chat/followup";
 import { TOOL_SCHEMAS, FOLLOWUP_SCHEMAS } from "@/lib/chat/toolSchemas";
 import type { Message, Proposal, Step } from "@/lib/chat/types";
 
@@ -54,8 +54,10 @@ export function useAgentLoop(params: GenerationParams) {
     return { kind: "result", text: response.result ?? "" };
   }, []);
 
+  // Returns the error message on failure, or null on success — swallowed
+  // rather than thrown, since `send` fires this without a surrounding catch.
   const drive = useCallback(
-    async (history: Message[], tools: Record<string, unknown>[]) => {
+    async (history: Message[], tools: Record<string, unknown>[]): Promise<string | null> => {
       setSteps([]); // a fresh turn starts with an empty trace
       setBusy(true);
       const post = async (turnHistory: Message[], turnTools: Record<string, unknown>[]) =>
@@ -67,6 +69,7 @@ export function useAgentLoop(params: GenerationParams) {
           tools: turnTools,
         });
 
+      let failure: string | null = null;
       try {
         for await (const step of runAgentLoop(post, history, { dispatch, tools, seen: seenRef.current })) {
           setSteps((prev) => [...prev, step]);
@@ -83,10 +86,12 @@ export function useAgentLoop(params: GenerationParams) {
           }
         }
       } catch (exc) {
-        setError(messageOf(exc));
+        failure = messageOf(exc);
+        setError(failure);
       } finally {
         setBusy(false);
       }
+      return failure;
     },
     [dispatch, params.maxTokens, params.temperature, params.thinking]
   );
@@ -133,12 +138,32 @@ export function useAgentLoop(params: GenerationParams) {
         const isSourceEntry = appliedPath?.endsWith("sources.md") && entryIdOf(current.proposal.after);
         if (isSourceEntry) {
           const entryText = current.proposal.after;
-          const task = await buildFollowup(entryText, async (heading) => {
+          const entryId = entryIdOf(entryText) || "the entry";
+          // One task per fed section, driven one at a time: a section that
+          // has grown large (accreted cites over time) can blow the context
+          // budget on its own, and joining several such sections into one
+          // follow-up message multiplies that risk for no benefit — the
+          // model only ever needs one section in view to edit it.
+          const tasks = await buildFollowupTasks(entryText, async (heading) => {
             const result = await postAdminTool("read_profile_section", { heading });
             return result.result ?? "";
           });
           followupActiveRef.current = true;
-          await drive(task, FOLLOWUP_SCHEMAS);
+          const failures: string[] = [];
+          for (const task of tasks) {
+            const failure = await drive(task.messages, FOLLOWUP_SCHEMAS);
+            if (failure) failures.push(task.section ? `${task.section} (${failure})` : failure);
+          }
+          // `${entryId} was logged` is true regardless of what follows — the
+          // sources.md write already landed via postProposalApply above.
+          // Losing that distinction is what made the earlier "too long"
+          // error read as if the whole turn, including the log, had failed.
+          setError(
+            failures.length > 0
+              ? `${entryId} was logged. The profile update failed for: ${failures.join("; ")}. ` +
+                `Ask the agent to update those sections by hand, or retry with reasoning off.`
+              : null
+          );
           return;
         }
 

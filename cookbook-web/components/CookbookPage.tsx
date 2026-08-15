@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import {
   AlertTriangle,
   Bot,
@@ -51,7 +52,7 @@ import { cn } from "@/lib/utils"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -181,7 +182,7 @@ const STEPS = [
   { label: "Confirm", hint: "Lock in the config when the fit looks right." },
 ]
 
-export default function CookbookPage() {
+export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {}) {
   // ------------------------------------------------------------ machine state
   const [probe, setProbe] = useState<Probe | null>(null)
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null)
@@ -1219,12 +1220,23 @@ export default function CookbookPage() {
         </Alert>
       )}
 
-      <header className="mb-8">
-        <h1 className="text-3xl font-semibold tracking-tight">Cookbook</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Fits the whole stack at once — every enabled role is resident at the same time,
-          so the constraint is their sum, not any one model.
-        </p>
+      <header className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Cookbook</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Fits the whole stack at once — every enabled role is resident at the same time,
+            so the constraint is their sum, not any one model.
+          </p>
+        </div>
+        {onCancel ? (
+          <Button variant="outline" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        ) : (
+          <Link href="/admin" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+            Cancel
+          </Link>
+        )}
       </header>
 
         {/* step indicator */}

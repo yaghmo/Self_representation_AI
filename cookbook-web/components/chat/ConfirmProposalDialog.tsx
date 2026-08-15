@@ -22,7 +22,7 @@ export function ConfirmProposalDialog({
 }) {
   return (
     <Dialog open onOpenChange={(open) => !open && onDecline()}>
-      <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+      <DialogContent className="max-h-[92vh] w-[95vw] max-w-5xl overflow-y-auto sm:max-w-5xl">
         <DialogHeader>
           <DialogTitle>Confirm this change</DialogTitle>
           <DialogDescription>{proposal.summary} — nothing has been written yet.</DialogDescription>

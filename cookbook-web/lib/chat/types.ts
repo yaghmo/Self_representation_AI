@@ -83,3 +83,17 @@ export interface ToolResponse {
   result: string | null;
   proposal: Proposal | null;
 }
+
+export interface SnapshotEntry {
+  name: string;
+  summary: string;
+}
+
+export interface VoiceStatus {
+  status: string | null;
+}
+
+export interface VoicePhrases {
+  languages: [string, string][];
+  phrases: Record<string, string>;
+}

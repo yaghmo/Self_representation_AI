@@ -4,8 +4,11 @@ import type {
   Message,
   ModelStatus,
   Proposal,
+  SnapshotEntry,
   StoryRouteResponse,
   ToolResponse,
+  VoicePhrases,
+  VoiceStatus,
 } from "./types";
 import { messageToApi } from "./types";
 
@@ -94,7 +97,7 @@ export function postProposalApply(proposal: Proposal): Promise<{ path: string }>
   });
 }
 
-export function getSnapshots(): Promise<{ snapshots: string[] }> {
+export function getSnapshots(): Promise<{ snapshots: SnapshotEntry[] }> {
   return request("/admin/snapshots");
 }
 
@@ -103,6 +106,25 @@ export function postSnapshotRestore(name: string): Promise<{ restored: string }>
     method: "POST",
     body: JSON.stringify({ name }),
   });
+}
+
+export async function postConvertFile(file: File): Promise<{ text: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${SERVICE_URL}/admin/story/convert-file`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      detail = (await response.json()).detail ?? detail;
+    } catch {
+      // body wasn't JSON — keep statusText
+    }
+    throw new ApiError(response.status, detail);
+  }
+  return (await response.json()) as { text: string };
 }
 
 export function postStoryRoute(text: string): Promise<StoryRouteResponse> {
@@ -156,6 +178,32 @@ export function postIngest(params: IngestParams): Promise<{ content: string }> {
       merge: params.merge ?? false,
     }),
   });
+}
+
+export function getVoiceStatus(): Promise<VoiceStatus> {
+  return request("/admin/voice/status");
+}
+
+export function getVoicePhrases(): Promise<VoicePhrases> {
+  return request("/admin/voice/phrases");
+}
+
+export async function postVoiceSample(wav: Blob): Promise<VoiceStatus> {
+  const response = await fetch(`${SERVICE_URL}/admin/voice/sample`, {
+    method: "POST",
+    headers: { "Content-Type": "audio/wav" },
+    body: wav,
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      detail = (await response.json()).detail ?? detail;
+    } catch {
+      // body wasn't JSON — keep statusText
+    }
+    throw new ApiError(response.status, detail);
+  }
+  return (await response.json()) as VoiceStatus;
 }
 
 export function postSummarize(messages: Message[], maxTokens = 256): Promise<{ content: string }> {

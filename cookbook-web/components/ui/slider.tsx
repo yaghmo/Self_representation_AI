@@ -10,11 +10,21 @@ function Slider({
   max = 100,
   ...props
 }: SliderPrimitive.Root.Props) {
+  // A scalar `value`/`defaultValue` is a single thumb — base-ui itself only
+  // treats an *array*-typed value as range mode, and only actually emits an
+  // array from onValueChange once that array holds more than one thumb.
+  // Wrapping a lone value in `[x]` here would make this component render
+  // one thumb while base-ui's Control still computes a scalar change for
+  // it — a mismatch that makes every drag silently drop.
   const _values = Array.isArray(value)
     ? value
     : Array.isArray(defaultValue)
       ? defaultValue
-      : [min, max]
+      : value !== undefined
+        ? [value]
+        : defaultValue !== undefined
+          ? [defaultValue]
+          : [min, max]
 
   return (
     <SliderPrimitive.Root

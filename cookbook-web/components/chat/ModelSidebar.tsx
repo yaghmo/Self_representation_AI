@@ -10,13 +10,11 @@ import {
   unloadModel,
 } from "@/lib/chat/api";
 import type { GenerationParams } from "@/hooks/useAgentLoop";
-import type { HealthStatus, ModelStatus } from "@/lib/chat/types";
+import type { HealthStatus, ModelStatus, SnapshotEntry } from "@/lib/chat/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -26,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { VoiceRecorder } from "@/components/chat/VoiceRecorder";
 
 export function ModelSidebar({
   generation,
@@ -38,7 +37,7 @@ export function ModelSidebar({
 }) {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [status, setStatus] = useState<ModelStatus | null>(null);
-  const [snapshots, setSnapshots] = useState<string[]>([]);
+  const [snapshots, setSnapshots] = useState<SnapshotEntry[]>([]);
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +49,7 @@ export function ModelSidebar({
     if (s.agent) {
       const snap = await getSnapshots();
       setSnapshots(snap.snapshots);
-      setSelected((prev) => prev || snap.snapshots[0] || "");
+      setSelected((prev) => prev || snap.snapshots[0]?.name || "");
     }
   }, []);
 
@@ -94,7 +93,7 @@ export function ModelSidebar({
   }
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l bg-muted/30 p-4">
+    <aside className="flex w-80 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-muted/30 p-4 [&>*]:shrink-0">
       {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
@@ -137,8 +136,8 @@ export function ModelSidebar({
               min={0}
               max={1.5}
               step={0.05}
-              value={[generation.temperature]}
-              onValueChange={(v) => Array.isArray(v) && onGeneration({ temperature: v[0] })}
+              value={generation.temperature}
+              onValueChange={(v) => onGeneration({ temperature: v as number })}
             />
           </div>
           <div className="space-y-1">
@@ -150,22 +149,14 @@ export function ModelSidebar({
               min={64}
               max={2048}
               step={64}
-              value={[generation.maxTokens]}
-              onValueChange={(v) => Array.isArray(v) && onGeneration({ maxTokens: v[0] })}
+              value={generation.maxTokens}
+              onValueChange={(v) => onGeneration({ maxTokens: v as number })}
             />
-          </div>
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="thinking"
-              checked={generation.thinking}
-              onCheckedChange={(checked) => onGeneration({ thinking: checked === true })}
-            />
-            <Label htmlFor="thinking" className="text-sm font-normal">
-              Reasoning
-            </Label>
           </div>
         </CardContent>
       </Card>
+
+      <VoiceRecorder />
 
       {status?.agent && (
         <Card>
@@ -184,9 +175,9 @@ export function ModelSidebar({
                     <SelectValue placeholder="Choose a snapshot" />
                   </SelectTrigger>
                   <SelectContent>
-                    {snapshots.map((name) => (
-                      <SelectItem key={name} value={name}>
-                        {name}
+                    {snapshots.map((snap) => (
+                      <SelectItem key={snap.name} value={snap.name}>
+                        {snap.summary || snap.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
