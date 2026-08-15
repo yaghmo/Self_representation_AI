@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getHealth, getModelStatus, getSnapshots, loadModel, postSnapshotRestore, unloadModel } from "@/lib/api";
+import { getHealth, getModelStatus, getSnapshots, loadModel, postSnapshotRestore, unloadModel } from "@/lib/admin/api";
 import type { GenerationParams } from "@/hooks/useAgentLoop";
-import type { HealthStatus, ModelStatus } from "@/lib/types";
+import type { HealthStatus, ModelStatus } from "@/lib/admin/types";
 
 export function Sidebar({
   generation,

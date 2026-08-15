@@ -1,6 +1,6 @@
 "use client";
 
-import type { Proposal } from "@/lib/types";
+import type { Proposal } from "@/lib/admin/types";
 
 export function ConfirmDialog({
   proposal,

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { postIngest, postStoryPropose, postStoryRoute } from "@/lib/api";
-import type { Proposal } from "@/lib/types";
+import { postIngest, postStoryPropose, postStoryRoute } from "@/lib/admin/api";
+import type { Proposal } from "@/lib/admin/types";
 
 function parseStoryCommand(text: string): { wantedId: string; wantedEvent: string; rest: string } {
   const match = /^(ST-\d+)(?:\/(E-\d+))?\s*/.exec(text.trim());
