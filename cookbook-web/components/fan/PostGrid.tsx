@@ -1,20 +1,34 @@
 import type { Post } from "./types"
 
-function PostGrid({ posts }: { posts: Post[] }) {
+const SKELETON_COUNT = 6
+
+function PostGrid({ posts, expanded }: { posts: Post[]; expanded: boolean }) {
+  const style = {
+    opacity: expanded ? 0 : 1,
+    transform: expanded ? "translateY(12px)" : "translateY(0)",
+  }
+  const className =
+    "mx-6 mt-8 grid grid-cols-3 gap-1 transition-[opacity,transform] duration-500 ease-out sm:mx-10 sm:gap-2"
+
   if (posts.length === 0) {
     return (
-      <div className="mx-4 mt-8 rounded-2xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground sm:mx-6">
-        No posts yet.
+      <div className={className} style={style}>
+        {Array.from({ length: SKELETON_COUNT }).map((_, index) => (
+          <div
+            key={index}
+            className="aspect-[3/4] animate-pulse rounded-md bg-muted"
+          />
+        ))}
       </div>
     )
   }
 
   return (
-    <div className="mx-4 mt-8 grid grid-cols-3 gap-1 sm:mx-6 sm:gap-2">
+    <div className={className} style={style}>
       {posts.map((post) => (
         <div
           key={post.id}
-          className="aspect-square overflow-hidden rounded-md bg-muted"
+          className="aspect-[3/4] overflow-hidden rounded-md bg-muted"
         >
           <img
             src={post.imageUrl}

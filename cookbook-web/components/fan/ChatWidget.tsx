@@ -5,21 +5,8 @@ import { MessageCircle, Send, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+import { ChatApiError, postChat } from "@/lib/chatApi"
 import type { ChatMessage } from "./types"
-
-const CANNED_REPLIES = [
-  "Thanks for the message! This is a mock reply while the real chat isn't wired up yet.",
-  "Good question — I don't have a real answer yet, this is just a placeholder response.",
-  "Appreciate you reaching out. Real answers are coming once the chat is connected.",
-]
-
-let replyIndex = 0
-
-function nextCannedReply() {
-  const reply = CANNED_REPLIES[replyIndex % CANNED_REPLIES.length]
-  replyIndex += 1
-  return reply
-}
 
 function ChatWidget({ botName }: { botName: string }) {
   const [isOpen, setIsOpen] = useState(false)
@@ -37,7 +24,7 @@ function ChatWidget({ botName }: { botName: string }) {
     if (isOpen && !isTyping) inputRef.current?.focus()
   }, [isOpen, isTyping])
 
-  function sendMessage() {
+  async function sendMessage() {
     const text = draft.trim()
     if (!text || isTyping) return
 
@@ -46,19 +33,28 @@ function ChatWidget({ botName }: { botName: string }) {
       role: "user",
       text,
     }
-    setMessages((prev) => [...prev, userMessage])
+    const history = [...messages, userMessage]
+    setMessages(history)
     setDraft("")
     setIsTyping(true)
 
-    setTimeout(() => {
-      const botMessage: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "bot",
-        text: nextCannedReply(),
-      }
-      setMessages((prev) => [...prev, botMessage])
-      setIsTyping(false)
-    }, 1000)
+    let replyText: string
+    try {
+      replyText = await postChat(history)
+    } catch (error) {
+      replyText =
+        error instanceof ChatApiError
+          ? `Sorry, the chat is unavailable right now (${error.status}).`
+          : "Sorry, the chat is unavailable right now."
+    }
+
+    const botMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "bot",
+      text: replyText,
+    }
+    setMessages((prev) => [...prev, botMessage])
+    setIsTyping(false)
   }
 
   return (
@@ -67,7 +63,7 @@ function ChatWidget({ botName }: { botName: string }) {
         type="button"
         onClick={() => setIsOpen((open) => !open)}
         aria-label={isOpen ? "Close chat" : "Open chat"}
-        className="fixed right-4 bottom-20 z-30 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 sm:right-6"
+        className="fixed right-8 bottom-16 z-30 flex h-14 w-24 items-center justify-center rounded-t-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 sm:right-10"
       >
         {isOpen ? <X className="size-6" /> : <MessageCircle className="size-6" />}
       </button>
@@ -98,7 +94,7 @@ function ChatWidget({ botName }: { botName: string }) {
               <div
                 key={message.id}
                 className={cn(
-                  "max-w-[80%] rounded-2xl px-3 py-2 text-sm break-words",
+                  "w-fit max-w-[80%] rounded-2xl px-3 py-2 text-sm break-words",
                   message.role === "user"
                     ? "ml-auto bg-primary text-primary-foreground"
                     : "mr-auto bg-muted text-foreground"
@@ -108,7 +104,7 @@ function ChatWidget({ botName }: { botName: string }) {
               </div>
             ))}
             {isTyping && (
-              <div className="mr-auto flex items-center gap-1 rounded-2xl bg-muted px-3 py-2">
+              <div className="mr-auto flex w-fit items-center gap-1 rounded-2xl bg-muted px-3 py-2">
                 <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
                 <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
                 <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />

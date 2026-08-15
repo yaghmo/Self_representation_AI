@@ -2,7 +2,7 @@ import { Link2, Plus } from "lucide-react"
 
 function BottomBar() {
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-20 flex items-center justify-center gap-6 border-t border-border bg-background/95 py-3 backdrop-blur">
+    <nav className="fixed inset-x-0 bottom-0 z-20 flex h-16 items-center justify-center gap-6 border-t border-border bg-background/95 backdrop-blur">
       <span
         aria-disabled="true"
         className="flex size-9 items-center justify-center rounded-full text-muted-foreground/50"
