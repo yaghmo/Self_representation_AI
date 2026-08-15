@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { postAdminTool, postChat, postProposalApply, ApiError } from "@/lib/api";
-import { runAgentLoop, resumed, type ToolOutcome } from "@/lib/agentLoop";
-import { buildFollowup, entryIdOf } from "@/lib/followup";
-import { TOOL_SCHEMAS, FOLLOWUP_SCHEMAS } from "@/lib/toolSchemas";
-import type { Message, Proposal, Step } from "@/lib/types";
+import { postAdminTool, postChat, postProposalApply, ApiError } from "@/lib/admin/api";
+import { runAgentLoop, resumed, type ToolOutcome } from "@/lib/admin/agentLoop";
+import { buildFollowup, entryIdOf } from "@/lib/admin/followup";
+import { TOOL_SCHEMAS, FOLLOWUP_SCHEMAS } from "@/lib/admin/toolSchemas";
+import type { Message, Proposal, Step } from "@/lib/admin/types";
 
 export interface GenerationParams {
   temperature: number;
