@@ -26,6 +26,48 @@ import { Pencil, Trash2, User } from "lucide-react";
 
 const COMMON_PLATFORMS = ["instagram", "tiktok", "x", "youtube", "linkedin"];
 
+function SocialRow({
+  platform,
+  username,
+  isAlt,
+  followerCount,
+  pfpUrl,
+  bio,
+  actions,
+}: {
+  platform: string;
+  username: string;
+  isAlt: boolean;
+  followerCount: number | null;
+  pfpUrl: string | null;
+  bio: string | null;
+  actions: React.ReactNode;
+}) {
+  const Icon = platformIcon(platform);
+  return (
+    <div className="border-b py-2 text-sm last:border-b-0">
+      <div className="flex items-center gap-3">
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        {pfpUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- external, unknown-domain URLs the creator pastes in; next/image would need a wildcard remote pattern for arbitrary hosts
+          <img src={pfpUrl} alt="" className="size-8 shrink-0 rounded-full object-cover" />
+        ) : (
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
+            <User className="size-4 text-muted-foreground" />
+          </div>
+        )}
+        <span className="font-medium">{username}</span>
+        {isAlt && <span className="text-xs text-muted-foreground">-Alt</span>}
+        {followerCount != null && (
+          <span className="text-xs text-muted-foreground">{followerCount} followers</span>
+        )}
+        <div className="ml-auto flex gap-1">{actions}</div>
+      </div>
+      <p className="mt-1 pl-7 text-xs text-muted-foreground">{bio || "no bio yet."}</p>
+    </div>
+  );
+}
+
 type FormState = {
   id?: string;
   platform: string;
@@ -147,6 +189,8 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
+  const preview = parseSocialUrl(form.url);
+
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
@@ -166,13 +210,27 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
             <Label>Link</Label>
             <Input value={form.url} onChange={(e) => handleUrlChange(e.target.value)} />
           </div>
+          {preview && (
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">This is how it will show:</p>
+              <div className="rounded-lg border px-2">
+                <SocialRow
+                  platform={preview.platform}
+                  username={form.username || preview.username}
+                  isAlt={form.isAlt}
+                  followerCount={form.followerCount ? Number(form.followerCount) : null}
+                  pfpUrl={form.pfpUrl || null}
+                  bio={form.bio}
+                  actions={null}
+                />
+              </div>
+            </div>
+          )}
           <div className="flex gap-2">
-            <Button onClick={handleSave}>Save</Button>
-            {form.id && (
-              <Button variant="outline" onClick={() => setForm({ ...EMPTY_FORM })}>
-                Cancel
-              </Button>
-            )}
+            <Button onClick={handleSave}>Confirm</Button>
+            <Button variant="outline" onClick={() => setForm({ ...EMPTY_FORM })}>
+              Cancel
+            </Button>
           </div>
         </div>
 
@@ -186,60 +244,39 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
           </p>
         ) : (
           <div className="space-y-1">
-            {socials.map((social) => {
-              const Icon = platformIcon(social.platform);
-              return (
-                <div key={social.id} className="border-b py-2 text-sm last:border-b-0">
-                  <div className="flex items-center gap-3">
-                    <Icon className="size-4 shrink-0 text-muted-foreground" />
-                    {social.pfpUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element -- external, unknown-domain URLs the creator pastes in; next/image would need a wildcard remote pattern for arbitrary hosts
-                      <img
-                        src={social.pfpUrl}
-                        alt=""
-                        className="size-8 shrink-0 rounded-full object-cover"
-                      />
-                    ) : (
-                      <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
-                        <User className="size-4 text-muted-foreground" />
-                      </div>
-                    )}
-                    <span className="font-medium">{social.username}</span>
-                    {social.isAlt && (
-                      <span className="text-xs text-muted-foreground">-Alt</span>
-                    )}
-                    {social.followerCount != null && (
-                      <span className="text-xs text-muted-foreground">
-                        {social.followerCount} followers
-                      </span>
-                    )}
-                    <div className="ml-auto flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="Update"
-                        title="Update"
-                        onClick={() => startEdit(social)}
-                      >
-                        <Pencil className="size-4" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="Delete"
-                        title="Delete"
-                        onClick={() => handleDelete(social.id)}
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </div>
-                  </div>
-                  <p className="mt-1 pl-7 text-xs text-muted-foreground">
-                    {social.bio || "no bio yet."}
-                  </p>
-                </div>
-              );
-            })}
+            {socials.map((social) => (
+              <SocialRow
+                key={social.id}
+                platform={social.platform}
+                username={social.username}
+                isAlt={social.isAlt}
+                followerCount={social.followerCount}
+                pfpUrl={social.pfpUrl}
+                bio={social.bio}
+                actions={
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Update"
+                      title="Update"
+                      onClick={() => startEdit(social)}
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Delete"
+                      title="Delete"
+                      onClick={() => handleDelete(social.id)}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </>
+                }
+              />
+            ))}
           </div>
         )}
 
