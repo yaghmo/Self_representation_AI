@@ -30,6 +30,8 @@ import {
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
+import { platformIcon } from "@/lib/platformIcon";
+import { Pencil, Trash2, User } from "lucide-react";
 
 const COMMON_PLATFORMS = ["instagram", "tiktok", "x", "youtube", "linkedin"];
 
@@ -184,31 +186,58 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
           </p>
         ) : (
           <div className="space-y-1">
-            {socials.map((social) => (
-              <div
-                key={social.id}
-                className="flex items-center gap-2 border-b py-2 text-sm last:border-b-0"
-              >
-                <span className="font-medium">{social.platform}</span>
-                <span className="text-muted-foreground">{social.username}</span>
-                {social.followerCount != null && (
-                  <span className="text-xs text-muted-foreground">
-                    {social.followerCount} followers
-                  </span>
-                )}
-                {social.isAlt && (
-                  <span className="text-xs text-muted-foreground">-Alt</span>
-                )}
-                <div className="ml-auto flex gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => startEdit(social)}>
-                    Update
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => handleDelete(social.id)}>
-                    Delete
-                  </Button>
+            {socials.map((social) => {
+              const Icon = platformIcon(social.platform);
+              return (
+                <div
+                  key={social.id}
+                  className="flex items-center gap-3 border-b py-2 text-sm last:border-b-0"
+                >
+                  <Icon className="size-4 shrink-0 text-muted-foreground" />
+                  {social.pfpUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- external, unknown-domain URLs the creator pastes in; next/image would need a wildcard remote pattern for arbitrary hosts
+                    <img
+                      src={social.pfpUrl}
+                      alt=""
+                      className="size-8 shrink-0 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
+                      <User className="size-4 text-muted-foreground" />
+                    </div>
+                  )}
+                  <span className="font-medium">{social.username}</span>
+                  {social.isAlt && (
+                    <span className="text-xs text-muted-foreground">-Alt</span>
+                  )}
+                  {social.followerCount != null && (
+                    <span className="text-xs text-muted-foreground">
+                      {social.followerCount} followers
+                    </span>
+                  )}
+                  <div className="ml-auto flex gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Update"
+                      title="Update"
+                      onClick={() => startEdit(social)}
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Delete"
+                      title="Delete"
+                      onClick={() => handleDelete(social.id)}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
