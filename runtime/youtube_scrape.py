@@ -16,15 +16,21 @@ def scrape_channel(url: str) -> dict | None:
         return None
     try:
         with yt_dlp.YoutubeDL(
-            {"quiet": True, "skip_download": True}
+            {"quiet": True, "skip_download": True, "playlist_items": "0"}
         ) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception:
         return None
     if not info:
         return None
+    pfp_url = info.get("thumbnail")
+    if not pfp_url:
+        for thumb in info.get("thumbnails") or []:
+            if thumb.get("id") == "avatar_uncropped":
+                pfp_url = thumb.get("url")
+                break
     return {
-        "pfp_url": info.get("thumbnail"),
+        "pfp_url": pfp_url,
         "follower_count": info.get("channel_follower_count"),
         "bio": info.get("description"),
     }
