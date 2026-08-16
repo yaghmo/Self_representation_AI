@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { platformIcon } from "@/lib/platformIcon";
+import { BioSection } from "@/components/admin/BioSection";
 import { Pencil, Trash2, User } from "lucide-react";
 
 const COMMON_PLATFORMS = ["instagram", "tiktok", "x", "youtube", "linkedin"];
@@ -94,6 +95,7 @@ const EMPTY_FORM: FormState = {
 
 export function SocialDialog({ onClose }: { onClose: () => void }) {
   const [socials, setSocials] = useState<Social[]>([]);
+  const [bio, setBio] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>({ ...EMPTY_FORM });
@@ -149,6 +151,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
     try {
       const res = await getSocials();
       setSocials(res.socials);
+      setBio(res.bio);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -278,6 +281,10 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
             </Button>
           </div>
         </div>
+
+        <Separator />
+
+        <BioSection bio={bio} onSaved={refresh} />
 
         <Separator />
 
