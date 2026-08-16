@@ -183,12 +183,24 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       return;
     }
     const known = COMMON_PLATFORMS.includes(parsed.platform);
+    // Pointing the form at a different platform (or starting a brand-new
+    // add) means any previously scraped pfp/follower count/bio belongs to
+    // the old target — carrying it over via the preview merge's `?? prev.X`
+    // fallback would save it under the new social. Only same-target edits
+    // (tweaking an existing social's own URL, same platform) keep them,
+    // since that fallback exists precisely to survive the in-flight debounce
+    // there.
+    const currentPlatform = form.platform === "other" ? form.platformOther : form.platform;
+    const switchingTarget = !form.id || parsed.platform !== currentPlatform;
     setForm({
       ...form,
       url,
       platform: known ? parsed.platform : "other",
       platformOther: known ? "" : parsed.platform,
-      username: form.username || parsed.username,
+      // No separate username input exists — it's always derived from the
+      // URL, so there's nothing to preserve by falling back to form.username.
+      username: parsed.username,
+      ...(switchingTarget ? { pfpUrl: "", followerCount: "", bio: "" } : {}),
     });
   }
 

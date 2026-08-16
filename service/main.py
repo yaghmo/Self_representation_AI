@@ -1189,13 +1189,20 @@ def admin_social_bio_generate() -> BioGenerateResponse:
         raise HTTPException(
             status_code=422, detail="no social has a bio yet — nothing to combine"
         )
-    transcript = "\n\n".join(bios)
-    content = model.chat(
-        [Message("user", f"{BIO_GENERATE_PROMPT}\n\n{transcript}")],
-        temperature=0.4,
-        max_tokens=256,
-        thinking=False,
-    )
+    # Scraped channel descriptions can run to thousands of characters; the
+    # prompt only wants an overview, so a hard per-bio truncate is enough —
+    # no need for /ingest's token-budgeted assembly here.
+    transcript = "\n\n".join(bio[:500] for bio in bios)
+    try:
+        content = model.chat(
+            [Message("user", f"{BIO_GENERATE_PROMPT}\n\n{transcript}")],
+            temperature=0.4,
+            max_tokens=256,
+            thinking=False,
+        )
+    except Exception as exc:
+        logger.exception("bio generate failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return BioGenerateResponse(bio=content)
 
 
@@ -1214,7 +1221,7 @@ def _self_check() -> None:
     `context_tokens` and `count_tokens`, and `chat()` is never reached on the
     rejection cases. Run it with `python -m service.main`.
     """
-    global _model, PROFILE_PATH, SOURCES_PATH
+    global _model, PROFILE_PATH, SOURCES_PATH, scrape_channel
     from types import SimpleNamespace
 
     from fastapi.testclient import TestClient
@@ -1964,6 +1971,29 @@ def _self_check() -> None:
                 "/admin/social/preview", json={"url": "not a real url"}
             )
             assert response.status_code == 422, (response.status_code, response.text)
+
+            # /admin/social/preview's YouTube branch reads
+            # scraped["pfp_url"/"follower_count"/"bio"] — join that shape to
+            # scrape_channel's return dict without a live network scrape by
+            # faking the module-level name the route actually calls.
+            original_scrape_channel = scrape_channel
+            scrape_channel = lambda url: {
+                "pfp_url": "https://example.com/pic.jpg",
+                "follower_count": 1000,
+                "bio": "test bio",
+            }
+            try:
+                response = client.post(
+                    "/admin/social/preview",
+                    json={"url": "https://youtube.com/@someone"},
+                )
+                assert response.status_code == 200, (response.status_code, response.text)
+                body = response.json()
+                assert body["pfpUrl"] == "https://example.com/pic.jpg", body
+                assert body["followerCount"] == 1000, body
+                assert body["bio"] == "test bio", body
+            finally:
+                scrape_channel = original_scrape_channel
 
             client.post("/admin/social/delete", json={"id": first_id})
 
