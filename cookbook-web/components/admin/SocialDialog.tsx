@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   addSocial,
   deleteSocial,
   getSocials,
+  previewSocial,
   updateSocial,
   type Social,
 } from "@/lib/admin/socialApi";
@@ -96,6 +97,48 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>({ ...EMPTY_FORM });
+
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewRequestRef = useRef(0);
+
+  useEffect(() => {
+    const parsed = parseSocialUrl(form.url);
+    if (!parsed) {
+      setPreviewLoading(false);
+      return;
+    }
+    const requestId = ++previewRequestRef.current;
+    const url = form.url;
+    const id = form.id;
+    setPreviewLoading(true);
+    const timer = setTimeout(() => {
+      previewSocial({ url, id })
+        .then((data) => {
+          if (previewRequestRef.current !== requestId) return; // superseded by a newer edit
+          setForm((prev) =>
+            prev.url === url
+              ? {
+                  ...prev,
+                  followerCount:
+                    data.followerCount != null ? String(data.followerCount) : prev.followerCount,
+                  pfpUrl: data.pfpUrl ?? prev.pfpUrl,
+                  bio: data.bio ?? prev.bio,
+                  isAlt: data.isAlt,
+                }
+              : prev
+          );
+        })
+        .catch(() => {
+          // best-effort — a failed preview call just means no scraped data,
+          // the local parseSocialUrl-derived preview still shows
+        })
+        .finally(() => {
+          if (previewRequestRef.current === requestId) setPreviewLoading(false);
+        });
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.url, form.id]);
 
   useEffect(() => {
     refresh();
@@ -212,7 +255,9 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
           </div>
           {preview && (
             <div className="space-y-1">
-              <p className="text-xs text-muted-foreground">This is how it will show:</p>
+              <p className="text-xs text-muted-foreground">
+                {previewLoading ? "This is how it will show (scraping…):" : "This is how it will show:"}
+              </p>
               <div className="rounded-lg border px-2">
                 <SocialRow
                   platform={preview.platform}
