@@ -54,9 +54,12 @@ from runtime.social import (
     SocialNotFound,
     add_social,
     delete_social,
+    get_bio,
     list_socials,
+    set_bio,
     update_social,
 )
+from runtime.youtube_scrape import scrape_channel
 from runtime.story_tools import (
     AMEND_PROMPT,
     INGEST_PROMPT,
@@ -355,6 +358,69 @@ class SocialDeleteRequest(BaseModel):
     id: str
 
 
+_SOCIAL_DOMAIN_PLATFORMS = {
+    "instagram.com": "instagram",
+    "tiktok.com": "tiktok",
+    "x.com": "x",
+    "twitter.com": "x",
+    "youtube.com": "youtube",
+    "linkedin.com": "linkedin",
+}
+
+
+def _parse_social_url(url: str) -> tuple[str, str] | None:
+    """Server-side mirror of cookbook-web/lib/admin/socialUrl.ts's
+    parseSocialUrl — intentionally duplicated, not shared, since one is
+    TypeScript and one is Python; see the spec's "Duplicating the URL
+    parser" note."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if host.startswith("www."):
+        host = host[4:]
+    platform = _SOCIAL_DOMAIN_PLATFORMS.get(host)
+    if not platform:
+        return None
+    segments = [s for s in parsed.path.split("/") if s]
+    if not segments:
+        return None
+    return platform, segments[0]
+
+
+class SocialPreviewRequest(BaseModel):
+    url: str
+    id: str | None = None
+
+
+class SocialPreviewResponse(BaseModel):
+    platform: str
+    username: str
+    pfpUrl: str | None = None
+    followerCount: int | None = None
+    bio: str | None = None
+    isAlt: bool
+
+
+class BioGenerateResponse(BaseModel):
+    bio: str
+
+
+class BioSaveRequest(BaseModel):
+    bio: str
+
+
+class BioSaveResponse(BaseModel):
+    bio: str
+
+
+BIO_GENERATE_PROMPT = (
+    "Write one short bio (2-4 sentences, no hashtags, no emoji) that combines "
+    "the following per-platform bios into a single overview. Do not invent "
+    "anything not stated in them."
+)
+
+
 # -------------------------------------------------------------------- model --
 
 
@@ -578,7 +644,7 @@ def social_list() -> dict:
     """Public, unauthenticated — the fan `BottomBar` calls this directly.
     A flat file read, nothing to do with the model, so no `_require_loaded()`
     and no agent gate."""
-    return {"socials": list_socials()}
+    return {"bio": get_bio(), "socials": list_socials()}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -1047,7 +1113,7 @@ async def admin_voice_sample(request: Request) -> dict:
 def admin_social_list() -> dict:
     model = _require_loaded()
     _require_agent(model)
-    return {"socials": list_socials()}
+    return {"bio": get_bio(), "socials": list_socials()}
 
 
 @app.post("/admin/social/add")
@@ -1081,6 +1147,64 @@ def admin_social_delete(request: SocialDeleteRequest) -> dict:
             status_code=404, detail=f"no social with id {exc}"
         ) from exc
     return {"deleted": request.id}
+
+
+@app.post("/admin/social/preview", response_model=SocialPreviewResponse)
+def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse:
+    model = _require_loaded()
+    _require_agent(model)
+    parsed = _parse_social_url(request.url)
+    if not parsed:
+        raise HTTPException(
+            status_code=422,
+            detail="unrecognized link — paste a link from instagram, tiktok, x, youtube, or linkedin",
+        )
+    platform, username = parsed
+    is_alt = any(
+        s["platform"] == platform and s["id"] != request.id for s in list_socials()
+    )
+    pfp_url = follower_count = bio = None
+    if platform == "youtube":
+        scraped = scrape_channel(request.url)
+        if scraped:
+            pfp_url = scraped["pfp_url"]
+            follower_count = scraped["follower_count"]
+            bio = scraped["bio"]
+    return SocialPreviewResponse(
+        platform=platform,
+        username=username,
+        pfpUrl=pfp_url,
+        followerCount=follower_count,
+        bio=bio,
+        isAlt=is_alt,
+    )
+
+
+@app.post("/admin/social/bio/generate", response_model=BioGenerateResponse)
+def admin_social_bio_generate() -> BioGenerateResponse:
+    model = _require_loaded()
+    _require_agent(model)
+    bios = [s["bio"] for s in list_socials() if s.get("bio")]
+    if not bios:
+        raise HTTPException(
+            status_code=422, detail="no social has a bio yet — nothing to combine"
+        )
+    transcript = "\n\n".join(bios)
+    content = model.chat(
+        [Message("user", f"{BIO_GENERATE_PROMPT}\n\n{transcript}")],
+        temperature=0.4,
+        max_tokens=256,
+        thinking=False,
+    )
+    return BioGenerateResponse(bio=content)
+
+
+@app.post("/admin/social/bio", response_model=BioSaveResponse)
+def admin_social_bio_save(request: BioSaveRequest) -> BioSaveResponse:
+    model = _require_loaded()
+    _require_agent(model)
+    set_bio(request.bio)
+    return BioSaveResponse(bio=request.bio)
 
 
 def _self_check() -> None:
@@ -1750,7 +1874,7 @@ def _self_check() -> None:
             # it must work even in whatever state `_model` is currently in.
             response = client.get("/social/list")
             assert response.status_code == 200, (response.status_code, response.text)
-            assert response.json() == {"socials": []}
+            assert response.json() == {"bio": None, "socials": []}
 
             # The admin routes are refused like every other /admin/* route
             # when not in agent mode.
@@ -1799,12 +1923,79 @@ def _self_check() -> None:
 
             response = client.get("/admin/social/list")
             assert response.status_code == 200, (response.status_code, response.text)
-            assert response.json() == {"socials": []}
+            assert response.json() == {"bio": None, "socials": []}
 
             response = client.post(
                 "/admin/social/delete", json={"id": "no-such-id"}
             )
             assert response.status_code == 404, (response.status_code, response.text)
+
+            # /admin/social/preview: parses + detects isAlt without touching
+            # the network — instagram, not youtube, so this doesn't depend
+            # on a live scrape (that's youtube_scrape.py's own self-check).
+            response = client.post(
+                "/admin/social/add",
+                json={
+                    "platform": "instagram",
+                    "username": "first",
+                    "url": "https://instagram.com/first",
+                },
+            )
+            first_id = response.json()["id"]
+
+            response = client.post(
+                "/admin/social/preview",
+                json={"url": "https://instagram.com/second"},
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            body = response.json()
+            assert body["platform"] == "instagram"
+            assert body["username"] == "second"
+            assert body["isAlt"] is True, "a second instagram link must be flagged -Alt"
+
+            # Editing the existing entry's own link is not -Alt against itself.
+            response = client.post(
+                "/admin/social/preview",
+                json={"url": "https://instagram.com/first-renamed", "id": first_id},
+            )
+            assert response.json()["isAlt"] is False
+
+            response = client.post(
+                "/admin/social/preview", json={"url": "not a real url"}
+            )
+            assert response.status_code == 422, (response.status_code, response.text)
+
+            client.post("/admin/social/delete", json={"id": first_id})
+
+            # /admin/social/bio/generate + /admin/social/bio
+            response = client.post("/admin/social/bio/generate")
+            assert response.status_code == 422, (response.status_code, response.text)
+            assert "nothing to combine" in response.json()["detail"]
+
+            created = client.post(
+                "/admin/social/add",
+                json={
+                    "platform": "youtube",
+                    "username": "handle",
+                    "url": "https://youtube.com/@handle",
+                    "bio": "I make videos about cats.",
+                },
+            ).json()
+
+            seen.clear()
+            response = client.post("/admin/social/bio/generate")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["bio"] == "ok", "the fake model always returns 'ok'"
+            assert "I make videos about cats." in seen["messages"][0].content
+
+            response = client.post("/admin/social/bio", json={"bio": "a combined bio"})
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"bio": "a combined bio"}
+
+            response = client.get("/social/list")
+            assert response.json()["bio"] == "a combined bio"
+
+            client.post("/admin/social/delete", json={"id": created["id"]})
         finally:
             social_module.PROFILE_JSON_PATH = original_profile_json
     _model.agent = False
