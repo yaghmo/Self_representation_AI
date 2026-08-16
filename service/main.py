@@ -59,7 +59,6 @@ from runtime.social import (
     set_bio,
     update_social,
 )
-from runtime.youtube_scrape import scrape_channel
 from runtime.story_tools import (
     AMEND_PROMPT,
     INGEST_PROMPT,
@@ -73,6 +72,7 @@ from runtime.story_tools import (
 )
 from runtime.convert import ConversionFailed, to_markdown
 from runtime.stories import STORIES_DIR, load_story
+from runtime.tiktok_scrape import scrape_profile as scrape_tiktok_profile
 from runtime.tools import (
     SOURCES_PATH,
     STORY_NAME,
@@ -84,6 +84,7 @@ from runtime.tools import (
     summary_path,
 )
 from runtime.voice_sample import LANGUAGES, PHRASES, SAMPLE_PATH, sample_status, save_sample
+from runtime.youtube_scrape import scrape_channel
 from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
@@ -1166,10 +1167,14 @@ def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse
     pfp_url = follower_count = bio = None
     if platform == "youtube":
         scraped = scrape_channel(request.url)
-        if scraped:
-            pfp_url = scraped["pfp_url"]
-            follower_count = scraped["follower_count"]
-            bio = scraped["bio"]
+    elif platform == "tiktok":
+        scraped = scrape_tiktok_profile(request.url)
+    else:
+        scraped = None
+    if scraped:
+        pfp_url = scraped["pfp_url"]
+        follower_count = scraped["follower_count"]
+        bio = scraped["bio"]
     return SocialPreviewResponse(
         platform=platform,
         username=username,
@@ -1221,7 +1226,7 @@ def _self_check() -> None:
     `context_tokens` and `count_tokens`, and `chat()` is never reached on the
     rejection cases. Run it with `python -m service.main`.
     """
-    global _model, PROFILE_PATH, SOURCES_PATH, scrape_channel
+    global _model, PROFILE_PATH, SOURCES_PATH, scrape_channel, scrape_tiktok_profile
     from types import SimpleNamespace
 
     from fastapi.testclient import TestClient
@@ -1994,6 +1999,26 @@ def _self_check() -> None:
                 assert body["bio"] == "test bio", body
             finally:
                 scrape_channel = original_scrape_channel
+
+            # Same join for the TikTok branch, against scrape_tiktok_profile.
+            original_scrape_tiktok_profile = scrape_tiktok_profile
+            scrape_tiktok_profile = lambda url: {
+                "pfp_url": "https://example.com/tiktok-pic.jpg",
+                "follower_count": 2000,
+                "bio": "tiktok test bio",
+            }
+            try:
+                response = client.post(
+                    "/admin/social/preview",
+                    json={"url": "https://tiktok.com/@someone"},
+                )
+                assert response.status_code == 200, (response.status_code, response.text)
+                body = response.json()
+                assert body["pfpUrl"] == "https://example.com/tiktok-pic.jpg", body
+                assert body["followerCount"] == 2000, body
+                assert body["bio"] == "tiktok test bio", body
+            finally:
+                scrape_tiktok_profile = original_scrape_tiktok_profile
 
             client.post("/admin/social/delete", json={"id": first_id})
 

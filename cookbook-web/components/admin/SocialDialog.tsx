@@ -59,6 +59,7 @@ function SocialRow({
           </div>
         )}
         <span className="font-medium">{username}</span>
+        <span className="text-xs text-muted-foreground capitalize">{platform}</span>
         {isAlt && <span className="text-xs text-muted-foreground">-Alt</span>}
         {followerCount != null && (
           <span className="text-xs text-muted-foreground">{followerCount} followers</span>
