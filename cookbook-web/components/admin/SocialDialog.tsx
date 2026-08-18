@@ -6,10 +6,18 @@ import {
   deleteSocial,
   getSocials,
   previewSocial,
+  refreshPosts,
+  saveContactEmail,
+  tiktokDisconnect,
+  tiktokLoginUrl,
+  tiktokStatus,
   updateSocial,
   type Social,
+  type SocialMention,
+  type TiktokStatus,
 } from "@/lib/admin/socialApi";
-import { parseSocialUrl } from "@/lib/admin/socialUrl";
+import { buildSocialUrl, parseSocialUrl } from "@/lib/admin/socialUrl";
+import { platformIcon } from "@/lib/platformIcon";
 import {
   Dialog,
   DialogContent,
@@ -22,54 +30,23 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
-import { platformIcon } from "@/lib/platformIcon";
 import { BioSection } from "@/components/admin/BioSection";
-import { Pencil, Trash2, User } from "lucide-react";
+import { ProfileImages } from "@/components/admin/ProfileImages";
+import { SocialRow } from "@/components/SocialRow";
+import { Loader2, Mail, Pencil, Trash2, X } from "lucide-react";
 
-const COMMON_PLATFORMS = ["instagram", "tiktok", "x", "youtube", "linkedin"];
+const SCRAPE_TIMEOUT_MS = 12_000;
 
-function SocialRow({
-  platform,
-  username,
-  isAlt,
-  followerCount,
-  pfpUrl,
-  bio,
-  actions,
-}: {
-  platform: string;
-  username: string;
-  isAlt: boolean;
-  followerCount: number | null;
-  pfpUrl: string | null;
-  bio: string | null;
-  actions: React.ReactNode;
-}) {
-  const Icon = platformIcon(platform);
-  return (
-    <div className="border-b py-2 text-sm last:border-b-0">
-      <div className="flex items-center gap-3">
-        <Icon className="size-4 shrink-0 text-muted-foreground" />
-        {pfpUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element -- external, unknown-domain URLs the creator pastes in; next/image would need a wildcard remote pattern for arbitrary hosts
-          <img src={pfpUrl} alt="" className="size-8 shrink-0 rounded-full object-cover" />
-        ) : (
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
-            <User className="size-4 text-muted-foreground" />
-          </div>
-        )}
-        <span className="font-medium">{username}</span>
-        <span className="text-xs text-muted-foreground capitalize">{platform}</span>
-        {isAlt && <span className="text-xs text-muted-foreground">-Alt</span>}
-        {followerCount != null && (
-          <span className="text-xs text-muted-foreground">{followerCount} followers</span>
-        )}
-        <div className="ml-auto flex gap-1">{actions}</div>
-      </div>
-      <p className="mt-1 pl-7 text-xs text-muted-foreground">{bio || "no bio yet."}</p>
-    </div>
-  );
-}
+const COMMON_PLATFORMS = [
+  "instagram",
+  "tiktok",
+  "x",
+  "youtube",
+  "twitch",
+  "telegram",
+  "throne",
+  "discord",
+];
 
 type FormState = {
   id?: string;
@@ -97,25 +74,80 @@ const EMPTY_FORM: FormState = {
 export function SocialDialog({ onClose }: { onClose: () => void }) {
   const [socials, setSocials] = useState<Social[]>([]);
   const [bio, setBio] = useState<string | null>(null);
+  const [contactEmail, setContactEmail] = useState<string | null>(null);
+  const [pfpVersion, setPfpVersion] = useState<number | null>(null);
+  const [bannerVersion, setBannerVersion] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>({ ...EMPTY_FORM });
 
   const [previewLoading, setPreviewLoading] = useState(false);
   const previewRequestRef = useRef(0);
+  const [mentions, setMentions] = useState<SocialMention[]>([]);
+
+  const [editingEmail, setEditingEmail] = useState(false);
+  const [emailDraft, setEmailDraft] = useState("");
+
+  const [refreshingPosts, setRefreshingPosts] = useState(false);
+  const [postsStatus, setPostsStatus] = useState<string | null>(null);
+
+  const [tiktok, setTiktok] = useState<TiktokStatus | null>(null);
+  const [tiktokBusy, setTiktokBusy] = useState(false);
+
+  async function handleTiktokLogin() {
+    setTiktokBusy(true);
+    try {
+      const { authorizeUrl } = await tiktokLoginUrl();
+      window.location.href = authorizeUrl;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setTiktokBusy(false);
+    }
+  }
+
+  async function handleTiktokDisconnect() {
+    setTiktokBusy(true);
+    try {
+      await tiktokDisconnect();
+      setTiktok({ connected: false });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTiktokBusy(false);
+    }
+  }
+
+  async function handleRefreshPosts() {
+    setRefreshingPosts(true);
+    setPostsStatus(null);
+    try {
+      const res = await refreshPosts();
+      setPostsStatus(`Refreshed — ${res.posts.length} post${res.posts.length === 1 ? "" : "s"}`);
+    } catch (e) {
+      setPostsStatus(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRefreshingPosts(false);
+    }
+  }
 
   useEffect(() => {
     const parsed = parseSocialUrl(form.url);
     if (!parsed) {
       setPreviewLoading(false);
+      setMentions([]);
       return;
     }
     const requestId = ++previewRequestRef.current;
     const url = form.url;
     const id = form.id;
     setPreviewLoading(true);
+    const controller = new AbortController();
     const timer = setTimeout(() => {
-      previewSocial({ url, id })
+      // Some scrapers (yt-dlp in particular) can hang well past what a
+      // paste-and-wait UI should tolerate — give up and let the local
+      // parseSocialUrl-derived preview stand instead of blocking Confirm forever.
+      const scrapeTimeout = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS);
+      previewSocial({ url, id }, controller.signal)
         .then((data) => {
           if (previewRequestRef.current !== requestId) return; // superseded by a newer edit
           setForm((prev) =>
@@ -130,16 +162,21 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                 }
               : prev
           );
+          setMentions(data.mentions);
         })
         .catch(() => {
-          // best-effort — a failed preview call just means no scraped data,
-          // the local parseSocialUrl-derived preview still shows
+          // best-effort — a failed or timed-out preview call just means no
+          // scraped data, the local parseSocialUrl-derived preview still shows
         })
         .finally(() => {
+          clearTimeout(scrapeTimeout);
           if (previewRequestRef.current === requestId) setPreviewLoading(false);
         });
     }, 400);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.url, form.id]);
 
@@ -153,7 +190,11 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       const res = await getSocials();
       setSocials(res.socials);
       setBio(res.bio);
+      setContactEmail(res.contactEmail);
+      setPfpVersion(res.pfpVersion);
+      setBannerVersion(res.bannerVersion);
       setError(null);
+      tiktokStatus().then(setTiktok).catch(() => setTiktok({ connected: false }));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -203,6 +244,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       username: parsed.username,
       ...(switchingTarget ? { pfpUrl: "", followerCount: "", bio: "" } : {}),
     });
+    if (switchingTarget) setMentions([]);
   }
 
   async function handleSave() {
@@ -212,7 +254,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       setError(
         form.id
           ? "platform, username, and url are required"
-          : "paste a link from a supported platform (instagram, tiktok, x, youtube, linkedin)"
+          : "paste a link from a supported platform (instagram, tiktok, x, youtube, twitch, telegram, throne, discord)"
       );
       return;
     }
@@ -231,7 +273,44 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       } else {
         await addSocial(params);
       }
+      // Whatever's still in `mentions` at this point is exactly what the
+      // creator chose to keep — anything they didn't want was already
+      // removed via its own discard button. Add/save those alongside the
+      // primary link so one Confirm covers the whole batch.
+      const platformMentions = mentions.filter(
+        (m): m is SocialMention & { type: "platform"; platform: string } =>
+          m.type === "platform" && !!m.platform
+      );
+      const emailMentions = mentions.filter((m) => m.type === "email");
+      const results = await Promise.allSettled([
+        ...platformMentions.map(async (m) => {
+          const url = buildSocialUrl(m.platform, m.value);
+          if (!url) throw new Error(`no canonical URL for ${m.platform}`);
+          // Scrape pfp/follower count/bio the same way a manually pasted
+          // link does, instead of adding a bare platform+username row.
+          const scraped = await previewSocial({ url }).catch(() => null);
+          return addSocial({
+            platform: m.platform,
+            username: m.value,
+            url,
+            bio: scraped?.bio ?? undefined,
+            followerCount: scraped?.followerCount ?? undefined,
+            pfpUrl: scraped?.pfpUrl ?? undefined,
+            isAlt: scraped?.isAlt ?? false,
+          });
+        }),
+        // Contact email is a single field, not a list — last kept
+        // suggestion wins if more than one somehow survived to Confirm.
+        ...(emailMentions.length > 0
+          ? [saveContactEmail(emailMentions[emailMentions.length - 1].value)]
+          : []),
+      ]);
+      const failures = results.filter((r) => r.status === "rejected").length;
       setForm({ ...EMPTY_FORM });
+      setMentions([]);
+      setError(
+        failures > 0 ? `${failures} suggestion(s) failed to save — try them individually` : null
+      );
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -248,11 +327,38 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
+  function handleDiscardMention(mention: SocialMention) {
+    setMentions((prev) => prev.filter((m) => m !== mention));
+  }
+
+  async function handleSaveEmail() {
+    const email = emailDraft.trim();
+    if (!email) return;
+    try {
+      await saveContactEmail(email);
+      setEditingEmail(false);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function handleDeleteEmail() {
+    if (!confirm("Delete contact email?")) return;
+    try {
+      await saveContactEmail(null);
+      setEditingEmail(false);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   const preview = parseSocialUrl(form.url);
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+      <DialogContent className="max-h-[85vh] max-w-[836px] sm:max-w-[836px] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Profile</DialogTitle>
         </DialogHeader>
@@ -263,16 +369,87 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
           </Alert>
         )}
 
+        <ProfileImages
+          pfpVersion={pfpVersion}
+          bannerVersion={bannerVersion}
+          bio={bio}
+          onSaved={refresh}
+        />
+
+        <Separator />
+
+        <BioSection bio={bio} onSaved={refresh} />
+
+        {(contactEmail || editingEmail) &&
+          (editingEmail ? (
+            <div className="flex items-center gap-2">
+              <Mail className="size-3.5 shrink-0 text-muted-foreground" />
+              <Input
+                value={emailDraft}
+                onChange={(e) => setEmailDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSaveEmail()}
+                className="h-7 text-xs"
+                autoFocus
+              />
+              <Button size="sm" className="h-7 px-2" onClick={handleSaveEmail}>
+                Save
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={() => setEditingEmail(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                aria-label="Delete contact email"
+                title="Delete contact email"
+                onClick={handleDeleteEmail}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </div>
+          ) : (
+            <p className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Mail className="size-3.5 shrink-0" />
+              {contactEmail}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-5"
+                aria-label="Update contact email"
+                title="Update contact email"
+                onClick={() => {
+                  setEmailDraft(contactEmail ?? "");
+                  setEditingEmail(true);
+                }}
+              >
+                <Pencil className="size-3" />
+              </Button>
+            </p>
+          ))}
+
+        <Separator />
+
         <div className="space-y-3">
           <p className="text-sm font-medium">{form.id ? "Update social" : "Add social"}</p>
           <div className="space-y-1">
             <Label>Link</Label>
             <Input value={form.url} onChange={(e) => handleUrlChange(e.target.value)} />
+            <p className="text-xs text-muted-foreground">
+              Paste a link and it&apos;ll auto-gather the profile pic, follower count, bio, and
+              any other socials mentioned there — give it a few seconds.
+            </p>
           </div>
           {preview && (
             <div className="space-y-1">
-              <p className="text-xs text-muted-foreground">
-                {previewLoading ? "This is how it will show (scraping…):" : "This is how it will show:"}
+              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                {previewLoading && <Loader2 className="size-3 shrink-0 animate-spin" />}
+                {previewLoading ? "Scraping…" : "This is how it will show:"}
               </p>
               <div className="rounded-lg border px-2">
                 <SocialRow
@@ -283,21 +460,64 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                   pfpUrl={form.pfpUrl || null}
                   bio={form.bio}
                   actions={null}
+                  // Editing an existing social's pfpUrl is already saved
+                  // and known to the proxy; a brand-new add's freshly
+                  // scraped pfpUrl isn't saved yet, so the proxy would 404 it.
+                  proxyPfp={!!form.id}
                 />
               </div>
             </div>
           )}
+          {mentions.length > 0 && (
+            <div className="space-y-1 rounded-lg border p-2">
+              <p className="text-xs font-medium text-muted-foreground">
+                Found in bio — saved with Confirm below, unless removed here
+              </p>
+              {mentions.map((mention, i) => {
+                const Icon =
+                  mention.type === "email" ? Mail : platformIcon(mention.platform ?? "");
+                return (
+                  <div key={i} className="flex items-center gap-2 text-sm">
+                    <Icon className="size-4 shrink-0 text-muted-foreground" />
+                    <span className={mention.type === "email" ? "text-muted-foreground" : undefined}>
+                      {mention.value}
+                    </span>
+                    {mention.type === "platform" && (
+                      <span className="text-xs text-muted-foreground capitalize">
+                        {mention.platform}
+                      </span>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="ml-auto size-6"
+                      aria-label="Discard"
+                      title="Discard"
+                      onClick={() => handleDiscardMention(mention)}
+                    >
+                      <X className="size-3.5" />
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div className="flex gap-2">
-            <Button onClick={handleSave}>Confirm</Button>
-            <Button variant="outline" onClick={() => setForm({ ...EMPTY_FORM })}>
+            <Button onClick={handleSave} disabled={previewLoading}>
+              {previewLoading && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+              Confirm
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setForm({ ...EMPTY_FORM });
+                setMentions([]);
+              }}
+            >
               Cancel
             </Button>
           </div>
         </div>
-
-        <Separator />
-
-        <BioSection bio={bio} onSaved={refresh} />
 
         <Separator />
 
@@ -318,6 +538,8 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                 followerCount={social.followerCount}
                 pfpUrl={social.pfpUrl}
                 bio={social.bio}
+                connected={social.platform === "tiktok" ? tiktok?.connected ?? false : undefined}
+                onConnect={handleTiktokLogin}
                 actions={
                   <>
                     <Button
@@ -344,6 +566,57 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
             ))}
           </div>
         )}
+
+        <Separator />
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefreshPosts}
+            disabled={refreshingPosts}
+          >
+            {refreshingPosts && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+            Refresh posts
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            {postsStatus ?? "Pulls recent videos/VODs from linked YouTube, Twitch, TikTok"}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {tiktok?.connected ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTiktokDisconnect}
+                disabled={tiktokBusy}
+              >
+                {tiktokBusy && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+                Disconnect TikTok
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Connected — video listing uses the real TikTok API
+              </p>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTiktokLogin}
+                disabled={tiktokBusy}
+              >
+                {tiktokBusy && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+                Connect TikTok
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Optional — makes TikTok post listing reliable instead of scraped
+              </p>
+            </>
+          )}
+        </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>

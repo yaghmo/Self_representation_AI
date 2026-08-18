@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import type { Message, Proposal, Step } from "@/lib/chat/types";
 import { StoryComposer } from "@/components/chat/StoryComposer";
 import { HelpDialog } from "@/components/chat/HelpDialog";
+import { MarkdownMessage } from "@/components/chat/Markdown";
 
 function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === "user";
@@ -22,11 +23,11 @@ function MessageBubble({ message }: { message: Message }) {
       </div>
       <div
         className={cn(
-          "max-w-[75%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap",
+          "max-w-[75%] rounded-2xl px-4 py-2 text-sm",
           isUser ? "bg-primary text-primary-foreground" : "bg-muted"
         )}
       >
-        {message.content}
+        <MarkdownMessage text={message.content} />
       </div>
     </div>
   );

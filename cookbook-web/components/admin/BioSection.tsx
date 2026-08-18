@@ -16,6 +16,10 @@ export function BioSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  function handleEdit() {
+    setDraft(bio ?? "");
+  }
+
   async function handleGenerate() {
     setBusy(true);
     setError(null);
@@ -50,9 +54,14 @@ export function BioSection({
       {draft === null ? (
         <>
           <p className="text-xs text-muted-foreground">{bio || "no bio yet."}</p>
-          <Button variant="outline" size="sm" onClick={handleGenerate} disabled={busy}>
-            {busy ? "Generating…" : "Generate"}
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={handleEdit} disabled={busy}>
+              Update
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleGenerate} disabled={busy}>
+              {busy ? "Generating…" : "Generate"}
+            </Button>
+          </div>
         </>
       ) : (
         <>

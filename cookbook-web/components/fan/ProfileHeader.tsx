@@ -4,8 +4,7 @@ import { ChevronDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { FanProfile } from "./types"
 
-const EXPANDED_BANNER = 420
-const COMPACT_BANNER = 208
+const BANNER_HEIGHT = 420
 const EXPANDED_PFP = 176
 const COMPACT_PFP = 112
 const EXPANDED_MARGIN_PERCENT = 10
@@ -20,7 +19,6 @@ function ProfileHeader({
   expanded: boolean
   onCollapse: () => void
 }) {
-  const bannerHeight = expanded ? EXPANDED_BANNER : COMPACT_BANNER
   const pfpSize = expanded ? EXPANDED_PFP : COMPACT_PFP
   const nameSize = expanded ? 1.75 : 1.25
   const marginPercent = expanded ? EXPANDED_MARGIN_PERCENT : COMPACT_MARGIN_PERCENT
@@ -28,9 +26,14 @@ function ProfileHeader({
   return (
     <header className="relative">
       <div
-        className="rounded-3xl bg-gradient-to-r from-primary/40 via-accent to-primary/20 transition-[height,margin] duration-500 ease-out"
-        style={{ height: bannerHeight, marginInline: `${marginPercent}%` }}
-      />
+        className="overflow-hidden rounded-3xl bg-gradient-to-r from-primary/40 via-accent to-primary/20 transition-[margin] duration-500 ease-out"
+        style={{ height: BANNER_HEIGHT, marginInline: `${marginPercent}%` }}
+      >
+        {profile.bannerUrl && (
+          // eslint-disable-next-line @next/next/no-img-element -- served from our own service, not a next/image remote host
+          <img src={profile.bannerUrl} alt="" className="size-full object-cover" />
+        )}
+      </div>
       <div
         className={cn(
           "relative flex flex-col gap-3 transition-[padding] duration-500 ease-out",
@@ -39,9 +42,14 @@ function ProfileHeader({
         style={{ marginTop: -pfpSize / 2, paddingInline: `${marginPercent}%` }}
       >
         <div
-          className="shrink-0 rounded-full border-4 border-background bg-muted transition-[width,height] duration-500 ease-out"
+          className="shrink-0 overflow-hidden rounded-full border-4 border-background bg-muted transition-[width,height] duration-500 ease-out"
           style={{ width: pfpSize, height: pfpSize }}
-        />
+        >
+          {profile.pfpUrl && (
+            // eslint-disable-next-line @next/next/no-img-element -- served from our own service, not a next/image remote host
+            <img src={profile.pfpUrl} alt="" className="size-full object-cover" />
+          )}
+        </div>
         <div>
           <h1
             className="font-semibold transition-[font-size] duration-500 ease-out"

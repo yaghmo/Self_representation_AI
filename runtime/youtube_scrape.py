@@ -36,6 +36,42 @@ def scrape_channel(url: str) -> dict | None:
         return None
 
 
+def list_videos(url: str, limit: int = 6) -> list[dict]:
+    """Recent uploads, newest first — the /videos tab first, topped up from
+    /shorts if that tab alone doesn't reach `limit` (skipped entirely, no
+    extra network call, once /videos already fills the quota).
+    """
+    try:
+        import yt_dlp
+    except ImportError:
+        return []
+    results: list[dict] = []
+    for tab, kind in (("videos", "video"), ("shorts", "short")):
+        if len(results) >= limit:
+            break
+        try:
+            with yt_dlp.YoutubeDL(
+                {"quiet": True, "skip_download": True, "extract_flat": True, "playlistend": limit}
+            ) as ydl:
+                info = ydl.extract_info(f"{url.rstrip('/')}/{tab}", download=False)
+        except Exception:
+            continue
+        for entry in (info or {}).get("entries") or []:
+            video_id = entry.get("id")
+            if not video_id:
+                continue
+            results.append({
+                "kind": kind,
+                "embedId": video_id,
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "title": entry.get("title"),
+                "thumbnailUrl": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            })
+            if len(results) >= limit:
+                break
+    return results
+
+
 def _self_check() -> None:
     # Hits the real network — there's no mockable seam worth building for a
     # single best-effort scraper, and this repo's self-checks already
@@ -49,6 +85,16 @@ def _self_check() -> None:
     # An unrecognized/garbage URL fails cleanly, not with an exception.
     assert scrape_channel("https://www.youtube.com/@this-channel-should-not-exist-xyz123") is None
     assert scrape_channel("not a url at all") is None
+
+    videos = list_videos("https://www.youtube.com/@YouTube", limit=3)
+    assert 0 < len(videos) <= 3, f"expected 1-3 videos, got {len(videos)}"
+    for video in videos:
+        assert video["embedId"], video
+        assert video["url"].startswith("https://www.youtube.com/watch?v="), video
+        assert video["thumbnailUrl"], video
+        assert video["kind"] in ("video", "short"), video
+
+    assert list_videos("https://www.youtube.com/@this-channel-should-not-exist-xyz123") == []
 
     print("youtube_scrape: all checks passed")
 

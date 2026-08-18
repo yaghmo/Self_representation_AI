@@ -6,15 +6,74 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { ChatApiError, postChat } from "@/lib/chatApi"
+import { MarkdownMessage } from "@/components/chat/Markdown"
 import type { ChatMessage } from "./types"
+
+// The model already tends to write in blank-line-separated thoughts (see
+// character.md §6: several short messages rather than one long one) — split
+// on those rather than re-deriving message boundaries some other way.
+function splitIntoBubbles(text: string): string[] {
+  const parts = text
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  return parts.length > 0 ? parts : [text]
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+const BUBBLE_DELAY_MS = 5000
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max)
+}
+
+const DEFAULT_WIDTH = 352 // 22rem
+const DEFAULT_HEIGHT = 448 // 28rem
+const MIN_WIDTH = 256 // 16rem
+const MIN_HEIGHT = 320 // 20rem
 
 function ChatWidget({ botName }: { botName: string }) {
   const [isOpen, setIsOpen] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState("")
   const [isTyping, setIsTyping] = useState(false)
+  const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // The panel is anchored bottom-right (`right-4 bottom-36`), so a native
+  // `resize: both` handle lands in the corner already jammed against the
+  // page edge — the opposite corner, top-left, is the one that's actually
+  // reachable, and CSS `resize` can't be told which corner to use. Custom
+  // drag it is: dragging left/up grows the panel while its right/bottom
+  // edges stay put.
+  function handleResizeStart(event: React.PointerEvent) {
+    event.preventDefault()
+    const startX = event.clientX
+    const startY = event.clientY
+    const startWidth = size.width
+    const startHeight = size.height
+
+    function handleMove(moveEvent: PointerEvent) {
+      const maxWidth = window.innerWidth - 32 // matches max-w-[calc(100vw-2rem)]
+      const maxHeight = window.innerHeight - 160 // matches max-h-[calc(100dvh-10rem)]
+      setSize({
+        width: clamp(startWidth + (startX - moveEvent.clientX), MIN_WIDTH, maxWidth),
+        height: clamp(startHeight + (startY - moveEvent.clientY), MIN_HEIGHT, maxHeight),
+      })
+    }
+
+    function handleUp() {
+      window.removeEventListener("pointermove", handleMove)
+      window.removeEventListener("pointerup", handleUp)
+    }
+
+    window.addEventListener("pointermove", handleMove)
+    window.addEventListener("pointerup", handleUp)
+  }
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
@@ -48,12 +107,16 @@ function ChatWidget({ botName }: { botName: string }) {
           : "Sorry, the chat is unavailable right now."
     }
 
-    const botMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "bot",
-      text: replyText,
+    const bubbles = splitIntoBubbles(replyText)
+    for (let i = 0; i < bubbles.length; i++) {
+      if (i > 0) await wait(BUBBLE_DELAY_MS)
+      const botMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "bot",
+        text: bubbles[i],
+      }
+      setMessages((prev) => [...prev, botMessage])
     }
-    setMessages((prev) => [...prev, botMessage])
     setIsTyping(false)
   }
 
@@ -69,7 +132,15 @@ function ChatWidget({ botName }: { botName: string }) {
       </button>
 
       {isOpen && (
-        <div className="fixed right-4 bottom-36 z-30 flex h-[28rem] max-h-[calc(100dvh-10rem)] w-[22rem] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl sm:right-6">
+        <div
+          style={{ width: size.width, height: size.height }}
+          className="fixed right-4 bottom-36 z-30 flex max-h-[calc(100dvh-10rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl sm:right-6"
+        >
+          <div
+            onPointerDown={handleResizeStart}
+            aria-hidden="true"
+            className="absolute left-0 top-0 z-10 size-4 touch-none cursor-nwse-resize rounded-tl-2xl hover:bg-border/40"
+          />
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <span className="font-medium">{botName}</span>
             <button
@@ -100,7 +171,7 @@ function ChatWidget({ botName }: { botName: string }) {
                     : "mr-auto bg-muted text-foreground"
                 )}
               >
-                {message.text}
+                <MarkdownMessage text={message.text} />
               </div>
             ))}
             {isTyping && (

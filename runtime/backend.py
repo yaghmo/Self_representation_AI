@@ -86,6 +86,15 @@ class LocalBackend:
     name: str = "llama.cpp"
     temperature: float = 0.7
     max_tokens: int = 512
+    # llama-server's own default is 1.0 (off). An 8B model at this quant leans
+    # on whatever text is already in context — its own last reply, or a chunk
+    # of the persona — and repeats it verbatim rather than paraphrasing.
+    repeat_penalty: float = 1.3
+    # llama-server's own default repeat_last_n is 64 tokens — shorter than one
+    # full turn at this max_tokens, so by the next request repeat_penalty can
+    # no longer even see her previous reply and happily regenerates it
+    # verbatim. Wide enough to cover several turns back.
+    repeat_last_n: int = 512
     # Qwen3 and friends emit a <think> block before answering. llama.cpp splits
     # it into `reasoning_content`, so a thinking model that runs out of tokens
     # mid-thought returns an EMPTY `content` and looks broken. For a persona bot
@@ -115,7 +124,9 @@ class LocalBackend:
         if not thinking_on:
             # Honoured when llama-server runs with --jinja, which it does.
             payload["chat_template_kwargs"] = {"enable_thinking": False}
-        for key in ("top_p", "top_k", "repeat_penalty", "stop", "seed"):
+        payload["repeat_penalty"] = kwargs.get("repeat_penalty", self.repeat_penalty)
+        payload["repeat_last_n"] = kwargs.get("repeat_last_n", self.repeat_last_n)
+        for key in ("top_p", "top_k", "stop", "seed"):
             if key in kwargs:
                 payload[key] = kwargs[key]
         if kwargs.get("tools"):
@@ -296,6 +307,15 @@ def _self_check() -> None:
     # eat the whole answer budget; off leaves max_tokens untouched.
     assert backend._payload([plain], False, max_tokens=512, thinking=True)["max_tokens"] == 1536
     assert backend._payload([plain], False, max_tokens=512, thinking=False)["max_tokens"] == 512
+
+    # repeat_penalty and repeat_last_n always ride along, even when the caller
+    # passes nothing — llama-server's own defaults (1.0 / 64) leave a small
+    # model free to regurgitate its own last reply once it's more than 64
+    # tokens back in the context.
+    assert backend._payload([plain], False)["repeat_penalty"] == 1.3
+    assert backend._payload([plain], False, repeat_penalty=1.1)["repeat_penalty"] == 1.1
+    assert backend._payload([plain], False)["repeat_last_n"] == 512
+    assert backend._payload([plain], False, repeat_last_n=64)["repeat_last_n"] == 64
 
     print("backend self-check: ok")
 

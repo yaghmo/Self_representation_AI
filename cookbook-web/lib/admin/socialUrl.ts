@@ -9,7 +9,11 @@ const DOMAIN_PLATFORMS: Record<string, string> = {
   "x.com": "x",
   "twitter.com": "x",
   "youtube.com": "youtube",
-  "linkedin.com": "linkedin",
+  "twitch.tv": "twitch",
+  "t.me": "telegram",
+  "telegram.me": "telegram",
+  "throne.com": "throne",
+  "discord.gg": "discord",
 }
 
 // Pure string parsing, zero network requests — see the plan's Global
@@ -24,7 +28,39 @@ export function parseSocialUrl(url: string): ParsedSocialUrl | null {
   const host = parsed.hostname.replace(/^www\./, "")
   const platform = DOMAIN_PLATFORMS[host]
   if (!platform) return null
-  const username = parsed.pathname.split("/").filter(Boolean)[0] ?? ""
+  const segments = parsed.pathname.split("/").filter(Boolean)
+  // YouTube alone has legacy URL shapes with a type prefix before the
+  // actual identifier — /c/CustomName, /channel/UCxxxx, /user/LegacyName —
+  // alongside the modern /@handle every other platform's plain-username
+  // path matches. Only those three prefixes get the second segment;
+  // everything else (including a bare /@handle) keeps the first.
+  const username =
+    (platform === "youtube" && ["c", "channel", "user"].includes(segments[0]) && segments[1]) ||
+    segments[0] ||
+    ""
   if (!username) return null
   return { platform, username }
+}
+
+// The inverse of DOMAIN_PLATFORMS, for constructing a link from a bare
+// platform + handle (e.g. a bio-mention suggestion) — one canonical domain
+// per platform, not every domain that parses to it.
+const CANONICAL_DOMAIN: Record<string, string> = {
+  instagram: "instagram.com",
+  tiktok: "tiktok.com",
+  x: "x.com",
+  youtube: "youtube.com",
+  twitch: "twitch.tv",
+  telegram: "t.me",
+  throne: "throne.com",
+  discord: "discord.gg",
+}
+
+export function buildSocialUrl(platform: string, handle: string): string | null {
+  const domain = CANONICAL_DOMAIN[platform]
+  if (!domain) return null
+  const bare = handle.replace(/^@/, "")
+  // YouTube's canonical URL shape is /@handle — every other platform here
+  // uses a bare username path, so the "@" only needs to survive for this one.
+  return platform === "youtube" ? `https://${domain}/@${bare}` : `https://${domain}/${bare}`
 }

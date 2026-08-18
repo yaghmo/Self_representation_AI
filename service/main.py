@@ -28,10 +28,17 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+
+# Loads repo-root .env (TWITCH_CLIENT_ID/SECRET, etc) into os.environ before
+# anything below reads it — a no-op if the file doesn't exist, so it's safe
+# even for a checkout with no .env at all.
+load_dotenv()
 
 from cookbook.config import read_config
 from runtime.backend import Message
@@ -49,14 +56,29 @@ from runtime.bible import (
 from runtime.embed import EmbeddingNotConfigured, bge_embedder
 from runtime.index import Embedder, Index, all_chunks, load_index
 from runtime.model import Model, ModelNotDownloaded
+from runtime.posts import list_posts, refresh_posts
 from runtime.recall import RECALL_SCHEMA, recall
+from runtime.tiktok_oauth import InvalidState
+from runtime.tiktok_oauth import authorize_url as tiktok_authorize_url
+from runtime.tiktok_oauth import connection_status as tiktok_connection_status
+from runtime.tiktok_oauth import disconnect as tiktok_disconnect
+from runtime.tiktok_oauth import handle_callback as tiktok_handle_callback
 from runtime.social import (
+    SocialAlreadyExists,
     SocialNotFound,
     add_social,
+    banner_version,
     delete_social,
     get_bio,
+    get_contact_email,
     list_socials,
+    pfp_version,
+    read_banner,
+    read_pfp,
+    save_banner,
+    save_pfp,
     set_bio,
+    set_contact_email,
     update_social,
 )
 from runtime.story_tools import (
@@ -72,7 +94,12 @@ from runtime.story_tools import (
 )
 from runtime.convert import ConversionFailed, to_markdown
 from runtime.stories import STORIES_DIR, load_story
+from runtime.discord_scrape import scrape_invite as scrape_discord_invite
+from runtime.og_scrape import scrape_profile as scrape_og_profile
 from runtime.tiktok_scrape import scrape_profile as scrape_tiktok_profile
+from runtime.twitch_scrape import scrape_channel as scrape_twitch_channel
+from runtime.twitch_scrape import scrape_panel_links as scrape_twitch_panel_links
+from runtime.twitch_scrape import scrape_social_medias as scrape_twitch_social_medias
 from runtime.tools import (
     SOURCES_PATH,
     STORY_NAME,
@@ -100,6 +127,11 @@ _story_embed = None
 _story_unavailable: str = ""
 
 MAX_RECALL_ITERATIONS = 3
+
+# Where the browser lands after a TikTok OAuth callback — the frontend's
+# admin page, not this backend (the callback itself is served here, on
+# whatever tunnel TIKTOK_REDIRECT_URI points at, but the UI lives on Next).
+ADMIN_URL = os.environ.get("ADMIN_URL", "http://localhost:3000/admin")
 
 
 def _get_recall() -> tuple[Index, Embedder] | None:
@@ -365,7 +397,11 @@ _SOCIAL_DOMAIN_PLATFORMS = {
     "x.com": "x",
     "twitter.com": "x",
     "youtube.com": "youtube",
-    "linkedin.com": "linkedin",
+    "twitch.tv": "twitch",
+    "t.me": "telegram",
+    "telegram.me": "telegram",
+    "throne.com": "throne",
+    "discord.gg": "discord",
 }
 
 
@@ -386,12 +422,25 @@ def _parse_social_url(url: str) -> tuple[str, str] | None:
     segments = [s for s in parsed.path.split("/") if s]
     if not segments:
         return None
+    # YouTube alone has legacy URL shapes with a type prefix before the
+    # actual identifier — /c/CustomName, /channel/UCxxxx, /user/LegacyName —
+    # alongside the modern /@handle every other platform's plain-username
+    # path matches. Only those three prefixes take the second segment;
+    # everything else (including a bare /@handle) keeps the first.
+    if platform == "youtube" and segments[0] in ("c", "channel", "user") and len(segments) > 1:
+        return platform, segments[1]
     return platform, segments[0]
 
 
 class SocialPreviewRequest(BaseModel):
     url: str
     id: str | None = None
+
+
+class SocialMention(BaseModel):
+    type: str  # "platform" | "email"
+    platform: str | None = None  # set when type == "platform"
+    value: str  # bare handle/username, or the email address
 
 
 class SocialPreviewResponse(BaseModel):
@@ -401,6 +450,7 @@ class SocialPreviewResponse(BaseModel):
     followerCount: int | None = None
     bio: str | None = None
     isAlt: bool
+    mentions: list[SocialMention] = []
 
 
 class BioGenerateResponse(BaseModel):
@@ -415,11 +465,103 @@ class BioSaveResponse(BaseModel):
     bio: str
 
 
+class ContactEmailSaveRequest(BaseModel):
+    email: str | None = None
+
+
+class ContactEmailSaveResponse(BaseModel):
+    contactEmail: str | None
+
+
 BIO_GENERATE_PROMPT = (
     "Write one short bio (2-4 sentences, no hashtags, no emoji) that combines "
     "the following per-platform bios into a single overview. Do not invent "
     "anything not stated in them."
 )
+
+_MENTION_PLATFORMS = sorted(set(_SOCIAL_DOMAIN_PLATFORMS.values()))
+
+MENTION_EXTRACT_PROMPT = (
+    "Find any social-media handles or email addresses explicitly mentioned in "
+    "the text below. Only report a platform mention if the text names one of "
+    f"these platforms alongside a handle: {', '.join(_MENTION_PLATFORMS)}. "
+    "Ignore anything else, including the platform this bio is already from. "
+    "Reply with ONLY a JSON array, no prose, no markdown fences. Each item: "
+    '{"type": "platform" or "email", "platform": one of the platform names '
+    'above (or null for email), "value": the bare handle without @ or url '
+    'prefix (or the email address)}. If nothing found, reply with [].'
+)
+
+
+def _mentions_from_urls(urls: list[str], exclude_platform: str) -> list[SocialMention]:
+    """Turn literal URLs (e.g. Twitch panel links) into platform mentions —
+    no LLM guessing needed, `_parse_social_url` already knows how to read
+    a real link. Skips anything that parses back to `exclude_platform`
+    (the platform this scrape is already for)."""
+    mentions: list[SocialMention] = []
+    for url in urls:
+        found = _parse_social_url(url)
+        if not found:
+            continue
+        found_platform, found_username = found
+        if found_platform == exclude_platform:
+            continue
+        mentions.append(SocialMention(type="platform", platform=found_platform, value=found_username))
+    return mentions
+
+
+def _extract_mentions(model: Model, bio: str, current_platform: str) -> list[SocialMention]:
+    """Best-effort LLM scan of a scraped bio for other socials/emails the
+    creator mentioned in it — e.g. "IG: @handle" in a YouTube description,
+    or a bare "@handle" in an Instagram bio (treated as an Instagram handle).
+    Any failure (bad JSON, model error, malformed item) degrades to no
+    mentions rather than breaking the preview call that triggered it."""
+    try:
+        # Build a prompt that also catches bare @handles and maps them to the
+        # current platform, while still catching explicit cross-platform mentions.
+        platforms_list = ', '.join(_MENTION_PLATFORMS)
+        prompt = (
+            "Find any social-media handles or email addresses explicitly mentioned in "
+            "the text below. Report two kinds of mentions:\n"
+            f"1. Explicit platform mentions: the text names one of these platforms alongside a handle "
+            f"({platforms_list}). E.g. 'IG: @handle', 'YouTube: @user', 'TikTok @name'.\n"
+            f"2. Bare handles: a standalone @handle with no platform named. These should be "
+            f"assigned to the current platform: {current_platform}. E.g. in an Instagram bio, "
+            f"'@example is my alt' → Instagram handle 'example'.\n"
+            "Ignore anything else, including the platform this bio is already from. "
+            "Reply with ONLY a JSON array, no prose, no markdown fences. Each item: "
+            '{"type": "platform" or "email", "platform": one of the platform names '
+            'above (or null for email), "value": the bare handle without @ or url '
+            'prefix (or the email address)}. If nothing found, reply with [].'
+        )
+        content = model.chat(
+            [Message("user", f"{prompt}\n\n{bio[:1000]}")],
+            temperature=0.0,
+            max_tokens=256,
+            thinking=False,
+        )
+        text = content.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            text = text.split("\n", 1)[1] if "\n" in text else text
+        items = json.loads(text)
+        mentions: list[SocialMention] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            value = item.get("value")
+            if not value or not isinstance(value, str):
+                continue
+            if kind == "email":
+                mentions.append(SocialMention(type="email", value=value))
+            elif kind == "platform" and item.get("platform") in _MENTION_PLATFORMS:
+                mentions.append(
+                    SocialMention(type="platform", platform=item["platform"], value=value)
+                )
+        return mentions
+    except Exception:
+        return []
 
 
 # -------------------------------------------------------------------- model --
@@ -558,7 +700,18 @@ def _prompt_for(model: Model, request: ChatRequest) -> list[Message]:
         if override:
             persona = override[0].content
         else:
-            persona = build_procedure() if model.agent else build_persona()
+            # Keyed on this request's own tools, not `model.agent` — the flag
+            # is a capability toggle on the loaded model shared by both
+            # surfaces, not a per-request signal. A local dev setup runs the
+            # fan page and the admin agent chat against the same loaded
+            # model at once; keying on `model.agent` alone would hand the
+            # fan the editing procedure (no character in it at all)
+            # whenever agent mode happens to be on. The admin agent loop
+            # always sends its tool schemas every turn (agentLoop.ts); the
+            # fan client never sends any — so `request.tools` reliably tells
+            # the two apart per call, and `_reject_tools` above already
+            # guarantees it can only be truthy when agent mode is on.
+            persona = build_procedure() if request.tools else build_persona()
         return assemble(
             history,
             context_tokens=model.context_tokens,
@@ -645,7 +798,62 @@ def social_list() -> dict:
     """Public, unauthenticated — the fan `BottomBar` calls this directly.
     A flat file read, nothing to do with the model, so no `_require_loaded()`
     and no agent gate."""
-    return {"bio": get_bio(), "socials": list_socials()}
+    return {
+        "bio": get_bio(),
+        "contactEmail": get_contact_email(),
+        "socials": list_socials(),
+        "pfpVersion": pfp_version(),
+        "bannerVersion": banner_version(),
+    }
+
+
+@app.get("/social/pfp")
+def social_pfp() -> Response:
+    """Public — the fan profile header's `<img>` src. 404 if never uploaded."""
+    found = read_pfp()
+    if not found:
+        raise HTTPException(status_code=404, detail="no pfp uploaded")
+    data, mime = found
+    return Response(content=data, media_type=mime)
+
+
+@app.get("/social/banner")
+def social_banner() -> Response:
+    found = read_banner()
+    if not found:
+        raise HTTPException(status_code=404, detail="no banner uploaded")
+    data, mime = found
+    return Response(content=data, media_type=mime)
+
+
+@app.get("/social/posts")
+def social_posts() -> dict:
+    """Public — the cached feed from the last admin refresh. Never scrapes
+    live: same contract as /social/pfp and /social/banner."""
+    return {"posts": list_posts()}
+
+
+@app.get("/social/image_proxy")
+def social_image_proxy(url: str) -> Response:
+    """Public — scraped platform pfps (yt3.googleusercontent.com in
+    particular) 403/429 a browser `<img>` hotlinking them directly, since
+    that request carries Sec-Fetch-Site: cross-site; a plain server-side
+    fetch (no such header) goes through fine. Restricted to URLs we
+    actually scraped and stored, so this can't become an open SSRF proxy.
+    """
+    known = {s["pfpUrl"] for s in list_socials() if s.get("pfpUrl")}
+    if url not in known:
+        raise HTTPException(status_code=404, detail="not a known social pfp")
+    try:
+        resp = httpx.get(url, timeout=10, follow_redirects=True)
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(
+        content=resp.content,
+        media_type=resp.headers.get("content-type", "image/jpeg"),
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -663,7 +871,11 @@ def chat(request: ChatRequest) -> ChatResponse:
         },
     )
     messages = _prompt_for(model, request)
-    recall_ctx = None if model.agent else _get_recall()
+    # Same per-request signal as the persona choice above, and for the same
+    # reason: `model.agent` alone would also silently withhold recall() from
+    # the fan whenever agent mode happens to be on for the admin surface
+    # sharing this model.
+    recall_ctx = None if request.tools else _get_recall()
     try:
         if recall_ctx is not None:
             index, embed = recall_ctx
@@ -1114,14 +1326,104 @@ async def admin_voice_sample(request: Request) -> dict:
 def admin_social_list() -> dict:
     model = _require_loaded()
     _require_agent(model)
-    return {"bio": get_bio(), "socials": list_socials()}
+    return {
+        "bio": get_bio(),
+        "contactEmail": get_contact_email(),
+        "socials": list_socials(),
+        "pfpVersion": pfp_version(),
+        "bannerVersion": banner_version(),
+    }
+
+
+@app.post("/admin/social/pfp")
+async def admin_social_pfp(request: Request) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    data = await request.body()
+    try:
+        save_pfp(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"pfpVersion": pfp_version()}
+
+
+@app.post("/admin/social/banner")
+async def admin_social_banner(request: Request) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    data = await request.body()
+    try:
+        save_banner(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"bannerVersion": banner_version()}
+
+
+@app.post("/admin/social/posts/refresh")
+def admin_social_posts_refresh() -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    return {"posts": refresh_posts()}
+
+
+@app.get("/admin/tiktok/status")
+def admin_tiktok_status() -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    return tiktok_connection_status()
+
+
+@app.get("/admin/tiktok/login")
+def admin_tiktok_login() -> dict:
+    """Returns the URL for the admin page to redirect the browser to —
+    can't do the redirect itself, since TIKTOK_CLIENT_KEY absence needs to
+    surface as a normal JSON error, not a broken redirect."""
+    model = _require_loaded()
+    _require_agent(model)
+    redirect_uri = os.environ.get("TIKTOK_REDIRECT_URI")
+    if not redirect_uri:
+        raise HTTPException(status_code=500, detail="TIKTOK_REDIRECT_URI not configured")
+    try:
+        return {"authorizeUrl": tiktok_authorize_url(redirect_uri)}
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/admin/tiktok/callback")
+def admin_tiktok_callback(code: str, state: str) -> RedirectResponse:
+    """TikTok redirects the creator's browser here directly after consent —
+    a top-level navigation, not a fetch from our own admin JS, so this
+    can't return JSON on success; it lands back on the admin page instead,
+    with a query param the admin UI reads to show the result."""
+    redirect_uri = os.environ.get("TIKTOK_REDIRECT_URI", "")
+    try:
+        tiktok_handle_callback(code, state, redirect_uri)
+        status = "connected"
+    except InvalidState:
+        status = "invalid_state"
+    except Exception:
+        status = "failed"
+    return RedirectResponse(url=f"{ADMIN_URL}?tiktok={status}")
+
+
+@app.post("/admin/tiktok/disconnect")
+def admin_tiktok_disconnect() -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    tiktok_disconnect()
+    return {"connected": False}
 
 
 @app.post("/admin/social/add")
 def admin_social_add(request: SocialAddRequest) -> dict:
     model = _require_loaded()
     _require_agent(model)
-    return add_social(request.model_dump())
+    try:
+        return add_social(request.model_dump())
+    except SocialAlreadyExists as exc:
+        raise HTTPException(
+            status_code=409, detail=f"{request.platform} account already linked"
+        ) from exc
 
 
 @app.post("/admin/social/update")
@@ -1158,7 +1460,7 @@ def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse
     if not parsed:
         raise HTTPException(
             status_code=422,
-            detail="unrecognized link — paste a link from instagram, tiktok, x, youtube, or linkedin",
+            detail="unrecognized link — paste a link from instagram, tiktok, x, youtube, twitch, telegram, throne, or discord",
         )
     platform, username = parsed
     is_alt = any(
@@ -1169,18 +1471,44 @@ def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse
         scraped = scrape_channel(request.url)
     elif platform == "tiktok":
         scraped = scrape_tiktok_profile(request.url)
+    elif platform in ("instagram", "x"):
+        scraped = scrape_og_profile(request.url)
+    elif platform == "twitch":
+        scraped = scrape_twitch_channel(username)
+    elif platform == "discord":
+        scraped = scrape_discord_invite(username)
     else:
         scraped = None
+    mentions: list[SocialMention] = []
     if scraped:
         pfp_url = scraped["pfp_url"]
         follower_count = scraped["follower_count"]
         bio = scraped["bio"]
+        if bio:
+            mentions = _extract_mentions(model, bio, platform)
+    if platform == "twitch":
+        # The streamer's other socials usually live in one or both of two
+        # independent Twitch features — the Panels grid and the curated
+        # social-links row beside the bio — neither the short Helix bio
+        # text the LLM scan above just read. These are literal URLs, so
+        # parse them directly instead of asking the model to guess.
+        panel_mentions = _mentions_from_urls(
+            scrape_twitch_panel_links(username) + scrape_twitch_social_medias(username),
+            exclude_platform="twitch",
+        )
+        seen = {(m.type, m.platform, m.value.lower()) for m in mentions}
+        for mention in panel_mentions:
+            key = (mention.type, mention.platform, mention.value.lower())
+            if key not in seen:
+                mentions.append(mention)
+                seen.add(key)
     return SocialPreviewResponse(
         platform=platform,
         username=username,
         pfpUrl=pfp_url,
         followerCount=follower_count,
         bio=bio,
+        mentions=mentions,
         isAlt=is_alt,
     )
 
@@ -1219,6 +1547,14 @@ def admin_social_bio_save(request: BioSaveRequest) -> BioSaveResponse:
     return BioSaveResponse(bio=request.bio)
 
 
+@app.post("/admin/social/contact_email", response_model=ContactEmailSaveResponse)
+def admin_social_contact_email_save(request: ContactEmailSaveRequest) -> ContactEmailSaveResponse:
+    model = _require_loaded()
+    _require_agent(model)
+    set_contact_email(request.email)
+    return ContactEmailSaveResponse(contactEmail=request.email)
+
+
 def _self_check() -> None:
     """The trust boundary, without weights.
 
@@ -1226,7 +1562,7 @@ def _self_check() -> None:
     `context_tokens` and `count_tokens`, and `chat()` is never reached on the
     rejection cases. Run it with `python -m service.main`.
     """
-    global _model, PROFILE_PATH, SOURCES_PATH, scrape_channel, scrape_tiktok_profile
+    global _model, PROFILE_PATH, SOURCES_PATH, scrape_channel, scrape_tiktok_profile, scrape_og_profile, scrape_twitch_channel, scrape_twitch_panel_links, scrape_twitch_social_medias, scrape_discord_invite
     from types import SimpleNamespace
 
     from fastapi.testclient import TestClient
@@ -1876,17 +2212,37 @@ def _self_check() -> None:
     _model.agent = False
 
     # -- /social + /admin/social ----------------------------------------------
+    import runtime.posts as posts_module
     import runtime.social as social_module
 
     with tempfile.TemporaryDirectory() as tmp:
         original_profile_json = social_module.PROFILE_JSON_PATH
+        original_images = (
+            social_module.IMAGES_DIR,
+            social_module.PFP_PATH,
+            social_module.BANNER_PATH,
+        )
+        original_posts_path = posts_module.POSTS_PATH
+        posts_module.POSTS_PATH = Path(tmp) / "posts.json"
         social_module.PROFILE_JSON_PATH = Path(tmp) / "profile.json"
+        social_module.IMAGES_DIR = Path(tmp) / "images"
+        social_module.PFP_PATH = social_module.IMAGES_DIR / "pfp.img"
+        social_module.BANNER_PATH = social_module.IMAGES_DIR / "banner.img"
         try:
             # The public route needs no loaded model and no agent mode —
             # it must work even in whatever state `_model` is currently in.
             response = client.get("/social/list")
             assert response.status_code == 200, (response.status_code, response.text)
-            assert response.json() == {"bio": None, "socials": []}
+            assert response.json() == {
+                "bio": None,
+                "contactEmail": None,
+                "socials": [],
+                "pfpVersion": None,
+                "bannerVersion": None,
+            }
+
+            response = client.get("/social/pfp")
+            assert response.status_code == 404, (response.status_code, response.text)
 
             # The admin routes are refused like every other /admin/* route
             # when not in agent mode.
@@ -1935,7 +2291,13 @@ def _self_check() -> None:
 
             response = client.get("/admin/social/list")
             assert response.status_code == 200, (response.status_code, response.text)
-            assert response.json() == {"bio": None, "socials": []}
+            assert response.json() == {
+                "bio": None,
+                "contactEmail": None,
+                "socials": [],
+                "pfpVersion": None,
+                "bannerVersion": None,
+            }
 
             response = client.post(
                 "/admin/social/delete", json={"id": "no-such-id"}
@@ -2020,6 +2382,136 @@ def _self_check() -> None:
             finally:
                 scrape_tiktok_profile = original_scrape_tiktok_profile
 
+            # Same join for the instagram/x branch, against scrape_og_profile —
+            # no follower_count, og:meta doesn't carry one.
+            original_scrape_og_profile = scrape_og_profile
+            scrape_og_profile = lambda url: {
+                "pfp_url": "https://example.com/x-pic.jpg",
+                "follower_count": None,
+                "bio": "x test bio",
+            }
+            try:
+                response = client.post(
+                    "/admin/social/preview",
+                    json={"url": "https://x.com/someone"},
+                )
+                assert response.status_code == 200, (response.status_code, response.text)
+                body = response.json()
+                assert body["pfpUrl"] == "https://example.com/x-pic.jpg", body
+                assert body["followerCount"] is None, body
+                assert body["bio"] == "x test bio", body
+            finally:
+                scrape_og_profile = original_scrape_og_profile
+
+            # Same join for the twitch branch, against scrape_twitch_channel
+            # — takes username, not url, unlike the others. Also covers
+            # scrape_twitch_panel_links: panel URLs must surface as platform
+            # mentions without needing the LLM to guess at them.
+            original_scrape_twitch_channel = scrape_twitch_channel
+            original_scrape_twitch_panel_links = scrape_twitch_panel_links
+            original_scrape_twitch_social_medias = scrape_twitch_social_medias
+            scrape_twitch_channel = lambda username: {
+                "pfp_url": "https://example.com/twitch-pic.jpg",
+                "follower_count": 3000,
+                "bio": "twitch test bio",
+            }
+            scrape_twitch_panel_links = lambda username: [
+                "https://www.instagram.com/realhandle",
+                "https://www.twitch.tv/someone",  # same platform — must be excluded
+                "not a url",  # unparseable — must be skipped, not raise
+            ]
+            scrape_twitch_social_medias = lambda username: [
+                "https://www.youtube.com/@realchannel",
+            ]
+            try:
+                response = client.post(
+                    "/admin/social/preview",
+                    json={"url": "https://twitch.tv/someone"},
+                )
+                assert response.status_code == 200, (response.status_code, response.text)
+                body = response.json()
+                assert body["pfpUrl"] == "https://example.com/twitch-pic.jpg", body
+                assert body["followerCount"] == 3000, body
+                assert body["bio"] == "twitch test bio", body
+                assert {"type": "platform", "platform": "instagram", "value": "realhandle"} in body[
+                    "mentions"
+                ], body["mentions"]
+                assert {"type": "platform", "platform": "youtube", "value": "@realchannel"} in body[
+                    "mentions"
+                ], body["mentions"]
+                assert not any(m["platform"] == "twitch" for m in body["mentions"]), body["mentions"]
+            finally:
+                scrape_twitch_channel = original_scrape_twitch_channel
+                scrape_twitch_panel_links = original_scrape_twitch_panel_links
+                scrape_twitch_social_medias = original_scrape_twitch_social_medias
+
+            # Same join for the discord branch, against scrape_discord_invite
+            # — takes the invite code (the "username"), not a url.
+            original_scrape_discord_invite = scrape_discord_invite
+            scrape_discord_invite = lambda code: {
+                "pfp_url": "https://example.com/discord-icon.png",
+                "follower_count": 5000,
+                "bio": "discord test bio",
+            }
+            try:
+                response = client.post(
+                    "/admin/social/preview",
+                    json={"url": "https://discord.gg/someinvite"},
+                )
+                assert response.status_code == 200, (response.status_code, response.text)
+                body = response.json()
+                assert body["pfpUrl"] == "https://example.com/discord-icon.png", body
+                assert body["followerCount"] == 5000, body
+                assert body["bio"] == "discord test bio", body
+            finally:
+                scrape_discord_invite = original_scrape_discord_invite
+
+            # Bio-mention extraction: a scrape that returns a bio must run it
+            # through the model and surface anything found, tagged by type.
+            original_chat = _model.chat
+            original_scrape_discord_invite = scrape_discord_invite
+            scrape_discord_invite = lambda code: {
+                "pfp_url": None,
+                "follower_count": None,
+                "bio": "hit me on IG @realhandle or biz@example.com",
+            }
+            _model.chat = lambda messages, **kwargs: json.dumps([
+                {"type": "platform", "platform": "instagram", "value": "realhandle"},
+                {"type": "email", "value": "biz@example.com"},
+            ])
+            try:
+                response = client.post(
+                    "/admin/social/preview",
+                    json={"url": "https://discord.gg/someinvite"},
+                )
+                assert response.status_code == 200, (response.status_code, response.text)
+                mentions = response.json()["mentions"]
+                assert {"type": "platform", "platform": "instagram", "value": "realhandle"} in mentions, mentions
+                assert {"type": "email", "platform": None, "value": "biz@example.com"} in mentions, mentions
+            finally:
+                scrape_discord_invite = original_scrape_discord_invite
+                _model.chat = original_chat
+
+            # A model reply that isn't valid JSON must degrade to no
+            # mentions, never break the preview call that triggered it.
+            original_scrape_discord_invite = scrape_discord_invite
+            scrape_discord_invite = lambda code: {
+                "pfp_url": None,
+                "follower_count": None,
+                "bio": "some bio text",
+            }
+            _model.chat = lambda messages, **kwargs: "not json at all"
+            try:
+                response = client.post(
+                    "/admin/social/preview",
+                    json={"url": "https://discord.gg/someinvite"},
+                )
+                assert response.status_code == 200, (response.status_code, response.text)
+                assert response.json()["mentions"] == [], response.json()
+            finally:
+                scrape_discord_invite = original_scrape_discord_invite
+                _model.chat = original_chat
+
             client.post("/admin/social/delete", json={"id": first_id})
 
             # /admin/social/bio/generate + /admin/social/bio
@@ -2050,9 +2542,69 @@ def _self_check() -> None:
             response = client.get("/social/list")
             assert response.json()["bio"] == "a combined bio"
 
+            response = client.post(
+                "/admin/social/contact_email", json={"email": "biz@example.com"}
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"contactEmail": "biz@example.com"}
+
+            response = client.get("/social/list")
+            assert response.json()["contactEmail"] == "biz@example.com"
+
             client.post("/admin/social/delete", json={"id": created["id"]})
+
+            # pfp/banner upload + serve
+            _model.agent = False
+            response = client.post("/admin/social/pfp", content=b"\x89PNG\r\n\x1a\nfake")
+            assert response.status_code == 403, (response.status_code, response.text)
+
+            _model.agent = True
+            response = client.post("/admin/social/pfp", content=b"\x89PNG\r\n\x1a\nfake")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["pfpVersion"] is not None
+
+            response = client.get("/social/pfp")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.headers["content-type"] == "image/png"
+            assert response.content == b"\x89PNG\r\n\x1a\nfake"
+
+            response = client.post("/admin/social/pfp", content=b"not an image")
+            assert response.status_code == 400, (response.status_code, response.text)
+
+            response = client.post(
+                "/admin/social/banner", content=b"\xff\xd8\xfffake-jpg"
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            response = client.get("/social/banner")
+            assert response.headers["content-type"] == "image/jpeg"
+
+            response = client.get("/social/list")
+            body = response.json()
+            assert body["pfpVersion"] is not None and body["bannerVersion"] is not None
+
+            # /social/posts + /admin/social/posts/refresh — no socials left
+            # in this tmp profile (deleted above), so refresh hits zero
+            # scrapers and never touches the network.
+            response = client.get("/social/posts")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"posts": []}
+
+            _model.agent = False
+            response = client.post("/admin/social/posts/refresh")
+            assert response.status_code == 403, (response.status_code, response.text)
+
+            _model.agent = True
+            response = client.post("/admin/social/posts/refresh")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json() == {"posts": []}
         finally:
+            posts_module.POSTS_PATH = original_posts_path
             social_module.PROFILE_JSON_PATH = original_profile_json
+            (
+                social_module.IMAGES_DIR,
+                social_module.PFP_PATH,
+                social_module.BANNER_PATH,
+            ) = original_images
     _model.agent = False
 
     if data_available:

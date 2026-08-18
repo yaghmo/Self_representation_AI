@@ -18,6 +18,13 @@ function toBackendRole(role: ChatMessage["role"]): "user" | "assistant" {
   return role === "bot" ? "assistant" : "user"
 }
 
+// Server default is 512 — sized for the admin surface, which sends its own
+// max_tokens explicitly. The fan widget renders replies as chat bubbles, so a
+// long single-block answer just means more scrolling; capped well below the
+// server default keeps replies to the few-short-messages length §6 of the
+// character profile already asks for.
+const FAN_MAX_TOKENS = 120
+
 export async function postChat(history: ChatMessage[]): Promise<string> {
   const res = await fetch(`${CHAT_API_URL}/chat`, {
     method: "POST",
@@ -27,6 +34,13 @@ export async function postChat(history: ChatMessage[]): Promise<string> {
         role: toBackendRole(m.role),
         content: m.text,
       })),
+      max_tokens: FAN_MAX_TOKENS,
+      // Tried `thinking: true` for coherence — reverted. The persona alone
+      // is 6601 tokens against an 8192 context; thinking adds a flat +1024
+      // reserve on top of the existing floor and the budget goes negative
+      // before the first message even sends (507 ProfileTooLarge). Needs a
+      // bigger context window or a smaller in-context persona, not a
+      // per-request flag. See `config/stack.json` (context_tokens: 8192).
     }),
   })
 

@@ -1,14 +1,20 @@
+"use client"
+
+import { useState } from "react"
 import type { Post } from "./types"
+import { PostCard } from "./PostCard"
+import { PostModal } from "./PostModal"
 
 const SKELETON_COUNT = 6
 
 function PostGrid({ posts, expanded }: { posts: Post[]; expanded: boolean }) {
+  const [openPost, setOpenPost] = useState<Post | null>(null)
   const style = {
     opacity: expanded ? 0 : 1,
     transform: expanded ? "translateY(12px)" : "translateY(0)",
   }
   const className =
-    "mx-6 mt-8 grid grid-cols-3 gap-1 transition-[opacity,transform] duration-500 ease-out sm:mx-10 sm:gap-2"
+    "mx-12 mt-8 grid grid-cols-4 gap-3 transition-[opacity,transform] duration-500 ease-out sm:mx-20 sm:gap-4"
 
   if (posts.length === 0) {
     return (
@@ -24,20 +30,14 @@ function PostGrid({ posts, expanded }: { posts: Post[]; expanded: boolean }) {
   }
 
   return (
-    <div className={className} style={style}>
-      {posts.map((post) => (
-        <div
-          key={post.id}
-          className="aspect-[3/4] overflow-hidden rounded-md bg-muted"
-        >
-          <img
-            src={post.imageUrl}
-            alt={post.caption}
-            className="size-full object-cover"
-          />
-        </div>
-      ))}
-    </div>
+    <>
+      <div className={className} style={style}>
+        {posts.map((post) => (
+          <PostCard key={post.id} post={post} onOpen={setOpenPost} />
+        ))}
+      </div>
+      {openPost && <PostModal post={openPost} onClose={() => setOpenPost(null)} />}
+    </>
   )
 }
 
