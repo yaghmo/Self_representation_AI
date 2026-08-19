@@ -50,14 +50,16 @@ from runtime.bible import (
     ProfileTooLarge,
     SUMMARIZE_PROMPT,
     assemble,
+    build_compact_persona,
     build_persona,
     build_procedure,
+    profile_section_chunks,
 )
 from runtime.embed import EmbeddingNotConfigured, bge_embedder
-from runtime.index import Embedder, Index, all_chunks, load_index
+from runtime.index import Embedder, Index, all_chunks, build as build_index, load_index
 from runtime.model import Model, ModelNotDownloaded
 from runtime.posts import list_posts, refresh_posts
-from runtime.recall import RECALL_SCHEMA, recall
+from runtime.recall import recall, recall_schema
 from runtime.tiktok_oauth import InvalidState
 from runtime.tiktok_oauth import authorize_url as tiktok_authorize_url
 from runtime.tiktok_oauth import connection_status as tiktok_connection_status
@@ -123,6 +125,7 @@ _model: Model | None = None
 # Independent of `_model` — the embedder and story index have nothing to do
 # with the LLM's load state, so they are never unloaded together.
 _story_index: Index | None = None
+_profile_index: Index | None = None
 _story_embed = None
 _story_unavailable: str = ""
 
@@ -134,17 +137,22 @@ MAX_RECALL_ITERATIONS = 3
 ADMIN_URL = os.environ.get("ADMIN_URL", "http://localhost:3000/admin")
 
 
-def _get_recall() -> tuple[Index, Embedder] | None:
-    """Lazily load the story index + embedder once. None means unavailable —
-    the tool is then simply never offered, never an error surfaced to a fan.
+def _get_recall() -> tuple[Index, Index, Embedder] | None:
+    """Lazily load the story index, the profile-section index, and the
+    embedder once. None means unavailable — every tool built on top of this
+    (both indices) is then simply never offered, never an error surfaced to
+    a fan. Both indices share the one embedder; there's no separate
+    availability check for the profile side because there's no separate
+    dependency for it.
     """
-    global _story_index, _story_embed, _story_unavailable
+    global _story_index, _profile_index, _story_embed, _story_unavailable
     if _story_unavailable:
         return None
-    if _story_index is None or _story_embed is None:
+    if _story_index is None or _profile_index is None or _story_embed is None:
         try:
             _story_embed = bge_embedder()
             _story_index = load_index()
+            _profile_index = build_index(profile_section_chunks(), _story_embed)
         except EmbeddingNotConfigured as exc:
             _story_unavailable = str(exc)
             logger.warning("fan retrieval unavailable: %s", exc)
@@ -153,7 +161,7 @@ def _get_recall() -> tuple[Index, Embedder] | None:
             _story_unavailable = f"{type(exc).__name__}: {exc}"
             logger.warning("fan retrieval unavailable: %s", exc)
             return None
-    return _story_index, _story_embed
+    return _story_index, _profile_index, _story_embed
 
 
 def _run_recall_loop(
@@ -164,6 +172,8 @@ def _run_recall_loop(
     thinking: bool,
     index: Index,
     embed: Embedder,
+    include_profile: bool = False,
+    profile_index: Index | None = None,
 ) -> str:
     """Let the model call `recall` a bounded number of times before
     returning a final answer. Entirely internal to one /chat request — the
@@ -184,7 +194,7 @@ def _run_recall_loop(
             temperature=temperature,
             max_tokens=max_tokens,
             thinking=thinking,
-            tools=[RECALL_SCHEMA],
+            tools=[recall_schema(include_profile)],
         )
         calls = getattr(model._backend, "last_tool_calls", []) or []
         if not calls:
@@ -198,7 +208,10 @@ def _run_recall_loop(
             try:
                 arguments = json.loads(raw) if isinstance(raw, str) else raw
                 query = arguments.get("query", "") if isinstance(arguments, dict) else ""
-                result = recall(query, index, embed)
+                result = recall(
+                    query, index, embed,
+                    include_profile=include_profile, profile_index=profile_index,
+                )
             except Exception as exc:
                 result = f"recall failed: {exc}"
             messages.append(Message("tool", result, tool_call_id=call_id))
@@ -687,7 +700,7 @@ def _reject_tools(model: Model, request: ChatRequest) -> None:
             )
 
 
-def _prompt_for(model: Model, request: ChatRequest) -> list[Message]:
+def _prompt_for(model: Model, request: ChatRequest, use_compact: bool = False) -> list[Message]:
     _reject_client_system(request.messages)
     _reject_tools(model, request)
     override = [m for m in request.messages if m.role == "system"]
@@ -711,7 +724,11 @@ def _prompt_for(model: Model, request: ChatRequest) -> list[Message]:
             # fan client never sends any — so `request.tools` reliably tells
             # the two apart per call, and `_reject_tools` above already
             # guarantees it can only be truthy when agent mode is on.
-            persona = build_procedure() if request.tools else build_persona()
+            persona = (
+                build_procedure() if request.tools
+                else build_compact_persona() if use_compact
+                else build_persona()
+            )
         return assemble(
             history,
             context_tokens=model.context_tokens,
@@ -870,18 +887,29 @@ def chat(request: ChatRequest) -> ChatResponse:
             "thinking": request.thinking,
         },
     )
-    messages = _prompt_for(model, request)
-    # Same per-request signal as the persona choice above, and for the same
-    # reason: `model.agent` alone would also silently withhold recall() from
-    # the fan whenever agent mode happens to be on for the admin surface
-    # sharing this model.
+    # Same per-request signal the persona choice below now also depends on:
+    # `model.agent` alone would silently withhold recall() from the fan
+    # whenever agent mode happens to be on for the admin surface sharing
+    # this model.
     recall_ctx = None if request.tools else _get_recall()
+    # bible_strategy="retrieval" only *permits* the compact persona — it
+    # still needs a working embedder (recall_ctx is not None) to actually
+    # use it. No embedder, no compact mode: falls back to today's whole
+    # persona automatically, every request, no restart required once the
+    # embedder becomes available.
+    use_compact = (
+        not request.tools
+        and model.bible_strategy == "retrieval"
+        and recall_ctx is not None
+    )
+    messages = _prompt_for(model, request, use_compact=use_compact)
     try:
         if recall_ctx is not None:
-            index, embed = recall_ctx
+            story_index, profile_index, embed = recall_ctx
             content = _run_recall_loop(
                 model, messages, request.temperature, request.max_tokens,
-                request.thinking, index, embed,
+                request.thinking, story_index, embed,
+                include_profile=use_compact, profile_index=profile_index,
             )
         else:
             content = model.chat(
@@ -1580,6 +1608,7 @@ def _self_check() -> None:
         count_tokens=lambda text: len(text) // 4,
         chat=record,
         _backend=None,
+        bible_strategy="whole",
     )
     client = TestClient(app)
     pirate = [
@@ -1740,7 +1769,7 @@ def _self_check() -> None:
 
     import numpy as np
 
-    from runtime.index import Chunk, build as build_index
+    from runtime.index import Chunk
 
     def fake_embed(texts: list[str]) -> "np.ndarray":
         width = 64
@@ -1759,11 +1788,19 @@ def _self_check() -> None:
     ]
     fixture_index = build_index(fixture_chunks, fake_embed)
 
-    global _story_index, _story_embed, _story_unavailable
-    real_story_index, real_story_embed, real_story_unavailable = (
-        _story_index, _story_embed, _story_unavailable,
+    fixture_profile_chunks = [
+        Chunk(key="profile/5", kind="profile_section", story_id="", event_id="",
+              text="## 5. Preferences & Texture\n\n- a fixture preference, retrieved on demand",
+              keywords=[]),
+    ]
+    fixture_profile_index = build_index(fixture_profile_chunks, fake_embed)
+
+    global _story_index, _story_embed, _story_unavailable, _profile_index
+    real_story_index, real_story_embed, real_story_unavailable, real_profile_index = (
+        _story_index, _story_embed, _story_unavailable, _profile_index,
     )
     _story_index, _story_embed, _story_unavailable = fixture_index, fake_embed, ""
+    _profile_index = fixture_profile_index
 
     class FakeBackend:
         def __init__(self):
@@ -1859,12 +1896,103 @@ def _self_check() -> None:
         if response.status_code != 424:
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["content"] == "agent answer", response.text
+
+        # -- bible_strategy: compact persona + profile retrieval -------------
+        # bible_strategy="retrieval" + embedder available: compact persona
+        # sent, recall offered with the compact-mode wording, and a
+        # profile-section hit is reachable through it.
+        def compact_mode_reply(messages, **kwargs):
+            fake_backend.last_tool_calls = []
+            seen["messages"] = messages
+            seen["tools"] = kwargs.get("tools")
+            return "compact reply"
+
+        _model.chat = compact_mode_reply
+        _model.bible_strategy = "retrieval"
+        seen.clear()
+        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        if response.status_code != 424:
+            assert response.status_code == 200, (response.status_code, response.text)
+            system = seen["messages"][0].content
+            assert len(system) < len(build_persona()), (
+                "compact persona must be shorter than the whole profile — "
+                f"got {len(system)} chars vs {len(build_persona())} for the whole one"
+            )
+            assert seen["tools"] is not None and seen["tools"][0]["function"]["name"] == "recall"
+            assert "profile detail" in seen["tools"][0]["function"]["description"], (
+                "compact mode must offer the compact-mode wording of the recall schema"
+            )
+
+        # bible_strategy="retrieval" + embedder UNAVAILABLE: falls back to
+        # today's whole-persona behavior exactly. This is the load-bearing
+        # fallback and needs its own explicit case, not inference from the
+        # cases above.
+        real_unavailable = _story_unavailable
+        _story_unavailable = "embedder not installed (simulated)"
+        seen.clear()
+        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        _story_unavailable = real_unavailable
+        if response.status_code != 424:
+            assert response.status_code == 200, (response.status_code, response.text)
+            system = seen["messages"][0].content
+            assert system.startswith("You are the person described"), (
+                "no embedder available must fall back to the full whole-persona build, "
+                "identical to bible_strategy='whole' or unset"
+            )
+            # recall_ctx is None here, so chat() takes the plain model.chat(...,
+            # tools=request.tools) branch entirely — _run_recall_loop and
+            # recall_schema() are never reached, and the fan request itself
+            # carries no "tools" key, so this must be exactly None.
+            assert seen["tools"] is None, (
+                "with no embedder, the recall tool must not be offered at all"
+            )
+
+        # bible_strategy anything else: whole persona, regardless of embedder
+        # availability.
+        _model.bible_strategy = "whole"
+        seen.clear()
+        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        if response.status_code != 424:
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert seen["messages"][0].content.startswith("You are the person described")
+
+        # A whole-persona request with the embedder available still only
+        # searches stories — the two knobs (bible_strategy, embedder
+        # availability) must not leak into each other.
+        _model.bible_strategy = "whole"
+        recall_only_story = [{
+            "id": "call_2", "type": "function",
+            "function": {"name": "recall", "arguments": json.dumps({"query": "preference"})},
+        }]
+        script2 = iter([("", recall_only_story), ("no profile reach here.", [])])
+        seen_tool_messages: list = []
+
+        def calls_recall_whole_mode(messages, **kwargs):
+            content, calls = next(script2)
+            if not calls:
+                seen_tool_messages.extend(messages)
+            fake_backend.last_tool_calls = calls
+            return content
+
+        _model.chat = calls_recall_whole_mode
+        response = client.post(
+            "/chat", json={"messages": [{"role": "user", "content": "what do you prefer?"}]}
+        )
+        if response.status_code != 424:
+            assert response.status_code == 200, (response.status_code, response.text)
+            tool_messages = [m for m in seen_tool_messages if m.role == "tool"]
+            assert tool_messages, "no tool-result message was appended"
+            assert "fixture preference" not in tool_messages[-1].content, (
+                "whole-persona mode must never search profile-section chunks, "
+                "even when a profile index and embedder are both available"
+            )
     finally:
         _model.chat = record
         _model._backend = None
         _story_index, _story_embed, _story_unavailable = (
             real_story_index, real_story_embed, real_story_unavailable,
         )
+        _profile_index = real_profile_index
 
     # -- /admin/tool + /admin/proposal/apply ----------------------------------
     import tempfile
