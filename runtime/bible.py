@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from .backend import Message, tokenize_url
+from .index import Chunk
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROFILE_PATH = REPO_ROOT / "data" / "character.md"
@@ -41,6 +42,18 @@ Write one short paragraph, third person, no preamble.
 
 
 class ProfileMissing(FileNotFoundError):
+    pass
+
+
+class ProfileIncomplete(RuntimeError):
+    """A required always-pinned section (see COMPACT_SECTIONS) is missing.
+
+    Distinct from ProfileMissing (the file itself is absent) and
+    ProfileTooLarge (it exists but doesn't fit) — this means the file
+    exists, fits, but is structurally missing the hard constraints or
+    voice register. Refuse rather than ship a compact persona with a gap
+    in exactly the part that's supposed to never have one.
+    """
     pass
 
 PROFILE_START = "# CHARACTER"
@@ -132,6 +145,102 @@ FRAMING = (
 
 def build_persona(path: Path | None = None) -> str:
     return FRAMING + strip_cites(slice_profile(load_profile(path)))
+
+
+# The compact persona — always in the prompt, never a retrieval miss away
+# from disappearing. §10 carries the Hard constraints subsection; §6 is
+# voice fidelity, which has to hold on every reply, not just the ones
+# retrieval happens to fire on.
+COMPACT_SECTIONS = (
+    "0. At a Glance",
+    "6. Voice & Speech Patterns",
+    "10. Interaction Rules",
+)
+
+# Everything else — fetched a whole section at a time by recall(), never
+# further chunked. Order here doesn't matter; profile_section_chunks_from
+# walks the profile's own document order, not this tuple's.
+RETRIEVABLE_SECTIONS = (
+    "1. Core Identity",
+    "2. Physical Presence",
+    "3. Personality & Psychology",
+    "4. Background & History",
+    "5. Preferences & Texture",
+    "7. Relationships",
+    "8. Skills & Public Role",
+    "9. Goals & Motivations",
+)
+
+
+def _split_sections(body: str) -> dict[str, str]:
+    """Map each '## ' heading's text (without the '## ' prefix) to its own
+    section — heading line included, up to the next '## ' heading or the
+    end of `body`. Same line-anchored boundary `section_index_from()` uses,
+    so a body neither function has seen still produces the same headings.
+    Anything before the first '## ' heading (the '# CHARACTER' line itself)
+    has nowhere to go and is dropped, same as section_index_from() ignores it.
+    """
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in body.splitlines():
+        if line.startswith("## "):
+            current = line[len("## "):].strip()
+            sections[current] = [line]
+        elif current is not None:
+            sections[current].append(line)
+    return {heading: "\n".join(lines).strip() + "\n" for heading, lines in sections.items()}
+
+
+def build_compact_persona_from(text: str) -> str:
+    """Pure function of profile text, so the self-check can run it against a
+    fixture — build_compact_persona() is the path-based wrapper below."""
+    body = slice_profile(text)
+    sections = _split_sections(body)
+    missing = [h for h in COMPACT_SECTIONS if h not in sections]
+    if missing:
+        raise ProfileIncomplete(
+            f"the profile is missing required section(s) {missing} — the "
+            "compact persona must always include the hard constraints and "
+            "voice register. Check data/character.md's headings against "
+            "bible.COMPACT_SECTIONS."
+        )
+    compact = "\n\n".join(sections[heading] for heading in COMPACT_SECTIONS)
+    return FRAMING + strip_cites(compact)
+
+
+def build_compact_persona(path: Path | None = None) -> str:
+    return build_compact_persona_from(load_profile(path))
+
+
+def profile_section_chunks_from(text: str) -> list[Chunk]:
+    """Pure function of profile text — one Chunk per RETRIEVABLE_SECTIONS
+    entry actually present in `text`. A section missing from the profile is
+    just missing from the result, not an error (unlike a missing compact
+    section) — the bot says it doesn't know, which is the correct, honest
+    answer for a gap that was never sourced."""
+    body = slice_profile(text)
+    sections = _split_sections(body)
+    chunks: list[Chunk] = []
+    for heading in RETRIEVABLE_SECTIONS:
+        section_text = sections.get(heading)
+        if section_text is None:
+            continue
+        number = heading.split(".", 1)[0].strip()
+        chunks.append(
+            Chunk(
+                key=f"profile/{number}",
+                kind="profile_section",
+                story_id="",
+                event_id="",
+                text=strip_cites(section_text),
+                keywords=[],
+            )
+        )
+    return chunks
+
+
+def profile_section_chunks(path: Path | None = None) -> list[Chunk]:
+    return profile_section_chunks_from(load_profile(path))
 
 
 PROCEDURE_PATH = REPO_ROOT / ".claude" / "skills" / "add" / "SKILL.md"
@@ -536,6 +645,61 @@ def _self_check() -> None:
     assert assemble(turns, context_tokens=1400, persona=persona) == [
         m for m in assemble(turns, context_tokens=1400, persona=persona, summary="")
     ], "empty summary must be a no-op"
+
+    # -- compact persona / profile-section chunks ----------------------------
+    # Invented placeholder content only — same rule as the rest of this file.
+    compact_sample = (
+        "# Placeholder — Character Profile\n"
+        "## How this file works\n"
+        "Meta instructions the model must never see.\n"
+        "# CHARACTER\n"
+        "## 0. At a Glance\n"
+        "- placeholder glance line `[S-001]`\n"
+        "## 1. Core Identity\n"
+        "- placeholder identity line, retrievable only `[S-002]`\n"
+        "## 6. Voice & Speech Patterns\n"
+        "- placeholder voice line `[S-003]`\n"
+        "## 10. Interaction Rules\n"
+        "- placeholder hard constraint line, must never be dropped `[S-004]`\n"
+        "## Changelog\n"
+        "- v1 bookkeeping nobody should read\n"
+    )
+
+    compact = build_compact_persona_from(compact_sample)
+    assert compact.startswith(FRAMING), "compact persona keeps the same framing prefix"
+    assert "placeholder hard constraint line" in compact, (
+        "hard constraints must survive into the compact persona"
+    )
+    assert "placeholder voice line" in compact, "voice register must survive into the compact persona"
+    assert "placeholder glance line" in compact, "at-a-glance must survive into the compact persona"
+    assert "placeholder identity line" not in compact, (
+        "a retrievable-only section must not leak into the always-pinned compact persona"
+    )
+    assert "[S-" not in compact, "citations must not leak into the compact persona either"
+
+    # A profile missing a required compact section must refuse loudly, not
+    # silently ship a persona with no hard constraints in it.
+    incomplete_sample = compact_sample.replace(
+        "## 10. Interaction Rules", "## 10a. Renamed By Mistake"
+    )
+    try:
+        build_compact_persona_from(incomplete_sample)
+    except ProfileIncomplete as exc:
+        assert "10. Interaction Rules" in str(exc), str(exc)
+    else:
+        raise AssertionError("expected ProfileIncomplete when a compact section is missing")
+
+    chunks = profile_section_chunks_from(compact_sample)
+    assert [c.key for c in chunks] == ["profile/1"], (
+        "only the retrievable section present in the fixture should produce a chunk"
+    )
+    assert chunks[0].kind == "profile_section"
+    assert chunks[0].story_id == "" and chunks[0].event_id == ""
+    assert "placeholder identity line" in chunks[0].text
+    assert "[S-" not in chunks[0].text, "citations must be stripped from retrievable chunks too"
+    # A retrievable section simply absent from the profile is not an error —
+    # unlike a missing *compact* section, it just means less to retrieve.
+    assert "profile/5" not in [c.key for c in chunks]
 
     print("bible self-check: ok")
 
