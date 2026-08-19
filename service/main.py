@@ -2096,14 +2096,19 @@ def _self_check() -> None:
 
         # list_backups()/restore_backup() are called with directory=None from
         # these routes, so `_corpus_roots()` derives the bible dir from
-        # `SOURCES_PATH.parent` — not from `PROFILE_PATH`. Both bindings have
-        # to move into the tmp dir together, or list_backups() keeps looking
-        # for `.backups` next to the real (or, in this worktree, nonexistent)
-        # data/ instead of next to the snapshot this test just wrote.
+        # `SOURCES_PATH.parent` and the stories dir from `STORIES_DIR` —
+        # neither from `PROFILE_PATH`. All three bindings have to move into
+        # the tmp dir together, or list_backups() keeps looking at the real
+        # `data/stories/.backups` (whatever this machine actually has in it)
+        # instead of the isolated snapshot this test just wrote — which is
+        # exactly why this assertion used to fail on a machine with real
+        # backup history and pass on a fresh clone with none.
         original_tools_profile = tools_module.PROFILE_PATH
         original_tools_sources = tools_module.SOURCES_PATH
+        original_tools_stories = tools_module.STORIES_DIR
         tools_module.PROFILE_PATH = profile
         tools_module.SOURCES_PATH = root / "sources.md"
+        tools_module.STORIES_DIR = root / "stories"
         try:
             # Nothing snapshotted yet in this fresh directory.
             response = client.get("/admin/snapshots")
@@ -2134,6 +2139,7 @@ def _self_check() -> None:
         finally:
             tools_module.PROFILE_PATH = original_tools_profile
             tools_module.SOURCES_PATH = original_tools_sources
+            tools_module.STORIES_DIR = original_tools_stories
     _model.agent = False
 
     # -- /admin/story/convert-file ---------------------------------------------
