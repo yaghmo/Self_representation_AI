@@ -2,10 +2,12 @@
 
 **Date:** 2026-08-19
 **Status:** design, approved
-**Touches:** `runtime/bible.py`, `runtime/index.py`, `runtime/recall.py`,
-`service/main.py`. No schema change to `config/stack.json` — `bible_strategy`
-already exists there and is already threaded onto `Model`
-(`runtime/model.py:50,80`); this spec is the first thing that reads it.
+**Touches:** `runtime/bible.py`, `runtime/recall.py`, `service/main.py`.
+`runtime/index.py` ends up unmodified (see the amendment below — the
+two-index design needs no change to `Index.search`). No schema change to
+`config/stack.json` — `bible_strategy` already exists there and is already
+threaded onto `Model` (`runtime/model.py:50,80`); this spec is the first
+thing that reads it.
 
 `2026-08-08-fan-retrieval-design.md` built `recall(query)` over the story
 corpus and explicitly scoped `bible_strategy` out: *"That config field
@@ -76,13 +78,18 @@ def build_compact_persona(path: Path | None = None) -> str:
 
 def profile_section_chunks(path: Path | None = None) -> list[Chunk]:
     """One Chunk per entry in RETRIEVABLE_SECTIONS, whole section text
-    (heading included) via the existing read_profile_section() extraction
-    used by the admin tool — not reimplemented here."""
+    (heading included)."""
 ```
 
-Both reuse `slice_profile()` / `strip_cites()` / the section-splitting logic
-`section_index_from()` already has, rather than re-deriving section
-boundaries a second way.
+Both reuse `slice_profile()` / `strip_cites()`, and a small `_split_sections()`
+helper that walks the sliced body the same line-anchored `## ` way
+`section_index_from()` already does, rather than re-deriving section
+boundaries a third way. **Not** `tools.py`'s `read_profile_section()` /
+`_find_section()` — those already import `PROFILE_START`/`PROFILE_END` *from*
+`bible.py`, so `bible.py` importing back from `tools.py` would be circular.
+`tools.py`'s version also solves a different, harder problem (a model naming
+a section ambiguously at edit time, ties refused rather than guessed) that
+this one doesn't need — chunk-building just splits the whole document once.
 
 ## Data note (already fixed)
 
@@ -118,39 +125,43 @@ Chunk(
 
 These chunks are built from `character.md`, not `data/stories/*.md`, so they
 load and refresh on a different trigger than the story index (an `/add` or
-`/rebuild` run, not a `/story` ingest). They are added into the **same**
-`Index` object and the **same** on-disk file the story chunks already use —
-one load, one `Index.refresh()` call covers both kinds, digest-diffed per
-chunk exactly as today (editing one `character.md` section re-embeds only
-that section's chunk, not the other eight, not the story corpus).
+`/rebuild` run, not a `/story` ingest).
 
-## `Index.search`: filtering by more than one kind
+**Amendment, found during planning:** originally this spec called for
+folding profile chunks into the *same* `Index` object and on-disk file the
+story chunks use. `Index.refresh(chunks, embed)` doesn't merge — it replaces
+`self.chunks` wholesale with whatever list is passed in, reusing vectors
+only for keys that didn't change. Calling it with just the 8 profile chunks
+would silently drop every story chunk; calling it with the story index's
+own chunks *plus* profile chunks, then letting the admin `/story` ingest
+path later `save()` that same in-memory index, would leak profile-section
+data into `stories.npz` — a file whose own doc comment says it "can be
+deleted and rebuilt at any time" from `data/stories/*.md` alone, which
+would no longer be true. **Fix: two separate `Index` objects**, a
+`_profile_index` alongside the existing `_story_index`, sharing the same
+embedder but never sharing a chunk list or a save path. `recall()` searches
+both and merges the hit lists by score before formatting — see below. The
+on-disk story index is untouched by this spec; the profile index is never
+persisted, rebuilt from `character.md` each time a process lazily loads it
+(cheap: 8 chunks).
 
-`recall()` needs to search `{"event", "profile_section"}` together — never
-`"summary"`/chapter chunks, which stay routing-only exactly as
-`2026-08-08-fan-retrieval-design.md` decided and this spec doesn't revisit.
-`Index.search`'s `kind` parameter generalizes from `str | None` to
-`str | Iterable[str] | None`, normalizing a bare string into a one-item set
-internally — every existing call site (`kind="event"`, `kind="summary"`,
-`kind=None`) keeps working unchanged:
-
-```python
-def search(self, query, embed, limit=5, kind=None):
-    kinds = {kind} if isinstance(kind, str) else kind
-    wanted = [i for i, c in enumerate(self.chunks) if kinds is None or c.kind in kinds]
-    ...
-```
-
-## `recall()`: two result shapes, one function
+## `recall()`: two indices, two result shapes, one function
 
 Story hits keep today's hydration (event text plus its story's summary as a
 header). Profile-section hits need no hydration — the chunk's own text
-already stands alone, heading included:
+already stands alone, heading included. `recall()` takes the profile index
+as an additional optional argument rather than requiring `Index.search` to
+understand more than one kind at a time:
 
 ```python
-def recall(query, index, embed, limit=3, include_profile=False) -> str:
-    kinds = {"event", "profile_section"} if include_profile else {"event"}
-    hits = index.search(query, embed, limit=limit, kind=kinds)
+def recall(query, index, embed, limit=3, include_profile=False, profile_index=None) -> str:
+    hits = index.search(query, embed, limit=limit, kind="event")
+    if include_profile and profile_index is not None:
+        hits = hits + profile_index.search(query, embed, limit=limit, kind="profile_section")
+        hits.sort(key=lambda h: h.score, reverse=True)
+        hits = hits[:limit]
+    if not hits:
+        return f"no matching stories for {query!r}"
     parts = []
     for hit in hits:
         if hit.chunk.kind == "profile_section":
@@ -159,16 +170,39 @@ def recall(query, index, embed, limit=3, include_profile=False) -> str:
             summary = by_key.get(f"{hit.chunk.story_id}/summary")
             header = summary.text if summary is not None else hit.chunk.story_id
             parts.append(f"{header}\n\n{hit.chunk.text}")
-    return "\n\n---\n\n".join(parts) if parts else f"no matching stories for {query!r}"
+    return "\n\n---\n\n".join(parts)
 ```
 
 `include_profile` defaults `False` so **whole-persona mode's story search
 stays byte-identical to today** — broadened scope only applies when compact
-mode is actually active. Ordering stays score-order, not stable-id order,
-for the same reason the original spec gave: nothing here is pinned and
-re-shown across turns, so there's no KV-prefix stability to protect.
+mode is actually active, and `Index.search` itself needs no changes at all
+(still one `kind` string per call, as today). Ordering stays score-order,
+not stable-id order, for the same reason the original spec gave: nothing
+here is pinned and re-shown across turns, so there's no KV-prefix stability
+to protect.
+
+## Tool schema text must change with the mode
+
+`RECALL_SCHEMA`'s current description says to use it for something "the
+character profile does not cover" — accurate today, wrong once the tool
+also answers questions the profile *does* cover but the compact persona
+doesn't currently show. Left unchanged, the model would never think to call
+it for an ordinary personality/background/preferences question in compact
+mode. `RECALL_SCHEMA` (module-level constant) becomes `recall_schema(include_profile: bool) -> dict`
+(function), worded per mode — whole-persona mode keeps today's exact text
+unchanged; compact mode's description explicitly says the tool also reaches
+profile detail not already shown.
 
 ## `service/main.py`: choosing the strategy, with automatic fallback
+
+`_get_recall()` already lazily loads and caches `_story_index` +
+`_story_embed` as module globals the first time a non-agent `/chat` request
+needs them. It gains a sibling `_profile_index` global, built the same lazy
+way from `bible.profile_section_chunks()` on first use (same embedder, no
+separate config flag — if the embedder loads at all, both indices build).
+Its return type changes from `tuple[Index, Embedder] | None` to
+`tuple[Index, Index, Embedder] | None` — `(story_index, profile_index, embed)`
+— its only caller (`chat()`) is updated to match.
 
 ```python
 recall_ctx = None if request.tools else _get_recall()
@@ -195,10 +229,12 @@ nothing to toggle, nothing to remember to flip back. The moment it becomes
 available, compact mode activates on the next request with no restart-time
 decision required.
 
-`_run_recall_loop` passes `include_profile=use_compact` through to every
-`recall()` call for that request, so a whole-persona request with the
-embedder available still only searches stories — matching today's behavior
-for that combination exactly.
+`_run_recall_loop` passes `include_profile=use_compact` (and `profile_index`)
+through to every `recall()` call for that request, and offers
+`recall_schema(use_compact)` — worded per mode — instead of the old
+`RECALL_SCHEMA` constant. A whole-persona request with the embedder
+available still only searches stories — matching today's behavior for that
+combination exactly.
 
 ## What doesn't change
 
@@ -237,23 +273,27 @@ for that combination exactly.
 
 ## Testing
 
-`runtime/index.py`'s `_self_check()`: extend with a mixed-kind fixture (a
-story plus profile-section chunks in the same `Index`) —
+`runtime/index.py` is unmodified by this spec (the two-index amendment
+above means `Index.search` never needs to filter by more than one kind at
+once) — no new `index.py` test cases needed.
 
-- `search(kind={"event", "profile_section"})` returns hits of both kinds,
-  ranked together by score, never a `"summary"`/chapter chunk
-- `search(kind="event")` (a bare string, the existing call shape) still
-  behaves exactly as before — the `Iterable[str]` generalization is additive
+`runtime/recall.py`'s `_self_check()`: extend with a second fixture index
+built from profile-section-shaped chunks (`kind="profile_section"`, same
+fake deterministic embedder the existing fixture already uses) —
 
-`runtime/recall.py`'s `_self_check()`: extend with —
-
-- `include_profile=False` (default): a profile-section chunk in the index
-  is never returned, even if it would have scored highest — whole-persona
-  mode's story search must stay unchanged
-- `include_profile=True`: a profile-section hit is returned as its raw
-  chunk text, no summary-header hydration attempted
-- a mixed result set (one story hit, one profile-section hit) formats both
-  correctly in the same call
+- `include_profile=False` (default), `profile_index` passed or not: a
+  profile-section chunk is never returned even if it would have scored
+  highest — whole-persona mode's story search must stay byte-identical to
+  today regardless of whether a profile index happens to be available
+- `include_profile=True` with only a profile-section hit matching: returned
+  as its raw chunk text, no summary-header hydration attempted, no
+  `"no matching stories"` string
+- `include_profile=True` with both a story hit and a profile-section hit
+  scoring close together: both appear in the result, in score order, each
+  formatted correctly for its own kind in the same call
+- `include_profile=True` but `profile_index=None`: behaves exactly like
+  `include_profile=False` — a caller can't accidentally search profile
+  content by flipping one flag without also holding the index
 
 `runtime/bible.py`'s `_self_check()`: extend with —
 
