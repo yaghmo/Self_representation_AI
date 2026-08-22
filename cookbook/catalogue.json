@@ -487,33 +487,7 @@
         ],
         "total_bytes": 3861933962
       },
-      "notes": "3-second voice clone from a reference clip, 10 languages (zh/en/ja/ko/de/fr/ru/pt/es/it), Apache-2.0. Best-in-catalogue TTS; the flow-matching LM wants a real GPU \u2014 CPU is a last resort. Base = cloning + fine-tuning; no instruction control (that is the CustomVoice variant).",
-      "figures": "hub"
-    },
-    {
-      "id": "qwen3-tts-12hz-0.6b-base",
-      "role": "tts",
-      "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-      "quant": "bf16",
-      "weights_bytes": 1833810313,
-      "runtime_overhead_bytes": 402653184,
-      "devices": [
-        "gpu",
-        "cpu"
-      ],
-      "cloning": true,
-      "quality": 80,
-      "download": {
-        "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-        "allow_patterns": [
-          "*.json",
-          "*.txt",
-          "model.safetensors",
-          "speech_tokenizer/*"
-        ],
-        "total_bytes": 1833810313
-      },
-      "notes": "Lighter sibling of the 1.7B base \u2014 same 3-second cloning, 10 languages, Apache-2.0. Fits where the 1.7B does not; expect a thinner timbre.",
+      "notes": "3-second voice clone from a reference clip, 10 languages (zh/en/ja/ko/de/fr/ru/pt/es/it), Apache-2.0. Best-in-catalogue TTS; the flow-matching LM wants a real GPU \u2014 CPU is a last resort. Cloning only \u2014 no instruct param on generate_voice_clone(); pair with qwen3-tts-12hz-1.7b-voicedesign for the no-sample, description-driven fallback voice instead.",
       "figures": "hub"
     },
     {
@@ -539,7 +513,7 @@
         ],
         "total_bytes": 3837868094
       },
-      "notes": "No-clip, no speakers. Takes a text description of the character (the instruct param) and generates a matching voice \u2014 character.md is the natural input. Instruction control for tone/emotion. Same quality as the 1.7B base. The runtime path: character description -> instruct -> synthesized voice.",
+      "notes": "No-clip, no presets. generate_voice_design(text, language, instruct) builds a voice purely from the instruct description \u2014 character.md is the natural input. This is the fallback when no reference sample was uploaded. Same quality tier as the 1.7B base.",
       "figures": "hub"
     }
   ]
