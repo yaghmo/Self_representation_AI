@@ -8,7 +8,9 @@ import { cn } from "@/lib/utils"
 // needs to update this list too, not just gate the route.
 const LINKS = [
   { href: "/", label: "Cookbook" },
+  { href: "/feed", label: "Feed" },
   { href: "/fan", label: "Fan" },
+  { href: "/yuumii", label: "Yuumii" },
   { href: "/admin", label: "Admin" },
 ] as const
 

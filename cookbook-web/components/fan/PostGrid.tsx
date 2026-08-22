@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, type CSSProperties } from "react"
 import type { Post } from "./types"
 import { PostCard } from "./PostCard"
 import { PostModal } from "./PostModal"
@@ -9,9 +9,10 @@ const SKELETON_COUNT = 6
 
 function PostGrid({ posts, expanded }: { posts: Post[]; expanded: boolean }) {
   const [openPost, setOpenPost] = useState<Post | null>(null)
-  const style = {
+  const style: CSSProperties = {
     opacity: expanded ? 0 : 1,
     transform: expanded ? "translateY(12px)" : "translateY(0)",
+    pointerEvents: expanded ? "none" : "auto",
   }
   const className =
     "mx-12 mt-8 grid grid-cols-4 gap-3 transition-[opacity,transform] duration-500 ease-out sm:mx-20 sm:gap-4"

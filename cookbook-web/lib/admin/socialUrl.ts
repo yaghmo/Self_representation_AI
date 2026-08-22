@@ -14,6 +14,8 @@ const DOMAIN_PLATFORMS: Record<string, string> = {
   "telegram.me": "telegram",
   "throne.com": "throne",
   "discord.gg": "discord",
+  "linktr.ee": "linktree",
+  "linktree.com": "linktree",
 }
 
 // Pure string parsing, zero network requests — see the plan's Global
@@ -60,7 +62,10 @@ export function buildSocialUrl(platform: string, handle: string): string | null 
   const domain = CANONICAL_DOMAIN[platform]
   if (!domain) return null
   const bare = handle.replace(/^@/, "")
-  // YouTube's canonical URL shape is /@handle — every other platform here
-  // uses a bare username path, so the "@" only needs to survive for this one.
-  return platform === "youtube" ? `https://${domain}/@${bare}` : `https://${domain}/${bare}`
+  // YouTube and TikTok's canonical URL shape is /@handle — a bare path
+  // (tiktok.com/name, no @) doesn't resolve to the profile at all. Every
+  // other platform here uses a bare username path.
+  return platform === "youtube" || platform === "tiktok"
+    ? `https://${domain}/@${bare}`
+    : `https://${domain}/${bare}`
 }

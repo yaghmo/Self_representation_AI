@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseSocialUrl } from "./socialUrl"
+import { buildSocialUrl, parseSocialUrl } from "./socialUrl"
 
 describe("parseSocialUrl", () => {
   it("parses an instagram profile url", () => {
@@ -31,5 +31,28 @@ describe("parseSocialUrl", () => {
 
   it("returns null for a non-URL string", () => {
     expect(parseSocialUrl("not a url")).toBeNull()
+  })
+})
+
+describe("buildSocialUrl", () => {
+  it("adds the @ prefix for tiktok — a bare path doesn't resolve to the profile", () => {
+    expect(buildSocialUrl("tiktok", "handle")).toBe("https://tiktok.com/@handle")
+  })
+
+  it("adds the @ prefix for youtube", () => {
+    expect(buildSocialUrl("youtube", "handle")).toBe("https://youtube.com/@handle")
+  })
+
+  it("strips a leading @ the caller already included, instead of doubling it", () => {
+    expect(buildSocialUrl("tiktok", "@handle")).toBe("https://tiktok.com/@handle")
+  })
+
+  it("uses a bare path for platforms without an @-handle URL shape", () => {
+    expect(buildSocialUrl("instagram", "handle")).toBe("https://instagram.com/handle")
+    expect(buildSocialUrl("x", "handle")).toBe("https://x.com/handle")
+  })
+
+  it("returns null for a platform with no canonical domain", () => {
+    expect(buildSocialUrl("myspace", "handle")).toBeNull()
   })
 })

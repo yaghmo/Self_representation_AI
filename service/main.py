@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -68,6 +69,7 @@ from runtime.tiktok_oauth import handle_callback as tiktok_handle_callback
 from runtime.social import (
     SocialAlreadyExists,
     SocialNotFound,
+    _is_cleaner_username,
     add_social,
     banner_version,
     delete_social,
@@ -114,6 +116,7 @@ from runtime.tools import (
 )
 from runtime.voice_sample import LANGUAGES, PHRASES, SAMPLE_PATH, sample_status, save_sample
 from runtime.youtube_scrape import scrape_channel
+from runtime.linktree_scrape import scrape_links as scrape_linktree_links
 from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
@@ -415,6 +418,8 @@ _SOCIAL_DOMAIN_PLATFORMS = {
     "telegram.me": "telegram",
     "throne.com": "throne",
     "discord.gg": "discord",
+    "linktr.ee": "linktree",
+    "linktree.com": "linktree",
 }
 
 
@@ -443,6 +448,32 @@ def _parse_social_url(url: str) -> tuple[str, str] | None:
     if platform == "youtube" and segments[0] in ("c", "channel", "user") and len(segments) > 1:
         return platform, segments[1]
     return platform, segments[0]
+
+
+# Server-side mirror of cookbook-web/lib/admin/socialUrl.ts's
+# buildSocialUrl — the inverse of _SOCIAL_DOMAIN_PLATFORMS, one canonical
+# domain per platform, needed to turn a bare mention (platform + handle,
+# no URL) into something scrapable for _verify_mention_exists below.
+_CANONICAL_DOMAIN = {
+    "instagram": "instagram.com",
+    "tiktok": "tiktok.com",
+    "x": "x.com",
+    "youtube": "youtube.com",
+    "twitch": "twitch.tv",
+    "discord": "discord.gg",
+}
+
+
+def _build_social_url(platform: str, handle: str) -> str | None:
+    domain = _CANONICAL_DOMAIN.get(platform)
+    if not domain:
+        return None
+    bare = handle.lstrip("@")
+    # youtube and tiktok's real profile URLs both require the "@" — a bare
+    # path (tiktok.com/name, no @) doesn't resolve to the profile at all,
+    # so a mention's bare handle (no "@") must get it back here or the
+    # scrape below silently fails and reads as "profile doesn't exist".
+    return f"https://{domain}/@{bare}" if platform in ("youtube", "tiktok") else f"https://{domain}/{bare}"
 
 
 class SocialPreviewRequest(BaseModel):
@@ -521,6 +552,98 @@ def _mentions_from_urls(urls: list[str], exclude_platform: str) -> list[SocialMe
             continue
         mentions.append(SocialMention(type="platform", platform=found_platform, value=found_username))
     return mentions
+
+
+# Only these platforms have a scrape that can actually tell "gone" apart
+# from "worked" — telegram, throne, and anything typed into "other" have no
+# scraper at all, and Instagram's og-tag scrape returns None for nearly
+# every unauthenticated request regardless of whether the account exists
+# (see og_scrape.py's docstring), so None there is noise, not a signal. All
+# of those are always kept (never blocked, per the scrape modules'
+# documented contract) and never checked for a duplicate pfp either.
+_VERIFIABLE_MENTION_PLATFORMS = {"tiktok", "x", "youtube", "twitch", "discord"}
+
+
+def _scrape_mention(mention: SocialMention) -> dict | None:
+    """Scraped pfp/follower/bio for a platform mention, or None if the
+    scrape confirms the profile doesn't exist. Only meaningful for
+    _VERIFIABLE_MENTION_PLATFORMS."""
+    if mention.platform == "twitch":
+        return scrape_twitch_channel(mention.value)
+    if mention.platform == "discord":
+        return scrape_discord_invite(mention.value)
+    url = _build_social_url(mention.platform, mention.value)
+    if not url:
+        return None
+    if mention.platform == "tiktok":
+        return scrape_tiktok_profile(url)
+    if mention.platform == "youtube":
+        return scrape_channel(url)
+    return scrape_og_profile(url)  # instagram, x
+
+
+def _filter_mentions(mentions: list[SocialMention]) -> list[SocialMention]:
+    """A chip that would just bounce off add_social's own dedup on Confirm
+    — already linked, dead, or the same real profile behind a different
+    literal link — shouldn't be offered for Confirm in the first place.
+    Mirrors add_social's own matching (same platform+username already
+    saved, or same platform+pfp already saved) plus the same "prefer the
+    clean link" call between two mentions that turn out to be duplicates
+    of each other within this one batch. The scrapes needed to check any
+    of that run concurrently, so N mentions cost about one scrape's
+    latency, not N of them."""
+    existing = list_socials()
+    known_handles = {s["username"].lstrip("@").lower() for s in existing}
+
+    def already_linked(mention: SocialMention) -> bool:
+        handle = mention.value.lstrip("@").lower()
+        return any(
+            s["platform"].lower() == mention.platform
+            and s["username"].lstrip("@").lower() == handle
+            for s in existing
+        )
+
+    candidates = [
+        m
+        for m in mentions
+        if m.type == "platform"
+        and m.platform in _VERIFIABLE_MENTION_PLATFORMS
+        and not already_linked(m)
+    ]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        scraped_by_id = dict(zip((id(m) for m in candidates), pool.map(_scrape_mention, candidates)))
+
+    kept: list[SocialMention] = []
+    seen_pfp: dict[tuple[str, str], SocialMention] = {}
+    for mention in mentions:
+        if mention.type != "platform":
+            kept.append(mention)
+            continue
+        if already_linked(mention):
+            continue  # already saved — nothing new to confirm
+        if mention.platform not in _VERIFIABLE_MENTION_PLATFORMS:
+            kept.append(mention)
+            continue
+        data = scraped_by_id.get(id(mention))
+        if not data:
+            continue  # scrape failed / profile confirmed gone
+        pfp = data.get("pfp_url")
+        if pfp and any(
+            s["platform"].lower() == mention.platform and s.get("pfpUrl") == pfp for s in existing
+        ):
+            continue  # same real profile as one already saved, different link
+        if pfp:
+            key = (mention.platform, pfp)
+            prior = seen_pfp.get(key)
+            if prior is not None:
+                if _is_cleaner_username(mention.value, prior.value, known_handles):
+                    kept.remove(prior)
+                    seen_pfp[key] = mention
+                    kept.append(mention)
+                continue  # duplicate of a mention already kept from this batch
+            seen_pfp[key] = mention
+        kept.append(mention)
+    return kept
 
 
 def _extract_mentions(model: Model, bio: str, current_platform: str) -> list[SocialMention]:
@@ -1505,6 +1628,11 @@ def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse
         scraped = scrape_twitch_channel(username)
     elif platform == "discord":
         scraped = scrape_discord_invite(username)
+    elif platform == "linktree":
+        # A Linktree page isn't itself a social profile worth storing — it's
+        # a list of the creator's other links. Skip the pfp/bio scrape and
+        # go straight to reading its contents as mentions, below.
+        scraped = None
     else:
         scraped = None
     mentions: list[SocialMention] = []
@@ -1514,7 +1642,11 @@ def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse
         bio = scraped["bio"]
         if bio:
             mentions = _extract_mentions(model, bio, platform)
-    if platform == "twitch":
+    if platform == "linktree":
+        mentions = _mentions_from_urls(
+            scrape_linktree_links(request.url) or [], exclude_platform="linktree"
+        )
+    elif platform == "twitch":
         # The streamer's other socials usually live in one or both of two
         # independent Twitch features — the Panels grid and the curated
         # social-links row beside the bio — neither the short Helix bio
@@ -1530,6 +1662,7 @@ def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse
             if key not in seen:
                 mentions.append(mention)
                 seen.add(key)
+    mentions = _filter_mentions(mentions)
     return SocialPreviewResponse(
         platform=platform,
         username=username,

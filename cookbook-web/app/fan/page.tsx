@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { ProfileHeader } from "@/components/fan/ProfileHeader"
 import { PostGrid } from "@/components/fan/PostGrid"
 import { BottomBar } from "@/components/fan/BottomBar"
@@ -14,6 +14,14 @@ export default function FanPage() {
   const [expanded, setExpanded] = useState(true)
   const [profile, setProfile] = useState<FanProfile>(mockProfile)
   const [posts, setPosts] = useState<Post[]>(mockPosts)
+  const [searchQuery, setSearchQuery] = useState("")
+
+  const filteredPosts = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase()
+    if (!query) return posts
+    const tag = query.startsWith("#") ? query : `#${query}`
+    return posts.filter((post) => post.title?.toLowerCase().includes(tag))
+  }, [posts, searchQuery])
 
   useEffect(() => {
     // Browsers restore scroll position on reload by default, which fires
@@ -48,13 +56,18 @@ export default function FanPage() {
 
   return (
     <div className="min-h-[calc(100vh-2.5rem)] pb-24">
-      <SearchBar expanded={expanded} />
+      <SearchBar
+        expanded={expanded}
+        posts={posts}
+        value={searchQuery}
+        onChange={setSearchQuery}
+      />
       <ProfileHeader
         profile={profile}
         expanded={expanded}
         onCollapse={() => setExpanded(false)}
       />
-      <PostGrid posts={posts} expanded={expanded} />
+      <PostGrid posts={filteredPosts} expanded={expanded} />
       <BottomBar />
       <ChatWidget botName={mockProfile.name} />
     </div>

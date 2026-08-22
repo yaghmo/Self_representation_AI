@@ -73,3 +73,11 @@ sources.md
 character.md
 !templates/character.template.md
 !templates/sources.template.md
+
+# .claude/worktrees/ holds live git worktrees — never track their contents,
+# even though .claude/** is allowed above.
+.claude/worktrees/
+
+# Yuumii — isolated /fan restyling copy, kept local-only for now.
+cookbook-web/app/yuumii/
+cookbook-web/components/yuumii/

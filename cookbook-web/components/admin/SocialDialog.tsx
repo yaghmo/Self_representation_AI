@@ -35,7 +35,11 @@ import { ProfileImages } from "@/components/admin/ProfileImages";
 import { SocialRow } from "@/components/SocialRow";
 import { Loader2, Mail, Pencil, Trash2, X } from "lucide-react";
 
-const SCRAPE_TIMEOUT_MS = 12_000;
+// The preview call now also verifies each discovered mention's profile
+// actually exists (dead ones are dropped server-side before they ever
+// reach here), on top of the primary link's own scrape — allow more time
+// for that than a single scrape needs.
+const SCRAPE_TIMEOUT_MS = 20_000;
 
 const COMMON_PLATFORMS = [
   "instagram",
@@ -268,10 +272,15 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       isAlt: form.isAlt,
     };
     try {
-      if (form.id) {
-        await updateSocial({ id: form.id, ...params });
-      } else {
-        await addSocial(params);
+      // A Linktree link isn't a social profile — it's just a list of the
+      // creator's other links. Only the mentions extracted from it get
+      // stored; the Linktree link itself never becomes a social row.
+      if (platform !== "linktree") {
+        if (form.id) {
+          await updateSocial({ id: form.id, ...params });
+        } else {
+          await addSocial(params);
+        }
       }
       // Whatever's still in `mentions` at this point is exactly what the
       // creator chose to keep — anything they didn't want was already
@@ -289,14 +298,21 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
           // Scrape pfp/follower count/bio the same way a manually pasted
           // link does, instead of adding a bare platform+username row.
           const scraped = await previewSocial({ url }).catch(() => null);
-          return addSocial({
+          // An empty scrape (no pfp/bio/follower count) means the profile
+          // doesn't exist on the platform — most often a dead/renamed
+          // account behind a mention pulled off a Linktree page. Don't add
+          // a link that would just 404 for fans.
+          const hasData =
+            scraped && (scraped.pfpUrl || scraped.bio || scraped.followerCount != null);
+          if (!hasData) return;
+          await addSocial({
             platform: m.platform,
             username: m.value,
             url,
-            bio: scraped?.bio ?? undefined,
-            followerCount: scraped?.followerCount ?? undefined,
-            pfpUrl: scraped?.pfpUrl ?? undefined,
-            isAlt: scraped?.isAlt ?? false,
+            bio: scraped.bio ?? undefined,
+            followerCount: scraped.followerCount ?? undefined,
+            pfpUrl: scraped.pfpUrl ?? undefined,
+            isAlt: scraped.isAlt,
           });
         }),
         // Contact email is a single field, not a list — last kept
@@ -445,7 +461,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
               any other socials mentioned there — give it a few seconds.
             </p>
           </div>
-          {preview && (
+          {preview && preview.platform !== "linktree" && (
             <div className="space-y-1">
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 {previewLoading && <Loader2 className="size-3 shrink-0 animate-spin" />}
@@ -471,7 +487,9 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
           {mentions.length > 0 && (
             <div className="space-y-1 rounded-lg border p-2">
               <p className="text-xs font-medium text-muted-foreground">
-                Found in bio — saved with Confirm below, unless removed here
+                {preview?.platform === "linktree"
+                  ? "Found on this page — saved with Confirm below, unless removed here"
+                  : "Found in bio — saved with Confirm below, unless removed here"}
               </p>
               {mentions.map((mention, i) => {
                 const Icon =

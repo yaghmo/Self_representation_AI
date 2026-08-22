@@ -145,17 +145,52 @@ def set_contact_email(email: str | None) -> None:
         _save(data["bio"], email, data["socials"])
 
 
+def _is_cleaner_username(candidate: str, incumbent: str, known_handles: set[str]) -> bool:
+    """Best-effort pick between two links for the same real profile — e.g. a
+    Discord vanity invite (discord.gg/Name) over its raw invite code
+    (discord.gg/B32WjjMp27). Prefers whichever matches the creator's handle
+    elsewhere in the profile; falls back to "has no digits", since an
+    auto-generated code almost always mixes them in and a chosen vanity
+    name almost never does. Ties keep the incumbent — no reason to churn
+    data when neither signal picks a winner."""
+    candidate = candidate.lstrip("@").lower()
+    incumbent = incumbent.lstrip("@").lower()
+    candidate_known, incumbent_known = candidate in known_handles, incumbent in known_handles
+    if candidate_known != incumbent_known:
+        return candidate_known
+    candidate_digits = any(c.isdigit() for c in candidate)
+    incumbent_digits = any(c.isdigit() for c in incumbent)
+    if candidate_digits != incumbent_digits:
+        return not candidate_digits
+    return False
+
+
 def add_social(fields: dict) -> dict:
     """`fields` must include platform, username, url; may include bio,
     followerCount, pfpUrl, isAlt. Generates `id`, appends, saves."""
     with _LOCK:
         data = _load()
         socials = data["socials"]
+        new_pfp = fields.get("pfpUrl")
         for existing in socials:
-            if (
-                existing["platform"].lower() == fields["platform"].lower()
-                and existing["username"].lower() == fields["username"].lower()
-            ):
+            if existing["platform"].lower() != fields["platform"].lower():
+                continue
+            if existing["username"].lower() == fields["username"].lower():
+                raise SocialAlreadyExists(f"{fields['platform']}:{fields['username']}")
+            # Same platform, different username string, but the exact same
+            # scraped pfp — e.g. a Discord vanity invite (discord.gg/Name)
+            # and its raw invite code, or a YouTube handle with different
+            # "@"/casing: different literal links, same real profile. The
+            # username alone won't catch that; an identical pfp URL will.
+            if new_pfp and existing.get("pfpUrl") == new_pfp:
+                known_handles = {
+                    s["username"].lstrip("@").lower() for s in socials if s is not existing
+                }
+                if _is_cleaner_username(fields["username"], existing["username"], known_handles):
+                    existing["username"] = fields["username"]
+                    existing["url"] = fields["url"]
+                    _save(data["bio"], data["contactEmail"], socials)
+                    return existing
                 raise SocialAlreadyExists(f"{fields['platform']}:{fields['username']}")
         entry = {
             "id": f"{fields['platform']}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}",
@@ -265,6 +300,70 @@ def _self_check() -> None:
                 pass
             else:
                 raise AssertionError("delete_social accepted an unknown id")
+
+            # Same platform, same pfp, different literal link: raw invite
+            # code first, then the human-chosen vanity that also matches
+            # the creator's handle elsewhere in the profile — the vanity
+            # wins and replaces the raw code in place.
+            add_social({
+                "platform": "x",
+                "username": "keshaeuw",
+                "url": "https://x.com/keshaeuw",
+            })
+            raw = add_social({
+                "platform": "discord",
+                "username": "B32WjjMp27",
+                "url": "https://discord.gg/B32WjjMp27",
+                "pfpUrl": "https://cdn.discordapp.com/icons/1/icon.png",
+            })
+            swapped = add_social({
+                "platform": "discord",
+                "username": "KeshaEuw",
+                "url": "https://discord.gg/KeshaEuw",
+                "pfpUrl": "https://cdn.discordapp.com/icons/1/icon.png",
+            })
+            assert swapped["id"] == raw["id"], "the same server's row is updated in place, not duplicated"
+            assert swapped["username"] == "KeshaEuw"
+            assert swapped["url"] == "https://discord.gg/KeshaEuw"
+            assert sum(1 for s in list_socials() if s["platform"] == "discord") == 1
+
+            # Neither side matches a known handle — falls back to
+            # "no digits beats digits".
+            plain = add_social({
+                "platform": "telegram",
+                "username": "a1b2c3",
+                "url": "https://t.me/a1b2c3",
+                "pfpUrl": "https://cdn.example.com/tg-icon.png",
+            })
+            cleaner = add_social({
+                "platform": "telegram",
+                "username": "cleanname",
+                "url": "https://t.me/cleanname",
+                "pfpUrl": "https://cdn.example.com/tg-icon.png",
+            })
+            assert cleaner["id"] == plain["id"]
+            assert cleaner["username"] == "cleanname"
+
+            # A genuine tie (same digit-ness, neither a known handle) keeps
+            # the incumbent rather than churning data over a coin flip.
+            first = add_social({
+                "platform": "throne",
+                "username": "aaa111",
+                "url": "https://throne.com/aaa111",
+                "pfpUrl": "https://cdn.example.com/throne-icon.png",
+            })
+            try:
+                add_social({
+                    "platform": "throne",
+                    "username": "bbb222",
+                    "url": "https://throne.com/bbb222",
+                    "pfpUrl": "https://cdn.example.com/throne-icon.png",
+                })
+            except SocialAlreadyExists:
+                pass
+            else:
+                raise AssertionError("a tied duplicate must be rejected, not silently swapped")
+            assert list_socials()[-1]["username"] == "aaa111", "the incumbent must survive a tie"
 
             assert read_pfp() is None
             assert pfp_version() is None

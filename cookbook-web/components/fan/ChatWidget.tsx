@@ -41,6 +41,14 @@ function ChatWidget({ botName }: { botName: string }) {
   const [draft, setDraft] = useState("")
   const [isTyping, setIsTyping] = useState(false)
   const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
+  // Creator can drop a custom chat icon at /chat-icon.png; falls back to the
+  // default lucide icon when nothing has been saved for that slot.
+  const [customIconFailed, setCustomIconFailed] = useState(false)
+  // While dragging the resize handle, the icon's `bottom` offset is
+  // recomputed every pointermove tick to keep tracking the panel's top
+  // edge — animating that would lag a full transition behind the cursor,
+  // so the icon's transition is suppressed for the drag's duration.
+  const [isResizing, setIsResizing] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -56,10 +64,11 @@ function ChatWidget({ botName }: { botName: string }) {
     const startY = event.clientY
     const startWidth = size.width
     const startHeight = size.height
+    setIsResizing(true)
 
     function handleMove(moveEvent: PointerEvent) {
       const maxWidth = window.innerWidth - 32 // matches max-w-[calc(100vw-2rem)]
-      const maxHeight = window.innerHeight - 160 // matches max-h-[calc(100dvh-10rem)]
+      const maxHeight = window.innerHeight - 128 // matches max-h-[calc(100dvh-8rem)]
       setSize({
         width: clamp(startWidth + (startX - moveEvent.clientX), MIN_WIDTH, maxWidth),
         height: clamp(startHeight + (startY - moveEvent.clientY), MIN_HEIGHT, maxHeight),
@@ -67,6 +76,7 @@ function ChatWidget({ botName }: { botName: string }) {
     }
 
     function handleUp() {
+      setIsResizing(false)
       window.removeEventListener("pointermove", handleMove)
       window.removeEventListener("pointerup", handleUp)
     }
@@ -120,22 +130,60 @@ function ChatWidget({ botName }: { botName: string }) {
     setIsTyping(false)
   }
 
+  // Only hidden case: chat open with no working icon image — the panel's
+  // own header close button is the sole control then. Otherwise, when an
+  // image loads, it stays on screen and moves to sit on the panel's top
+  // edge instead of disappearing.
+  const hideToggle = isOpen && customIconFailed
+  const stuckOnTop = isOpen && !customIconFailed
+  // Panel is anchored `bottom-16` (64px), flush against the bottom bar, so
+  // its top edge sits at 64 + panel height from the viewport bottom. Resting
+  // the icon's own bottom edge there sits it entirely above the panel,
+  // touching but never overlapping into the header.
+  const panelTop = 64 + size.height
+
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setIsOpen((open) => !open)}
-        aria-label={isOpen ? "Close chat" : "Open chat"}
-        className="fixed right-8 bottom-16 z-30 flex h-14 w-24 items-center justify-center rounded-t-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 sm:right-10"
-      >
-        {isOpen ? <X className="size-6" /> : <MessageCircle className="size-6" />}
-      </button>
-
-      {isOpen && (
-        <div
-          style={{ width: size.width, height: size.height }}
-          className="fixed right-4 bottom-36 z-30 flex max-h-[calc(100dvh-10rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl sm:right-6"
+      {!hideToggle && (
+        <button
+          type="button"
+          onClick={() => setIsOpen((open) => !open)}
+          aria-label={isOpen ? "Close chat" : "Open chat"}
+          style={stuckOnTop ? { bottom: panelTop } : undefined}
+          className={cn(
+            "fixed right-8 z-40 flex items-center justify-center text-primary-foreground transition-[transform,bottom] ease-out hover:scale-105 sm:right-10",
+            isResizing ? "duration-0" : "duration-300",
+            customIconFailed
+              ? "h-14 w-24 rounded-t-full bg-primary bottom-16 shadow-lg"
+              : cn("size-[120px]", !stuckOnTop && "bottom-16")
+          )}
         >
+          {customIconFailed ? (
+            <MessageCircle className="size-6" />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element -- local static asset, not a next/image remote host
+            <img
+              // No saved chat icon on this route on purpose, to exercise the
+              // fallback (default lucide icon, toggle hides while open)
+              // alongside /yuumii's real chat-icon.png ("sticks on top").
+              src="/chat-icon-fan-unset.png"
+              alt=""
+              className="size-full object-contain drop-shadow-lg"
+              onError={() => setCustomIconFailed(true)}
+            />
+          )}
+        </button>
+      )}
+
+      <div
+        style={{ width: size.width, height: size.height }}
+        className={cn(
+          "fixed right-4 bottom-16 z-30 flex max-h-[calc(100dvh-8rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-2xl transition-[transform,opacity] ease-out sm:right-6",
+          isOpen
+            ? "translate-y-0 opacity-100 duration-300"
+            : "pointer-events-none translate-y-8 opacity-0 duration-0"
+        )}
+      >
           <div
             onPointerDown={handleResizeStart}
             aria-hidden="true"
@@ -205,8 +253,7 @@ function ChatWidget({ botName }: { botName: string }) {
               <Send className="size-4" />
             </Button>
           </form>
-        </div>
-      )}
+      </div>
     </>
   )
 }
