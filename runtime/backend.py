@@ -92,7 +92,7 @@ class LocalBackend:
     repeat_penalty: float = 1.3
     # llama-server's own default repeat_last_n is 64 tokens — shorter than one
     # full turn at this max_tokens, so by the next request repeat_penalty can
-    # no longer even see her previous reply and happily regenerates it
+    # no longer even see its own previous reply and happily regenerates it
     # verbatim. Wide enough to cover several turns back.
     repeat_last_n: int = 512
     # Qwen3 and friends emit a <think> block before answering. llama.cpp splits

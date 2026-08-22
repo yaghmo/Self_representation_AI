@@ -1,23 +1,15 @@
 """Voice synthesis — clone or design, cached, one model warm at a time.
 
-Two mutually-exclusive cached objects under data/voice/, built once by the
-admin flow and reused on every synth() call after:
-
     clone.pt    pickle of create_voice_clone_prompt() — Base checkpoint.
-    design.json {"instruct": str, "seed": int, "language": str} — VoiceDesign
-                checkpoint. No seed param is documented on generate_voice_design,
-                so reproducibility is done by pinning torch.manual_seed(seed)
-                before every call — confirmed no such param exists on the
-                installed qwen-tts==0.1.1 generate_voice_design signature.
+    design.json {instruct, seed, language} — VoiceDesign checkpoint. No seed
+                param on generate_voice_design, so reproducibility is done by
+                pinning torch.manual_seed(seed) before each call.
 
-If both exist, clone wins — a real reference clip beats a generated
-approximation. Only one Qwen3-TTS checkpoint is ever loaded per process,
-decided by voice_status() at first use — matches this repo's "nothing swaps
-mid-session" rule.
+If both exist, clone wins. Only one checkpoint loads per process, decided by
+voice_status() at first use.
 
-qwen-tts's own generate methods have no working streaming generation in this
-version (checked the installed source directly) — synth() streams the
-*delivery* of the finished clip in chunks, not the generation itself.
+qwen-tts has no working streaming generation — synth() streams delivery of
+the finished clip, not generation itself.
 """
 
 from __future__ import annotations

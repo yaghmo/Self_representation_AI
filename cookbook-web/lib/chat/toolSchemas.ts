@@ -89,7 +89,7 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
         type: "object",
         properties: {
           heading: { type: "string", description: "Section heading, exactly as listed in the system prompt." },
-          find: { type: "string", description: "Distinctive text from the line to replace, e.g. 'Where she's from'." },
+          find: { type: "string", description: "Distinctive text from the line to replace, e.g. 'Where they're from'." },
           line: { type: "string", description: "The full replacement line, cites included." },
         },
         required: ["heading", "find", "line"],

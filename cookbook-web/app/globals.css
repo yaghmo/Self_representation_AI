@@ -129,11 +129,10 @@
     }
 }
 
-/* Scoped to /yuumii only (applied to <body> so portaled dialogs inherit it
-   too) — an Emilia-inspired palette (silver-lavender, violet, a single
-   emerald accent) laid over the existing shadcn token set. /fan and the
-   rest of the app are untouched. */
-.yuumii-theme {
+/* Applied to <body> so portaled dialogs inherit it too — a silver-lavender/
+   violet palette with a single emerald accent, layered over the existing
+   shadcn token set. Opt-in only, not applied by default. */
+.alt-theme {
     --background: oklch(0.985 0.008 300);
     --foreground: oklch(0.28 0.05 300);
     --card: oklch(1 0.004 300);
@@ -157,7 +156,7 @@
     --font-heading: var(--font-quicksand, var(--font-geist-sans));
 }
 
-.dark .yuumii-theme {
+.dark .alt-theme {
     --background: oklch(0.2 0.03 300);
     --foreground: oklch(0.93 0.012 300);
     --card: oklch(0.25 0.032 300);

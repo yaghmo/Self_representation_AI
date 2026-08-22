@@ -28,7 +28,7 @@ def recall_schema(include_profile: bool) -> dict:
     """
     if include_profile:
         description = (
-            "Look up something about her — a personal story, or a profile "
+            "Look up something about them — a personal story, or a profile "
             "detail (background, preferences, personality, relationships, "
             "skills, goals) not already in what you've been given. Use this "
             "whenever a question needs more than what's in front of you. "

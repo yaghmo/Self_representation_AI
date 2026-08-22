@@ -809,7 +809,7 @@ TOOL_SCHEMAS: list[dict] = [
                         "type": "string",
                         "description": (
                             "Distinctive text from the line to replace, e.g. "
-                            "'Where she's from'."
+                            "'Where they're from'."
                         ),
                     },
                     "line": {

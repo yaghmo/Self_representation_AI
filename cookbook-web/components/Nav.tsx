@@ -10,7 +10,6 @@ const LINKS = [
   { href: "/", label: "Cookbook" },
   { href: "/feed", label: "Feed" },
   { href: "/fan", label: "Fan" },
-  { href: "/yuumii", label: "Yuumii" },
   { href: "/admin", label: "Admin" },
 ] as const
 

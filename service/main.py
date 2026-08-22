@@ -2587,11 +2587,8 @@ def _self_check() -> None:
             def fake_synth(text, language="Auto"):
                 yield b"RIFFfake-wav-bytes"
 
-            # Patch the names service.main itself bound at import time
-            # (`from runtime.voice import build_clone, ...`) — reassigning
-            # runtime.voice's own attributes would not affect these, since a
-            # `from X import Y` copies the reference rather than staying
-            # linked to X.Y.
+            # Patch service.main's own bound names, not runtime.voice's —
+            # `from X import Y` copies the reference, doesn't stay linked to X.Y.
             original_build_clone = build_clone
             original_build_design = build_design
             original_synth = voice_synth
@@ -2599,13 +2596,8 @@ def _self_check() -> None:
             build_design = fake_build_design
             voice_synth = fake_synth
             try:
-                # The outer block's `finally` already restored voice_module's
-                # real VOICE_DIR/SAMPLE_PATH (whose file genuinely exists on
-                # this machine) — re-swap to a fresh, empty path so "no sample
-                # recorded" is actually true here. A distinct subdirectory
-                # from the outer block's "voice" — that one already has a
-                # leftover sample.wav on disk from its own earlier test, and
-                # restoring the attribute pointer didn't delete that file.
+                # Fresh subdirectory, not the outer block's "voice" — that
+                # one has a leftover sample.wav on disk from its own test.
                 voice_module.VOICE_DIR = Path(tmp) / "voice-clone-test"
                 voice_module.SAMPLE_PATH = voice_module.VOICE_DIR / "sample.wav"
                 try:

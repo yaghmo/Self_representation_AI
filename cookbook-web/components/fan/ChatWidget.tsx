@@ -44,6 +44,7 @@ function ChatWidget({ botName }: { botName: string }) {
   // Creator can drop a custom chat icon at /chat-icon.png; falls back to the
   // default lucide icon when nothing has been saved for that slot.
   const [customIconFailed, setCustomIconFailed] = useState(false)
+  const iconRef = useRef<HTMLImageElement>(null)
   // While dragging the resize handle, the icon's `bottom` offset is
   // recomputed every pointermove tick to keep tracking the panel's top
   // edge — animating that would lag a full transition behind the cursor,
@@ -92,6 +93,15 @@ function ChatWidget({ botName }: { botName: string }) {
   useEffect(() => {
     if (isOpen && !isTyping) inputRef.current?.focus()
   }, [isOpen, isTyping])
+
+  // SSR renders this <img> before hydration attaches onError — a fast 404
+  // (hard refresh) can fire and get missed. `complete` is true either way;
+  // `naturalWidth` stays 0 only on failure, so this catches it post-mount.
+  useEffect(() => {
+    if (iconRef.current?.complete && iconRef.current.naturalWidth === 0) {
+      setCustomIconFailed(true)
+    }
+  }, [])
 
   async function sendMessage() {
     const text = draft.trim()
@@ -164,8 +174,8 @@ function ChatWidget({ botName }: { botName: string }) {
             // eslint-disable-next-line @next/next/no-img-element -- local static asset, not a next/image remote host
             <img
               // No saved chat icon on this route on purpose, to exercise the
-              // fallback (default lucide icon, toggle hides while open)
-              // alongside /yuumii's real chat-icon.png ("sticks on top").
+              // fallback (default lucide icon, toggle hides while open).
+              ref={iconRef}
               src="/chat-icon-fan-unset.png"
               alt=""
               className="size-full object-contain drop-shadow-lg"

@@ -179,9 +179,9 @@ replaces it.
 - GGUF/`llama-tts` swap-in benchmark (needs this spec's baseline to exist
   first).
 - Fan-side UX beyond "a play button exists" — placement, styling,
-  per-message caching, whether it also mirrors into `/yuumii` — later,
-  separate pass, but note for whenever that pass happens: this repo's
-  standing rule is that functional additions to `/fan` get mirrored into
-  `/yuumii` too.
+  per-message caching, whether it also mirrors into the fan-surface UI
+  variant — later, separate pass, but note for whenever that pass happens:
+  this repo's standing rule is that functional additions to `/fan` get
+  mirrored into that variant too.
 - Multi-tenant / multiple stored voices — this repo is single-tenant
   today; one `clone.pt` or `design.json`, not one per user.

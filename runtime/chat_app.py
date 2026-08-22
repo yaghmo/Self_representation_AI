@@ -8,9 +8,10 @@ point: when this page owned the model it crashed with a heap corruption in
 ntdll, because a script that reruns on every keystroke should not be holding a
 CUDA context. All of that now lives behind HTTP.
 
-Deliberately not the product. It exists to answer one question — does she sound
-right — so it exposes the knobs that change the answer and shows what the
-placement decision was, rather than hiding them behind a pretty surface.
+Deliberately not the product. It exists to answer one question — does the
+character sound right — so it exposes the knobs that change the answer and
+shows what the placement decision was, rather than hiding them behind a
+pretty surface.
 """
 
 from __future__ import annotations
