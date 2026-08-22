@@ -119,7 +119,7 @@ This is the one task automated checks cannot cover — Task 2/3's self-checks st
 
 **Files:** none (verification only, no code changes).
 
-- [ ] **Step 1: Run the clone path against the real recorded sample**
+- [x] **Step 1: Run the clone path against the real recorded sample** — ran clean, `clone_test.wav` (733,484 bytes).
 
 `data/character.md` and `data/voice/sample.wav` both already exist in this environment (junctioned into the worktree from the main checkout). Run:
 
@@ -140,11 +140,11 @@ Note the `language=dict(LANGUAGES)['en']` fix (full name "English", not "en") ca
 
 Expected: no exception, `clone_test.wav` written with a nonzero byte count. GPU/VRAM note: this loads one 1.7B bf16 model (~3.5GB) — if a separate `llama-server` LLM process is already resident, watch for CUDA OOM; if it happens, unload the LLM first (`POST /model/unload`) and retry.
 
-- [ ] **Step 2: Send the clip to the user for a real listen**
+- [x] **Step 2: Send the clip to the user for a real listen** — sent, awaiting confirmation.
 
 Use `SendUserFile` on `clone_test.wav` with a caption asking the user to confirm it sounds like the recorded reference. This is the actual confirm gate — do not mark the clone path done until the user responds.
 
-- [ ] **Step 3: Run the design path against the real character.md**
+- [ ] **Step 3: Run the design path against the real character.md** — BLOCKED: `config/stack.json` does not exist anywhere in this checkout (not git-ignored-but-present, genuinely absent) — no LLM stack has ever been selected on this machine via the cookbook's probe/fit/confirm flow. `Model.from_config()` raises `FileNotFoundError` before `build_design` is even reached. This is an environment gap outside this plan's scope (CLAUDE.md: stack selection is a deliberate, user-confirmed cookbook step, never automatic) — not a bug in `runtime/voice.py` or `service/main.py`.
 
 Requires the LLM loaded (`POST /model/load`, or `Model.from_config().load()` directly). Run:
 
@@ -176,7 +176,7 @@ print('wrote design_test.wav', len(audio), 'bytes')
 
 Expected: prints a one-sentence `instruct` that reads as a voice description (not a biography paragraph), writes `design_test.wav`. If the LLM stack isn't loadable in this environment (e.g. `ModelNotDownloaded`), note that explicitly and skip to Step 5 rather than failing the whole task — mirrors this repo's existing "skipped — no data/character.md" self-check pattern for missing prerequisites.
 
-- [ ] **Step 4: Verify seed reproducibility**
+- [ ] **Step 4: Verify seed reproducibility** — SKIPPED, depends on Step 3.
 
 Run the same script's last two lines twice more (reuse the already-written `design.json`, don't rebuild it) and confirm both `synth()` calls succeed without error and both produce audio starting with the same WAV header — this checks the seed-pinning workaround doesn't crash, not byte-for-byte identical prosody (accepted per spec, only voice *identity* needs to hold, not exact output).
 
