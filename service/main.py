@@ -114,7 +114,9 @@ from runtime.tools import (
     run_tool,
     summary_path,
 )
-from runtime.voice_sample import LANGUAGES, PHRASES, SAMPLE_PATH, sample_status, save_sample
+import runtime.voice_sample as voice_sample_module
+from runtime.voice import build_clone, build_design, synth as voice_synth, voice_status
+from runtime.voice_sample import LANGUAGES, PHRASES, sample_status, save_sample
 from runtime.youtube_scrape import scrape_channel
 from runtime.linktree_scrape import scrape_links as scrape_linktree_links
 from service.logging_config import log_payload, setup_logging
@@ -517,10 +519,26 @@ class ContactEmailSaveResponse(BaseModel):
     contactEmail: str | None
 
 
+class VoiceCloneRequest(BaseModel):
+    language: str
+
+
+class VoiceSpeakRequest(BaseModel):
+    text: str
+
+
 BIO_GENERATE_PROMPT = (
     "Write one short bio (2-4 sentences, no hashtags, no emoji) that combines "
     "the following per-platform bios into a single overview. Do not invent "
     "anything not stated in them."
+)
+
+VOICE_INSTRUCT_PROMPT = (
+    "Read this character profile and write ONE short sentence describing how "
+    "this person's speaking voice would sound — tone, pitch, pace, energy. "
+    "Write it as a vivid style description for a text-to-speech system, not a "
+    "biography. Example style: 'Warm, unhurried female voice, low pitch, dry "
+    "humor in the delivery.' Output only that one sentence, nothing else."
 )
 
 _MENTION_PLATFORMS = sorted(set(_SOCIAL_DOMAIN_PLATFORMS.values()))
@@ -1098,6 +1116,17 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     return StreamingResponse(generate(), media_type="text/plain")
 
 
+@app.post("/voice/speak")
+def voice_speak(request: VoiceSpeakRequest) -> StreamingResponse:
+    if voice_status() == "none":
+        raise HTTPException(status_code=404, detail="no voice configured yet")
+
+    def generate():
+        yield from voice_synth(request.text)
+
+    return StreamingResponse(generate(), media_type="audio/wav")
+
+
 @app.post("/ingest")
 def ingest(request: IngestRequest) -> dict:
     """Redact and segment one story, in a single bounded call.
@@ -1444,7 +1473,7 @@ def admin_story_propose(request: StoryProposeRequest) -> ToolResponse:
 def admin_voice_status() -> dict:
     model = _require_loaded()
     _require_agent(model)
-    return {"status": sample_status()}
+    return {"status": sample_status(), "synthStatus": voice_status()}
 
 
 @app.get("/admin/voice/phrases")
@@ -1471,6 +1500,52 @@ async def admin_voice_sample(request: Request) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": sample_status()}
+
+
+@app.post("/admin/voice/clone")
+def admin_voice_clone(request: VoiceCloneRequest) -> Response:
+    model = _require_loaded()
+    _require_agent(model)
+    if sample_status() is None:
+        raise HTTPException(
+            status_code=422,
+            detail="no sample recorded — POST /admin/voice/sample first",
+        )
+    if request.language not in PHRASES:
+        raise HTTPException(status_code=400, detail=f"unknown language {request.language!r}")
+    try:
+        ref_text = PHRASES[request.language]
+        # Qwen3-TTS wants a full language name ("English"), not the ISO code
+        # voice_sample.py's LANGUAGES keys on — LANGUAGES already carries that
+        # label as each tuple's second element.
+        clone_language = dict(LANGUAGES)[request.language]
+        build_clone(voice_sample_module.SAMPLE_PATH, ref_text)
+        audio = b"".join(voice_synth(ref_text, language=clone_language))
+    except Exception as exc:
+        logger.exception("voice clone failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(content=audio, media_type="audio/wav")
+
+
+@app.post("/admin/voice/design")
+def admin_voice_design() -> Response:
+    model = _require_loaded()
+    _require_agent(model)
+    try:
+        persona = build_compact_persona()
+        instruct = model.chat(
+            [Message("user", f"{VOICE_INSTRUCT_PROMPT}\n\n{persona}")],
+            temperature=0.4,
+            max_tokens=100,
+            thinking=False,
+        ).strip()
+        seed = 0
+        build_design(instruct, seed=seed, language="Auto")
+        audio = b"".join(voice_synth("Hello, this is a preview of my voice.", language="Auto"))
+    except Exception as exc:
+        logger.exception("voice design failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(content=audio, media_type="audio/wav")
 
 
 @app.get("/admin/social/list")
@@ -1723,7 +1798,7 @@ def _self_check() -> None:
     `context_tokens` and `count_tokens`, and `chat()` is never reached on the
     rejection cases. Run it with `python -m service.main`.
     """
-    global _model, PROFILE_PATH, SOURCES_PATH, scrape_channel, scrape_tiktok_profile, scrape_og_profile, scrape_twitch_channel, scrape_twitch_panel_links, scrape_twitch_social_medias, scrape_discord_invite
+    global _model, PROFILE_PATH, SOURCES_PATH, scrape_channel, scrape_tiktok_profile, scrape_og_profile, scrape_twitch_channel, scrape_twitch_panel_links, scrape_twitch_social_medias, scrape_discord_invite, build_clone, build_design, voice_synth
     from types import SimpleNamespace
 
     from fastapi.testclient import TestClient
@@ -2476,6 +2551,100 @@ def _self_check() -> None:
         finally:
             voice_module.VOICE_DIR = original_voice_dir
             voice_module.SAMPLE_PATH = original_sample_path
+
+        import runtime.voice as voice_synth_module
+
+        original_synth_dir = voice_synth_module.VOICE_DIR
+        original_clone_path = voice_synth_module.CLONE_PATH
+        original_design_path = voice_synth_module.DESIGN_PATH
+        voice_synth_module.VOICE_DIR = Path(tmp) / "synth-voice"
+        voice_synth_module.CLONE_PATH = voice_synth_module.VOICE_DIR / "clone.pt"
+        voice_synth_module.DESIGN_PATH = voice_synth_module.VOICE_DIR / "design.json"
+        try:
+            # No voice configured yet — speak refuses with a clear status, not a 500.
+            response = client.post("/voice/speak", json={"text": "hi"})
+            assert response.status_code == 404, (response.status_code, response.text)
+
+            # status now reports synthStatus alongside the recording status.
+            response = client.get("/admin/voice/status")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["synthStatus"] == "none", response.json()
+
+            def fake_build_clone(ref_audio, ref_text):
+                voice_synth_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
+                voice_synth_module.CLONE_PATH.write_bytes(b"fake-clone")
+
+            def fake_build_design(instruct, seed, language="Auto"):
+                voice_synth_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
+                voice_synth_module.DESIGN_PATH.write_text("{}", encoding="utf-8")
+
+            def fake_synth(text, language="Auto"):
+                yield b"RIFFfake-wav-bytes"
+
+            # Patch the names service.main itself bound at import time
+            # (`from runtime.voice import build_clone, ...`) — reassigning
+            # runtime.voice's own attributes would not affect these, since a
+            # `from X import Y` copies the reference rather than staying
+            # linked to X.Y.
+            original_build_clone = build_clone
+            original_build_design = build_design
+            original_synth = voice_synth
+            build_clone = fake_build_clone
+            build_design = fake_build_design
+            voice_synth = fake_synth
+            try:
+                # The outer block's `finally` already restored voice_module's
+                # real VOICE_DIR/SAMPLE_PATH (whose file genuinely exists on
+                # this machine) — re-swap to a fresh, empty path so "no sample
+                # recorded" is actually true here. A distinct subdirectory
+                # from the outer block's "voice" — that one already has a
+                # leftover sample.wav on disk from its own earlier test, and
+                # restoring the attribute pointer didn't delete that file.
+                voice_module.VOICE_DIR = Path(tmp) / "voice-clone-test"
+                voice_module.SAMPLE_PATH = voice_module.VOICE_DIR / "sample.wav"
+                try:
+                    # No recorded sample yet — clone refuses with a clear reason.
+                    response = client.post("/admin/voice/clone", json={"language": "en"})
+                    assert response.status_code == 422, (response.status_code, response.text)
+                    assert "no sample" in response.json()["detail"], response.text
+
+                    voice_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
+                    voice_module.SAMPLE_PATH.write_bytes(b"RIFFfake-sample")
+                    response = client.post("/admin/voice/clone", json={"language": "en"})
+                    assert response.status_code == 200, (response.status_code, response.text)
+                    assert response.content == b"RIFFfake-wav-bytes"
+                    assert voice_synth_module.CLONE_PATH.exists()
+                finally:
+                    voice_module.VOICE_DIR = original_voice_dir
+                    voice_module.SAMPLE_PATH = original_sample_path
+
+                response = client.get("/admin/voice/status")
+                assert response.json()["synthStatus"] == "clone", response.json()
+
+                # design build reuses the compact persona -> one LLM call. Needs
+                # a real data/character.md to read; `data_available` was already
+                # computed earlier in this function against exactly that file.
+                if data_available:
+                    seen.clear()
+                    response = client.post("/admin/voice/design")
+                    assert response.status_code == 200, (response.status_code, response.text)
+                    assert response.content == b"RIFFfake-wav-bytes"
+                    assert "messages" in seen, "design must call model.chat() for the instruct text"
+                else:
+                    print("service self-check: voice design skipped (no data/character.md)")
+
+                response = client.post("/voice/speak", json={"text": "read this aloud"})
+                assert response.status_code == 200, (response.status_code, response.text)
+                assert response.headers["content-type"] == "audio/wav"
+                assert response.content == b"RIFFfake-wav-bytes"
+            finally:
+                build_clone = original_build_clone
+                build_design = original_build_design
+                voice_synth = original_synth
+        finally:
+            voice_synth_module.VOICE_DIR = original_synth_dir
+            voice_synth_module.CLONE_PATH = original_clone_path
+            voice_synth_module.DESIGN_PATH = original_design_path
     _model.agent = False
 
     # -- /social + /admin/social ----------------------------------------------

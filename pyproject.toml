@@ -25,6 +25,10 @@ runtime = [
     # Extras, not bare markitdown: 0.1.x moved per-format support out of the
     # base package, so the bare install converts nothing /story would be given.
     "markitdown[docx,pdf]>=0.1.7",
+    # Qwen3-TTS's own inference wrapper (Qwen3TTSModel, create_voice_clone_prompt,
+    # generate_voice_clone, generate_voice_design) — not part of `transformers`.
+    "qwen-tts>=0.1.1",
+    "soundfile>=0.14",
 ]
 
 [build-system]
