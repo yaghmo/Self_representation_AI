@@ -45,22 +45,18 @@ POLICY_PATH = REPO_ROOT / "data" / "redaction-policy.md"
 DUPLICATE_THRESHOLD = 0.95
 AMENDMENT_THRESHOLD = 0.60
 # The paragraph inside the story the coarse layer picked. Without a floor the
-# closest of a story's events wins however weak the match, so naming a story
-# and pasting unrelated material proposed overwriting whichever paragraph
-# happened to rank first. Below this the story resolves and the paragraph does
-# not, which `Routing` already treats as unresolved and the caller already
-# reports — no new failure path, just an honest one.
+# closest event always wins however weak the match, so unrelated pasted
+# material would overwrite whichever paragraph ranked first. Below this,
+# `Routing` reports the story as resolved but the paragraph as not — an
+# honest unresolved, not a new failure path.
 #
-# Lower than AMENDMENT_THRESHOLD on purpose: the summary layer has already
-# established the story is relevant, so this only has to separate "this
-# paragraph" from "some other paragraph of the same story". Untuned against a
-# real corpus, like the two above it. Too high sends routed amendments to the
-# explicit `ST-###/E-###` syntax, which is the safe direction to be wrong in.
-#
-# Unvalidated, and not validatable here: the self-check's toy embedder scores a
-# legitimate match at 0.41, but its scale is a hash function's, not bge-m3's.
-# The tests below neutralise this constant rather than satisfy it, and prove
-# the floor gates by cranking it past 1.0. First real corpus decides the value.
+# Lower than AMENDMENT_THRESHOLD on purpose: the summary layer already
+# established relevance, this only separates "this paragraph" from "some
+# other paragraph of the same story". Untuned against a real corpus, like the
+# two above it — too high just sends routed amendments to the explicit
+# `ST-###/E-###` syntax, the safe direction to be wrong in. Unvalidated by
+# the self-check's toy embedder too: its score scale is a hash function's,
+# not bge-m3's, so the tests neutralise this constant rather than satisfy it.
 EVENT_THRESHOLD = 0.50
 
 
@@ -125,16 +121,15 @@ Return JSON only:
 """
 
 
-# The amend contract, stated rather than implied. `INGEST_PROMPT` is a
-# segmentation prompt, and running it over "the wave contained popcorn" plus the
-# paragraph being edited framed the new detail as something to *reduce*: one run
-# dropped it entirely, the next wrote `[~popcorn mentioned]` — a fuzzed-value
-# marker copied out of the redaction rules the same prompt carries. Same failure
-# as the invented `[~mid-July]` that `keep_logged` exists to catch: the model
-# does the task the prompt describes, and merging was never described.
+# The amend contract, stated rather than implied. Running `INGEST_PROMPT`
+# (a segmentation prompt) over a merge instead framed the new detail as
+# something to *reduce* — one run dropped it, another wrote a fuzzed-value
+# marker copied out of the redaction rules it carries. Same failure class as
+# the invented dates `keep_logged` catches: the model does the task the
+# prompt describes, and merging was never described.
 #
-# The policy still rides along, because a merged detail is new material entering
-# the corpus and has to be reduced on the way in like anything else.
+# The policy still rides along — a merged detail is new material entering
+# the corpus, reduced on the way in like anything else.
 AMEND_PROMPT = """You are editing one paragraph of the creator's own story.
 
 Apply this redaction policy to every detail before you write anything:
@@ -263,21 +258,15 @@ def route(
     story = load_story(directory / f"{target}.md")
 
     # Coarse layer picked the story; fine layer picks the paragraph inside
-    # it. limit=None: the ranked list must be filtered by story before it is
-    # truncated, not after. A capped limit here (`hits[:8]` then filter)
-    # crowds every event of the target story out once the corpus holds more
-    # than that many stories, `events` comes back empty for a reason that
-    # has nothing to do with matching, and a fallback that guesses would
-    # silently amend the wrong paragraph — the exact failure mode a mutable
-    # story file cannot afford (see the module docstring).
+    # it. limit=None: filtering by story must happen before truncation, not
+    # after — a capped limit here can crowd every event of the target story
+    # out once the corpus holds more stories than the cap, making `events`
+    # come back empty for a reason unrelated to matching.
     events = [h for h in index.search(text, embed, limit=None, kind="event")
               if h.chunk.story_id == target]
     # No event of the target story matched *well enough* — leave it unresolved
-    # rather than guessing. This cannot cross into another story: the list is
-    # already filtered to `target` before this is read. The floor is what
-    # separates "this paragraph" from "the least bad of three": ranking always
-    # produces a winner, and a mutable story file cannot afford one picked by
-    # default (see the module docstring).
+    # rather than guessing (ranking always produces a winner, and a mutable
+    # story file can't afford one picked by default).
     event_id = (
         events[0].chunk.event_id
         if events and events[0].score >= EVENT_THRESHOLD
@@ -400,14 +389,11 @@ def propose_amendment(
     old = path.read_text(encoding="utf-8") if path.exists() else ""
 
     # Resolve `target` against the disk-parsed story, not the caller's
-    # in-memory one, and edit that same object. The two can drift — a
-    # second pending proposal, a concurrent /add — and validating against
-    # `story` while editing a separately-parsed `amended` lets the guard
-    # pass while the loop matches nothing: the file round-trips
-    # byte-identical and the proposal still reports the new text in `after`,
-    # so the gate looks correct while the amendment silently vanishes.
-    # `copy.deepcopy`, not `story` itself, when there is no file yet: the
-    # caller's own object must not be mutated before the write is approved.
+    # in-memory one, and edit that same object — the two can drift (a second
+    # pending proposal, a concurrent /add), and validating against one while
+    # editing the other lets the gate look correct while the amendment
+    # silently vanishes. `copy.deepcopy`, not `story` itself, when there's no
+    # file yet: the caller's object must not mutate before approval.
     amended = parse_story(old) if old else copy.deepcopy(story)
     target = next((e for e in amended.events if e.id == event_id), None)
     if target is None:

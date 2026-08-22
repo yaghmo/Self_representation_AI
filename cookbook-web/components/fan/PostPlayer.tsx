@@ -32,19 +32,14 @@ function TwitchEmbed({ post }: { post: Post }) {
 }
 
 function TikTokEmbed({ post }: { post: Post }) {
-  // TikTok's official embed.js widget (blockquote + script scan) is
-  // unreliable in practice — it can silently claim the blockquote without
-  // ever inserting the iframe, with no error surfaced anywhere to detect
-  // it. TikTok's own direct iframe embed (no widget JS involved) works the
-  // same way YouTube's and Twitch's do below, so use that instead.
+  // TikTok's embed.js widget is unreliable — it can silently claim the
+  // blockquote without ever inserting the iframe. Direct iframe embed (no
+  // widget JS) works instead, same as YouTube/Twitch above.
   //
-  // ponytail: TikTok's embed page renders its own fixed-size card (logo
-  // header, video, caption, cookie banner) that doesn't stretch to fill an
-  // arbitrary iframe box. Scaling the iframe up and cropping it to the
-  // shared aspect box shows mostly the video instead of that whole card
-  // shrunk inside ours. The scale/crop numbers are tuned by eye against
-  // TikTok's current embed layout — if TikTok reflows that page, this
-  // needs re-tuning against a live embed, not guessed at.
+  // ponytail: TikTok's embed page renders a fixed-size card (logo, video,
+  // caption, cookie banner) that won't stretch to fill an arbitrary iframe.
+  // Scale/crop numbers below are tuned by eye against TikTok's current
+  // layout — re-tune against a live embed if TikTok reflows the page.
   return (
     <div className="relative size-full overflow-hidden bg-black">
       <iframe

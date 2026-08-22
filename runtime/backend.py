@@ -90,10 +90,9 @@ class LocalBackend:
     # on whatever text is already in context — its own last reply, or a chunk
     # of the persona — and repeats it verbatim rather than paraphrasing.
     repeat_penalty: float = 1.3
-    # llama-server's own default repeat_last_n is 64 tokens — shorter than one
-    # full turn at this max_tokens, so by the next request repeat_penalty can
-    # no longer even see its own previous reply and happily regenerates it
-    # verbatim. Wide enough to cover several turns back.
+    # Default repeat_last_n (64) is shorter than one full turn at this
+    # max_tokens, so repeat_penalty stops seeing its own last reply by the
+    # next request. Wide enough to cover several turns back.
     repeat_last_n: int = 512
     # Qwen3 and friends emit a <think> block before answering. llama.cpp splits
     # it into `reasoning_content`, so a thinking model that runs out of tokens
@@ -251,12 +250,9 @@ class LocalBackend:
             return False, str(exc)
 
     def count_tokens(self, text: str) -> int:
-        """Exact count from the server that will run the prompt.
-
-        /tokenize lives at the server root, not under /v1, so the suffix comes
-        off. Raises rather than guessing: a caller deciding whether a prompt
-        fits must not silently fall back to a chars/4 estimate.
-        """
+        """Exact count from the server. Raises rather than guessing — a
+        caller deciding whether a prompt fits must not silently fall back
+        to a chars/4 estimate."""
         url = tokenize_url(self.base_url)
         with httpx.Client(timeout=30.0) as client:
             response = client.post(url, json={"content": text})

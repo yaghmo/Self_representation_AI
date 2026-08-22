@@ -156,16 +156,13 @@ def confirm_dialog(proposal) -> None:
             # the creator re-asks and the agent re-reads.
             resolved(f"not applied — {exc}", f"[not applied: {exc}]")
         else:
-            # Everything below reads `path`, so it belongs to the branch where
-            # `path` was bound. `resolved()` does halt — it ends in st.rerun() —
-            # but that makes the whole block's safety turn on the last line of
-            # a function two screens up. `else` is the same guarantee stated
-            # where it can be checked.
+            # Everything below reads `path` — keep it in the branch where
+            # `path` was bound rather than relying on `resolved()`'s rerun to
+            # halt the function.
 
-            # A story landing somewhere new scopes the context to it. Only on
-            # Apply: the creator saw the gate and ratified the routing, so an
-            # uncalibrated threshold can propose a wrong landing but never act
-            # on one unobserved.
+            # Only on Apply: the creator saw the gate and ratified the
+            # routing, so an uncalibrated threshold can propose a wrong
+            # landing but never act on one unobserved.
             if path.parent == STORIES_DIR:
                 landed = path.stem
                 if landed != st.session_state.get("current_story"):
@@ -393,12 +390,11 @@ if "history" not in st.session_state:
 # `/story` is a write path onto the corpus, so it is loaded only in agent mode
 # — the fan surface never reaches an embedder, an index, or a proposal.
 #
-# This does put sentence-transformers, and therefore torch, in the Streamlit
-# process, which the module docstring above deliberately kept out of it. The
-# crash that rule came from was a CUDA context in a script that reruns on every
-# keystroke; the embedding role is CPU unless the creator configured otherwise,
-# and the model is loaded once per session rather than per rerun. If it ever
-# does bite, the embedder moves behind the service like the LLM did.
+# This does put torch in the Streamlit process, despite the module docstring's
+# "nothing here imports torch" — the crash that rule came from was a CUDA
+# context churning on every rerun; embedding is CPU by default and loads once
+# per session, not per rerun. If it bites, move the embedder behind the
+# service like the LLM.
 _embed = None
 if status.get("agent"):
     if "story_embed" not in st.session_state:

@@ -11,11 +11,10 @@ from pathlib import Path
 
 PASSTHROUGH = {".md", ".markdown", ".txt"}
 
-# markitdown sniffs content rather than trusting the extension, and when a
-# document's bytes don't parse it falls back to its plaintext converter without
-# saying so: a .docx holding junk comes back as that junk, and `/story` would
-# ingest it as the creator's own words. The extension claims a format, so the
-# first bytes have to agree before markitdown is allowed to guess.
+# markitdown sniffs content, not the extension, and silently falls back to
+# plaintext when bytes don't parse — a .docx holding junk would come back as
+# that junk and `/story` would ingest it as the creator's own words. So the
+# first bytes have to match the claimed format before markitdown gets a shot.
 #
 # ponytail: magic bytes for the formats a creator actually attaches. Anything
 # outside this table still gets markitdown's sniffing — widen the table if a
@@ -43,10 +42,9 @@ def to_markdown(path: Path) -> str:
         except OSError as exc:
             raise ConversionFailed(f"{path.name} could not be read: {exc}") from exc
         except UnicodeDecodeError as exc:
-            # A note saved as latin-1 or cp1252 is an ordinary thing to be
-            # handed. Refuse it by name rather than crashing the page, and say
-            # what to do — re-saving as UTF-8 keeps the creator's phrasing,
-            # while guessing a codec here would silently corrupt it.
+            # A latin-1/cp1252 note is ordinary to receive — refuse by name
+            # rather than crash, and say what to do. Guessing a codec here
+            # would silently corrupt the creator's phrasing.
             raise ConversionFailed(
                 f"{path.name} is not UTF-8 text ({exc.reason} at byte {exc.start}). "
                 "Re-save it as UTF-8 and attach it again."

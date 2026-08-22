@@ -32,25 +32,18 @@ INDEX_PATH = REPO_ROOT / "data" / "index" / "stories.npz"
 
 Embedder = Callable[[list[str]], np.ndarray]
 
-# Events per chapter. A story's summary is a fixed-size compression of it, so
-# it gets lossier as events pile up: ST-002 grew from three events to seven
-# while its summary still described the first three, and a paste about the
-# later ones scored 0.511 against it — under the 0.60 routing threshold — while
-# the paragraph it actually belonged to sat at 0.804. It was logged as a new
-# story. Chapters keep the coarse layer's summary-to-content ratio roughly
-# constant instead.
+# Events per chapter. A summary is fixed-size, so it gets lossier as events
+# pile up: ST-002's summary still described its first 3 events at 7, and a
+# paste about the later ones scored 0.511 against it — under the 0.60 routing
+# threshold, though the paragraph it belonged to sat at 0.804 — and got logged
+# as a new story instead. Chapters keep the summary-to-content ratio constant.
 #
-# Counted in events, not tokens. `index.py` has no tokeniser and should not
-# grow one — that lives on the other side of the stack boundary — and at the
-# few-thousand-token size a chapter boundary is usually pitched at, no story in
-# a real corpus this age would split at all. Four is small enough to bite.
+# Counted in events, not tokens — index.py has no tokeniser and shouldn't grow
+# one. 4 is small enough to bite before a real story's chapter gets too big.
 #
-# Membership is a pure function of the event's own number, never of its
-# position in the list, so it cannot shift: ids are allocated from the maximum
-# and never reused, so E-005 belongs to chapter 2 for the life of the story
-# whatever is added or removed around it. A chapter's text does change while it
-# is filling up — one chapter re-embeds per append, never all of them — and is
-# frozen once full.
+# Chapter membership is derived from the event's own number, not its list
+# position, so ids allocated from the max and never reused keep E-005 in
+# chapter 2 for the story's life. Only the still-filling chapter re-embeds.
 CHAPTER_SIZE = 4
 
 
@@ -79,30 +72,19 @@ def chapter_of(event_id: str) -> int:
 
 
 def _chapters(story: Story) -> list[Chunk]:
-    """Coarse chunks for the spans of a story one summary can no longer cover.
+    """Coarse chunks for spans of a story one summary can no longer cover.
 
-    A chapter is simply its events, in the same `title. body` shape the event
-    chunks use — derived, so it is deterministic, costs no model call, and
-    cannot drift in wording between edits the way a regenerated summary would.
+    Derived from the events' own `title. body` text — deterministic, no model
+    call, can't drift from a regenerated summary. Two things measured on the
+    misrouted paste that motivated this (needed to clear 0.60):
 
-    Two things this deliberately does *not* do, both measured on the paste that
-    was misrouted into its own story (the correct chapter had to clear 0.60):
+    - No story-title prefix — identical across chapters, so it flattened
+      separation from 0.699/0.062 down to 0.509/0.495 and 0.008.
+    - Not titles alone — too little text, scored 0.480, worse than the stale
+      summary they were meant to rescue.
 
-    - No story-title prefix. It is identical across every chapter, so it
-      dominates the vector and flattens them together: with it the correct
-      chapter scored 0.509 and its sibling 0.495, and another story's two
-      chapters landed 0.008 apart. Without it, 0.699 and 0.062 of separation.
-    - Not titles alone. Titles are a handful of words and carry too little for
-      the embedder to work with — 0.480, worse than the stale story summary
-      they were meant to rescue.
-
-    Bodies do appear in the event chunks too. That repetition is the point: the
-    coarse layer answers "which span of which story", the fine layer answers
-    "which paragraph", and they need different amounts of text to do it.
-
-    Nothing below the threshold gets chapters. One chapter over a four-event
-    story would be a near-duplicate of the story summary, competing with it for
-    the same queries and telling the router nothing new.
+    Nothing below CHAPTER_SIZE gets chapters — one chapter over that few
+    events would just duplicate the story summary.
     """
     if len(story.events) <= CHAPTER_SIZE:
         return []
@@ -161,9 +143,8 @@ def all_chunks(directory: Path | None = None) -> list[Chunk]:
 def _lexical(query: str, chunk: Chunk) -> float:
     """Share of the query's words present in the chunk or its keywords.
 
-    ponytail: token overlap, not BM25. The corpus is hundreds of chunks, where
-    IDF weighting is below the noise floor. Swap in BM25 if recall measurably
-    disappoints on rare terms.
+    ponytail: token overlap, not BM25 — IDF weighting is noise at hundreds of
+    chunks. Swap in BM25 if recall measurably disappoints on rare terms.
     """
     words = set(re.findall(r"\w+", query.lower()))
     if not words:
@@ -175,9 +156,8 @@ def _lexical(query: str, chunk: Chunk) -> float:
 class Index:
     """Vectors plus their chunks. Not a database — a numpy array and a list.
 
-    ponytail: linear scan. At a few hundred chunks it is microseconds and an
-    approximate-nearest-neighbour structure is infrastructure without a
-    problem. Move to a real vector store when the corpus reaches five figures.
+    ponytail: linear scan — microseconds at a few hundred chunks. Move to a
+    real vector store past five figures.
     """
 
     def __init__(self, chunks: list[Chunk], vectors: np.ndarray) -> None:
@@ -253,11 +233,8 @@ def load_index(path: Path | None = None) -> Index:
         chunks = [Chunk(**record) for record in json.loads(str(loaded["meta"]))]
         return Index(chunks, loaded["vectors"])
     except (ValueError, KeyError, json.JSONDecodeError, zipfile.BadZipFile, EOFError):
-        # Index file is corrupt or incomplete. Since the index is derived
-        # and can be rebuilt, degrade to empty rather than crash. Catches:
-        # - zipfile.BadZipFile: truncated writes (most common corruption)
-        # - EOFError: empty files
-        # - ValueError/KeyError/JSONDecodeError: malformed content
+        # Corrupt or incomplete file. The index is derived and rebuildable,
+        # so degrade to empty rather than crash.
         return Index([], np.zeros((0, 1), dtype=np.float32))
 
 

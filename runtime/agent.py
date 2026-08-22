@@ -179,12 +179,8 @@ def run(
     # What it has already done. A small model asked to edit a profile will
     # happily read every section in the file, one turn each, and run out of
     # turns before it writes anything — so the second identical call gets a
-    # nudge instead of the payload.
-    #
-    # The caller can pass this in, and for the confirm gate it must: every
-    # Apply resumes through a fresh `run`, and a guard that forgets at each
-    # resume does not guard the case that actually happens — the same write
-    # proposed again one click later.
+    # nudge instead of the payload. The caller must pass this in across a
+    # resume, or the same write can get proposed again one click later.
     seen = {} if seen is None else seen
 
     for iteration in range(max_iterations):

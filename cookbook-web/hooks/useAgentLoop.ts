@@ -139,11 +139,9 @@ export function useAgentLoop(params: GenerationParams) {
         if (isSourceEntry) {
           const entryText = current.proposal.after;
           const entryId = entryIdOf(entryText) || "the entry";
-          // One task per fed section, driven one at a time: a section that
-          // has grown large (accreted cites over time) can blow the context
-          // budget on its own, and joining several such sections into one
-          // follow-up message multiplies that risk for no benefit — the
-          // model only ever needs one section in view to edit it.
+          // One task per section, driven one at a time — a large section can
+          // blow the context budget alone, and the model only needs one
+          // section in view to edit it, so batching several buys nothing.
           const tasks = await buildFollowupTasks(entryText, async (heading) => {
             const result = await postAdminTool("read_profile_section", { heading });
             return result.result ?? "";
@@ -154,10 +152,8 @@ export function useAgentLoop(params: GenerationParams) {
             const failure = await drive(task.messages, FOLLOWUP_SCHEMAS);
             if (failure) failures.push(task.section ? `${task.section} (${failure})` : failure);
           }
-          // `${entryId} was logged` is true regardless of what follows — the
-          // sources.md write already landed via postProposalApply above.
-          // Losing that distinction is what made the earlier "too long"
-          // error read as if the whole turn, including the log, had failed.
+          // The sources.md write already landed via postProposalApply above,
+          // so `${entryId} was logged` holds regardless of what follows.
           setError(
             failures.length > 0
               ? `${entryId} was logged. The profile update failed for: ${failures.join("; ")}. ` +

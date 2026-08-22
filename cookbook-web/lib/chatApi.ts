@@ -35,12 +35,11 @@ export async function postChat(history: ChatMessage[]): Promise<string> {
         content: m.text,
       })),
       max_tokens: FAN_MAX_TOKENS,
-      // Tried `thinking: true` for coherence — reverted. The persona alone
-      // is 6601 tokens against an 8192 context; thinking adds a flat +1024
-      // reserve on top of the existing floor and the budget goes negative
-      // before the first message even sends (507 ProfileTooLarge). Needs a
-      // bigger context window or a smaller in-context persona, not a
-      // per-request flag. See `config/stack.json` (context_tokens: 8192).
+      // Tried `thinking: true` for coherence — reverted. Persona alone is
+      // 6601 tokens against an 8192 context; thinking's flat +1024 reserve
+      // pushes the budget negative before the first message sends (507
+      // ProfileTooLarge). Needs a bigger context or smaller persona, not a
+      // per-request flag.
     }),
   })
 

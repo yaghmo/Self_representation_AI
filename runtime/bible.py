@@ -59,11 +59,10 @@ class ProfileIncomplete(RuntimeError):
 PROFILE_START = "# CHARACTER"
 PROFILE_END = "## Changelog"
 
-# Cites come in several shapes: `S-778`, `[S-778]`, `[S-778, S-779]`, `S-997`/`S-998`, etc.
-# Match backtick-wrapped citations with or without brackets, or bracketed
-# citations with or without backticks. Slash-separated multiples like `S-997`/`S-998`
-# are consumed as a unit. Other backtick spans must survive: the profile also
-# backticks quoted speech, file references, and the bracketed markers for fuzzed details.
+# Cites come in several shapes: `S-778`, `[S-778]`, `[S-778, S-779]`,
+# `S-997`/`S-998`. Matches backtick and/or bracket forms, consuming
+# slash-separated multiples as a unit — other backtick spans (quoted speech,
+# file references, fuzzed-detail markers) must survive untouched.
 CITE = re.compile(
     r"[ \t]*`S-[^`]*`([ \t]*/[ \t]*`S-[^`]*`)*"  # bracket-less, with slash separation
     r"|[ \t]*`?\[S-[^\]]*\]`?"  # bracketed with optional backticks

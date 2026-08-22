@@ -101,15 +101,13 @@ def find_server() -> Path | None:
 def cuda_dll_dirs() -> list[Path]:
     """Where the CUDA runtime DLLs can be found.
 
-    llama.cpp's Windows CUDA build needs cudart/cublas/cublasLt beside the exe,
-    which is what the separate ~370MB `cudart-*` release zip is for. But torch's
-    CUDA wheel already ships those same DLLs, and CUDA 12.x minor versions are
-    binary compatible — so if torch is installed, that download is redundant.
+    llama.cpp's Windows CUDA build needs cudart/cublas/cublasLt beside the exe
+    — the ~370MB `cudart-*` release zip, unless torch's CUDA wheel is already
+    installed and shipping the same DLLs (12.x minors are binary compatible).
 
-    Found by *path*, never by importing torch. Importing it here would load the
-    CUDA runtime into whatever process asked — including the Streamlit UI, which
-    then crashed with a heap corruption in ntdll (0xc0000374) once NVML was also
-    being cycled on reruns. The UI needs a directory name, not a CUDA context.
+    Found by *path*, never by importing torch — that loaded the CUDA runtime
+    into the Streamlit UI process and crashed it with a heap corruption in
+    ntdll (0xc0000374) once NVML was also cycled on reruns.
     """
     dirs = [BIN_DIR]
     for site_packages in map(Path, sys.path):

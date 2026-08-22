@@ -119,15 +119,12 @@ def summary_path(backup: Path) -> Path:
     return backup.with_name(backup.name + ".summary")
 
 
-# Admits every id `next_story_id` can emit — three digits minimum
-# (`f"{prefix}-{n:03d}"`), more once the corpus passes 999, since `%03d` is a
-# minimum width, not a maximum — while still excluding what it never emits.
-# `[0-9]` (not `\d`) — `\d` is Unicode-aware
-# (`STORY_NAME.fullmatch("ST-٣.md")` would match `\d`), which `int()` then
-# happily parses — a restore through that hole would land attacker-chosen
-# content as a loadable story. `fullmatch`, not `match` with `^…$`: `$` alone
-# matches just before a trailing newline, which is a legal filename byte on
-# the Linux container this ships in.
+# Admits every id `next_story_id` can emit (3+ digits, `%03d` is a minimum
+# width not a maximum) while excluding what it never emits. `[0-9]` not `\d`
+# — `\d` is Unicode-aware and `int()` would happily parse a match like
+# "ST-٣.md", letting a restore land attacker-chosen content as a story.
+# `fullmatch` not `match` with `^…$` — `$` alone matches before a trailing
+# newline, a legal filename byte on the Linux container this ships in.
 STORY_NAME = re.compile(r"ST-[0-9]{3,}\.md")
 
 
@@ -183,18 +180,15 @@ def _restore_target_name(backup: Path) -> str:
 
 
 def restore_backup(backup: Path, directory: Path | None = None) -> Path:
-    """Roll one file back to a snapshot, snapshotting the current text first.
+    """Roll one file back to a snapshot, snapshotting the current text first
+    (an undo that destroys what it replaced is not an undo).
 
-    An undo that destroys what it replaced is not an undo. The pre-restore
-    snapshot is what makes this reversible in the other direction.
-
-    The destination is picked from the closed pair `_corpus_roots` returns —
-    never derived from the snapshot's name in a general way. A bible name
+    The destination is picked from the closed pair `_corpus_roots` returns,
+    never derived from the snapshot's name in a general way — a bible name
     routes to the bible directory, a story name to the story directory, and
-    only then is the snapshot confirmed to actually live in that specific
-    directory's own `.backups` — a name matching the pattern but sitting
-    anywhere else (the other corpus's `.backups`, loose in the corpus
-    directory, reached by climbing out with `..`) is refused.
+    the snapshot is then confirmed to actually live in that directory's own
+    `.backups` (a name matching the pattern but sitting anywhere else, e.g.
+    reached by climbing out with `..`, is refused).
     """
     bible_dir, stories_dir = _corpus_roots(directory)
     name = _restore_target_name(backup)
@@ -386,12 +380,11 @@ def append_source(
     order `templates/sources.template.md` defines. There is no tool that
     edits or deletes an existing one.
 
-    The id comes from the file, never from the model: an id the model picks is
-    an id it can collide, skip, or reuse, and every cite in the profile points
-    at one. An empty or `"unknown"` date falls back to today's date: the
-    field records when the answer was logged, and it is being logged now —
-    that is a fact the clock knows, not one the model invented. A date the
-    creator gives for the material itself still wins over the fallback.
+    The id comes from the file, never the model — a model-picked id can
+    collide, skip, or reuse, and every cite in the profile points at one. An
+    empty or `"unknown"` date falls back to today's date (when it's being
+    logged is a fact the clock knows, not one to invent); a date the creator
+    gives for the material itself still wins.
     """
     path = path or SOURCES_PATH
     old = path.read_text(encoding="utf-8")

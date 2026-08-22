@@ -572,13 +572,10 @@ def _mentions_from_urls(urls: list[str], exclude_platform: str) -> list[SocialMe
     return mentions
 
 
-# Only these platforms have a scrape that can actually tell "gone" apart
-# from "worked" — telegram, throne, and anything typed into "other" have no
-# scraper at all, and Instagram's og-tag scrape returns None for nearly
-# every unauthenticated request regardless of whether the account exists
-# (see og_scrape.py's docstring), so None there is noise, not a signal. All
-# of those are always kept (never blocked, per the scrape modules'
-# documented contract) and never checked for a duplicate pfp either.
+# Only these platforms have a scrape that can tell "gone" apart from
+# "worked" — telegram/throne/other have none, and Instagram's og-tag scrape
+# returns None for nearly every unauthenticated request regardless of
+# whether the account exists (see og_scrape.py), so None there is noise.
 _VERIFIABLE_MENTION_PLATFORMS = {"tiktok", "x", "youtube", "twitch", "discord"}
 
 
@@ -854,17 +851,11 @@ def _prompt_for(model: Model, request: ChatRequest, use_compact: bool = False) -
         if override:
             persona = override[0].content
         else:
-            # Keyed on this request's own tools, not `model.agent` — the flag
-            # is a capability toggle on the loaded model shared by both
-            # surfaces, not a per-request signal. A local dev setup runs the
-            # fan page and the admin agent chat against the same loaded
-            # model at once; keying on `model.agent` alone would hand the
-            # fan the editing procedure (no character in it at all)
-            # whenever agent mode happens to be on. The admin agent loop
-            # always sends its tool schemas every turn (agentLoop.ts); the
-            # fan client never sends any — so `request.tools` reliably tells
-            # the two apart per call, and `_reject_tools` above already
-            # guarantees it can only be truthy when agent mode is on.
+            # Keyed on request.tools, not `model.agent` — the flag is a
+            # capability toggle shared by both surfaces, not per-request. Both
+            # can hit the same loaded model at once, and only the admin agent
+            # loop sends tool schemas every turn — `_reject_tools` above
+            # already guarantees `request.tools` can't be truthy otherwise.
             persona = (
                 build_procedure() if request.tools
                 else build_compact_persona() if use_compact
@@ -2234,12 +2225,10 @@ def _self_check() -> None:
             encoding="utf-8",
         )
 
-        # Two separate bindings need repointing: `runtime.tools`'s own
-        # module globals (what the tool handlers actually read/write through
-        # their `path = path or PROFILE_PATH` defaults) and this module's own
-        # `PROFILE_PATH`/`SOURCES_PATH` names (what `_validate_proposal_path`
-        # checks the client-supplied path against, per its docstring). Each
-        # was bound independently at import time, so patching one leaves the
+        # Two independent bindings need repointing: runtime.tools's own
+        # globals (what tool handlers default `path` to) and this module's
+        # own PROFILE_PATH/SOURCES_PATH (what _validate_proposal_path checks
+        # against) — each bound at import time, patching one leaves the
         # other pointing at the real data/ files.
         original_tools_sources, original_tools_profile = (
             tools_module.SOURCES_PATH, tools_module.PROFILE_PATH,
@@ -2308,15 +2297,11 @@ def _self_check() -> None:
         profile = root / "character.md"
         profile.write_text("# Placeholder\n## 6. Voice\n- old line\n", encoding="utf-8")
 
-        # list_backups()/restore_backup() are called with directory=None from
-        # these routes, so `_corpus_roots()` derives the bible dir from
-        # `SOURCES_PATH.parent` and the stories dir from `STORIES_DIR` —
-        # neither from `PROFILE_PATH`. All three bindings have to move into
-        # the tmp dir together, or list_backups() keeps looking at the real
-        # `data/stories/.backups` (whatever this machine actually has in it)
-        # instead of the isolated snapshot this test just wrote — which is
-        # exactly why this assertion used to fail on a machine with real
-        # backup history and pass on a fresh clone with none.
+        # `_corpus_roots()` derives the bible dir from SOURCES_PATH.parent and
+        # the stories dir from STORIES_DIR, never PROFILE_PATH — all three
+        # have to move into the tmp dir together, or list_backups() looks at
+        # real data/stories/.backups instead of this test's isolated snapshot
+        # (used to pass on a fresh clone and fail on a machine with real history).
         original_tools_profile = tools_module.PROFILE_PATH
         original_tools_sources = tools_module.SOURCES_PATH
         original_tools_stories = tools_module.STORIES_DIR
@@ -2375,16 +2360,12 @@ def _self_check() -> None:
 
     # -- /admin/story/route + /admin/story/propose ----------------------------
     _model.agent = True
-    # Force the "no embedder" state directly rather than relying on whatever
-    # this machine happens to have configured — on a machine WITH bge-m3
-    # set up, an unforced _get_recall() would hit the real data/index/*
-    # corpus and make the 424 assertion below flaky (or outright wrong)
-    # depending on what's actually indexed there. The point under test is
-    # the endpoint's 424 wiring, not route()'s scoring — that's already
-    # covered by story_tools.py's own self-check.
-    # (already `global`-declared for this whole function by the recall-loop
-    # block above, and already used there — a second `global` statement here
-    # would itself be a SyntaxError: "used prior to global declaration".)
+    # Force "no embedder" rather than trust whatever this machine has
+    # configured — with bge-m3 set up, _get_recall() would hit the real
+    # data/index/* corpus and make the 424 below flaky. Under test is the
+    # endpoint's 424 wiring, not route()'s scoring (covered by
+    # story_tools.py's own test). Already `global`-declared above; a second
+    # `global` here would be a SyntaxError.
     saved_index, saved_embed, saved_unavailable = _story_index, _story_embed, _story_unavailable
     _story_index, _story_embed, _story_unavailable = None, None, "no embedder configured"
     with tempfile.TemporaryDirectory() as tmp:
@@ -2415,15 +2396,10 @@ def _self_check() -> None:
         global STORIES_DIR
         original_main_stories_dir = STORIES_DIR
         STORIES_DIR = stories_dir
-        # A third, independent binding: `runtime.story_tools` also did
-        # `from runtime.stories import STORIES_DIR`, and `propose_addition`
-        # / `propose_amendment` / `propose_new_story` default their
-        # `directory` param to *this* module-level name when the endpoint
-        # calls them without `directory=` (which it does, per the brief).
-        # Same "separate binding" lesson as Tasks 1-2, a third instance of
-        # it — without this, propose_addition() resolves ST-001's path
-        # against the real (in this worktree, nonexistent) data/stories
-        # instead of the tmp fixture dir, and 422s with "not in the corpus".
+        # A third independent binding: story_tools also imported STORIES_DIR,
+        # and propose_*() default `directory` to it when the endpoint calls
+        # without one. Without this, propose_addition() resolves ST-001's
+        # path against the real data/stories instead of the tmp fixture dir.
         original_tools_stories_dir = story_tools_module.STORIES_DIR
         story_tools_module.STORIES_DIR = stories_dir
         try:

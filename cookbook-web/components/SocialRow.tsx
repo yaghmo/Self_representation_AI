@@ -23,16 +23,13 @@ export function SocialRow({
   pfpUrl: string | null;
   bio: string | null;
   actions?: React.ReactNode;
-  // Several scraped CDNs (yt3.googleusercontent.com in particular) 403/429
-  // a browser hotlinking them directly, so saved pfps route through our
-  // backend's /social/image_proxy. That endpoint only serves URLs already
-  // in the saved social list, so the not-yet-saved preview row (SocialDialog)
-  // passes false here and renders the raw external URL instead — proxying it
-  // would just 404.
+  // Several scraped CDNs (yt3.googleusercontent.com) 403/429 direct
+  // hotlinking, so saved pfps route through /social/image_proxy — which
+  // only serves already-saved URLs. The not-yet-saved preview row
+  // (SocialDialog) passes false and renders the raw URL instead.
   proxyPfp?: boolean;
-  // undefined (the default) means this platform has no OAuth connection
-  // concept at all — no dot rendered, not "gray". Only pass true/false for
-  // a platform that actually has a connect/disconnect flow.
+  // undefined = no OAuth concept for this platform (no dot, not "gray").
+  // Pass true/false only for a platform with a real connect/disconnect flow.
   connected?: boolean;
   onConnect?: () => void;
 }) {

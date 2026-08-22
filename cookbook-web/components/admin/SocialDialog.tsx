@@ -35,10 +35,8 @@ import { ProfileImages } from "@/components/admin/ProfileImages";
 import { SocialRow } from "@/components/SocialRow";
 import { Loader2, Mail, Pencil, Trash2, X } from "lucide-react";
 
-// The preview call now also verifies each discovered mention's profile
-// actually exists (dead ones are dropped server-side before they ever
-// reach here), on top of the primary link's own scrape — allow more time
-// for that than a single scrape needs.
+// Preview also verifies each mention's profile exists server-side, on top
+// of the primary link's scrape — needs more time than one scrape alone.
 const SCRAPE_TIMEOUT_MS = 20_000;
 
 const COMMON_PLATFORMS = [
@@ -229,13 +227,9 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       return;
     }
     const known = COMMON_PLATFORMS.includes(parsed.platform);
-    // Pointing the form at a different platform (or starting a brand-new
-    // add) means any previously scraped pfp/follower count/bio belongs to
-    // the old target — carrying it over via the preview merge's `?? prev.X`
-    // fallback would save it under the new social. Only same-target edits
-    // (tweaking an existing social's own URL, same platform) keep them,
-    // since that fallback exists precisely to survive the in-flight debounce
-    // there.
+    // Switching target platform means old scraped pfp/follower count/bio
+    // belongs to the old target — clear it rather than let the preview
+    // merge's `?? prev.X` fallback carry it over to the new social.
     const currentPlatform = form.platform === "other" ? form.platformOther : form.platform;
     const switchingTarget = !form.id || parsed.platform !== currentPlatform;
     setForm({
