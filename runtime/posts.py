@@ -10,7 +10,6 @@ import json
 import threading
 import time
 from itertools import zip_longest
-from pathlib import Path
 
 from .bible import PROFILE_PATH
 from .social import list_socials
@@ -94,65 +93,3 @@ def refresh_posts() -> list[dict]:
         return posts
 
 
-def _self_check() -> None:
-    import tempfile
-
-    import runtime.social as social_module
-    import runtime.tiktok_oauth as tiktok_oauth_module
-    from .social import add_social
-
-    global POSTS_PATH, list_youtube_videos, list_twitch_vods, list_tiktok_videos
-
-    original_posts_path = POSTS_PATH
-    original_profile_json = social_module.PROFILE_JSON_PATH
-    original_tiktok_token_path = tiktok_oauth_module.TOKEN_PATH
-    original_yt = list_youtube_videos
-    original_tw = list_twitch_vods
-    original_tk = list_tiktok_videos
-
-    list_youtube_videos = lambda url, limit: [
-        {"kind": "video", "embedId": "yt1", "url": "https://y", "title": "t", "thumbnailUrl": "th"}
-    ]
-    list_twitch_vods = lambda username, limit: [
-        {"kind": "vod", "embedId": "tw1", "url": "https://t", "title": "t", "thumbnailUrl": None,
-         "publishedAt": "2026-01-01T00:00:00Z"}
-    ]
-    list_tiktok_videos = lambda url, limit: []
-
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            POSTS_PATH = Path(tmp) / "posts.json"
-            social_module.PROFILE_JSON_PATH = Path(tmp) / "profile.json"
-            # Deterministic "not connected" regardless of whatever the real
-            # TikTok OAuth state on this machine happens to be — otherwise
-            # a genuinely connected account would make this self-check hit
-            # the real API instead of the stubbed scraper below.
-            tiktok_oauth_module.TOKEN_PATH = Path(tmp) / "tiktok_token.json"
-
-            assert list_posts() == [], "no cache file yet -> empty list"
-            assert refresh_posts() == [], "no linked socials yet -> nothing to scrape"
-
-            add_social({"platform": "youtube", "username": "h", "url": "https://youtube.com/@h"})
-            add_social({"platform": "twitch", "username": "h2", "url": "https://twitch.tv/h2"})
-            add_social({"platform": "instagram", "username": "h3", "url": "https://instagram.com/h3"})
-
-            posts = refresh_posts()
-            assert len(posts) == 2, "instagram has no scraper -> skipped, not an error"
-            assert {p["platform"] for p in posts} == {"youtube", "twitch"}
-            for post in posts:
-                assert post["id"] == f"{post['platform']}-{post['embedId']}"
-                assert post["socialId"]
-            assert list_posts() == posts, "refresh must persist to the cache file"
-    finally:
-        POSTS_PATH = original_posts_path
-        social_module.PROFILE_JSON_PATH = original_profile_json
-        tiktok_oauth_module.TOKEN_PATH = original_tiktok_token_path
-        list_youtube_videos = original_yt
-        list_twitch_vods = original_tw
-        list_tiktok_videos = original_tk
-
-    print("posts: all checks passed")
-
-
-if __name__ == "__main__":
-    _self_check()

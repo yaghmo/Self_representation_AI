@@ -1796,7 +1796,13 @@ def _self_check() -> None:
 
     A fake model stands in for the real one — persona assembly only needs
     `context_tokens` and `count_tokens`, and `chat()` is never reached on the
-    rejection cases. Run it with `python -m service.main`.
+    rejection cases. Run it via `pytest tests/service/test_main.py` — kept in
+    this module rather than moved into that test file: this function's three
+    `global` statements reassign 18 of *this module's own* names (`_model`,
+    `PROFILE_PATH`, `STORIES_DIR`, the scrape functions, etc.) so route
+    handlers see the swapped-in fakes. Relocating the function body into a
+    different module would silently rebind those names in that module
+    instead — a real, hard-to-notice regression, not a style choice.
     """
     global _model, PROFILE_PATH, SOURCES_PATH, scrape_channel, scrape_tiktok_profile, scrape_og_profile, scrape_twitch_channel, scrape_twitch_panel_links, scrape_twitch_social_medias, scrape_discord_invite, build_clone, build_design, voice_synth
     from types import SimpleNamespace
@@ -3047,7 +3053,3 @@ def _self_check() -> None:
         print(f"service self-check: ok (persona ~{len(messages[0].content) // 4} tokens by estimate)")
     else:
         print("service self-check: ok (no data/ — persona-dependent checks skipped)")
-
-
-if __name__ == "__main__":
-    _self_check()

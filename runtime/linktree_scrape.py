@@ -46,22 +46,3 @@ def scrape_links(url: str) -> list[str] | None:
     except Exception:
         return None
 
-
-def _self_check() -> None:
-    # Hits the real network — there's no mockable seam worth building for a
-    # single best-effort scraper, and this repo's self-checks already
-    # accept that (runtime/model.py's needs a real model).
-    # Using Linktree's own demo/profile page as a stable test target.
-    result = scrape_links("https://linktr.ee/linktree")
-    assert result is None or (
-        isinstance(result, list) and all(isinstance(u, str) for u in result)
-    ), f"unexpected result: {result!r}"
-
-    # Invalid URL returns None
-    assert scrape_links("not a url at all") is None
-
-    print("linktree_scrape: all checks passed")
-
-
-if __name__ == "__main__":
-    _self_check()

@@ -19,7 +19,6 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 import httpx
 
@@ -177,63 +176,3 @@ def list_videos(limit: int = 6) -> list[dict]:
         return []
 
 
-def _self_check() -> None:
-    global _pending_state, TOKEN_PATH
-    import tempfile
-
-    original_token_path = TOKEN_PATH
-    original_key = os.environ.pop("TIKTOK_CLIENT_KEY", None)
-    original_secret = os.environ.pop("TIKTOK_CLIENT_SECRET", None)
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            TOKEN_PATH = Path(tmp) / "tiktok_token.json"
-
-            assert connection_status() == {"connected": False}
-            assert list_videos() == [], "no connected account -> [], not an exception"
-
-            try:
-                authorize_url("https://example.com/callback")
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("authorize_url accepted a missing client key")
-
-            os.environ["TIKTOK_CLIENT_KEY"] = "test-key"
-            url = authorize_url("https://example.com/callback")
-            assert url.startswith(_AUTHORIZE_URL)
-            assert "client_key=test-key" in url
-            assert _pending_state is not None
-
-            try:
-                handle_callback("code", "wrong-state", "https://example.com/callback")
-            except InvalidState:
-                pass
-            else:
-                raise AssertionError("handle_callback accepted a mismatched state")
-
-            _save_token({
-                "access_token": "tok",
-                "refresh_token": "refresh",
-                "expires_in": 3600,
-                "obtained_at": int(time.time()),
-                "open_id": "abc123",
-                "scope": "user.info.basic,video.list",
-            })
-            assert connection_status() == {
-                "connected": True, "openId": "abc123", "scope": "user.info.basic,video.list"
-            }
-            disconnect()
-            assert connection_status() == {"connected": False}
-    finally:
-        TOKEN_PATH = original_token_path
-        _pending_state = None
-        if original_key is not None:
-            os.environ["TIKTOK_CLIENT_KEY"] = original_key
-        if original_secret is not None:
-            os.environ["TIKTOK_CLIENT_SECRET"] = original_secret
-
-    print("tiktok_oauth: all checks passed")
-
-
-if __name__ == "__main__":
-    _self_check()
