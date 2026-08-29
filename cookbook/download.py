@@ -55,24 +55,28 @@ def is_complete(entry: ModelEntry) -> bool:
     return actual >= expected * 0.99
 
 
+def models_from_config(catalogue: Catalogue) -> list[ModelEntry]:
+    config = read_config()
+    if not config:
+        raise SystemExit(
+            "no config found — run the cookbook first, or name models explicitly"
+        )
+    ids = [
+        role["model_id"]
+        for role in config["roles"].values()
+        if role.get("source") == "local"
+    ]
+    if not ids:
+        raise SystemExit("stack.json selects no local models — nothing to download")
+    return [catalogue.model(i) for i in ids]
+
+
 def select(catalogue: Catalogue, args) -> list[ModelEntry]:
     if args.all:
         return list(catalogue.models)
 
     if args.from_config:
-        config = read_config()
-        if not config:
-            raise SystemExit(
-                "no config found — run the cookbook first, or name models explicitly"
-            )
-        ids = [
-            role["model_id"]
-            for role in config["roles"].values()
-            if role.get("source") == "local"
-        ]
-        if not ids:
-            raise SystemExit("stack.json selects no local models — nothing to download")
-        return [catalogue.model(i) for i in ids]
+        return models_from_config(catalogue)
 
     chosen: list[ModelEntry] = []
     if args.models:

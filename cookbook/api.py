@@ -12,6 +12,7 @@ Run:  uv run uvicorn cookbook.api:app --port 8001
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from cookbook.config import build_config, read_config, write_config
+from cookbook.download import fetch, is_complete, models_from_config, on_disk_bytes
 from cookbook.fit import (
     Budget,
     Fit,
@@ -164,6 +166,25 @@ def _get_probe(fresh: bool = False) -> Probe:
     return _probe_cache
 
 
+# Download progress is polled straight off disk usage (on_disk_bytes vs the
+# catalogue's expected total) rather than threaded through a callback, so the
+# status endpoint stays correct even if the worker thread dies mid-file.
+_download_models: list = []
+_download_thread: threading.Thread | None = None
+_download_errors: dict[str, str] = {}
+
+
+def _download_worker(models: list) -> None:
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    for entry in models:
+        if is_complete(entry):
+            continue
+        try:
+            fetch(entry, token)
+        except Exception as exc:  # noqa: BLE001 — surfaced via /api/download/status
+            _download_errors[entry.id] = str(exc)
+
+
 # ----------------------------------------------------------------- requests --
 
 
@@ -279,3 +300,37 @@ def api_config_write(body: ConfigIn) -> dict:
     path = write_config(config)
     config["_path"] = path.as_posix()
     return config
+
+
+@app.post("/api/download/start")
+def api_download_start() -> dict:
+    global _download_models, _download_thread, _download_errors
+    catalogue = load_catalogue()
+    models = models_from_config(catalogue)
+    if _download_thread is None or not _download_thread.is_alive():
+        _download_models = models
+        _download_errors = {}
+        _download_thread = threading.Thread(
+            target=_download_worker, args=(models,), daemon=True
+        )
+        _download_thread.start()
+    return api_download_status()
+
+
+@app.get("/api/download/status")
+def api_download_status() -> dict:
+    models = [
+        {
+            "id": entry.id,
+            "role": entry.role,
+            "total_bytes": entry.download.total_bytes if entry.download else 0,
+            "downloaded_bytes": on_disk_bytes(entry),
+            "done": is_complete(entry),
+            "error": _download_errors.get(entry.id),
+        }
+        for entry in _download_models
+    ]
+    return {
+        "models": models,
+        "active": _download_thread is not None and _download_thread.is_alive(),
+    }

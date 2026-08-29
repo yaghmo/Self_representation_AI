@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Cpu,
   Database,
+  Download,
   FileJson,
   HardDrive,
   Loader2,
@@ -29,10 +30,12 @@ import {
   ApiError,
   getCatalogue,
   getConfig,
+  getDownloadStatus,
   getInstalled,
   getProbe,
   postAutoFit,
   postConfig,
+  postDownloadStart,
   postManualFit,
 } from "@/lib/api"
 import {
@@ -41,6 +44,7 @@ import {
   type Basis,
   type Catalogue,
   type Device,
+  type DownloadStatus,
   type Fit,
   type ManualFit,
   type Probe,
@@ -224,6 +228,8 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   const [writtenConfig, setWrittenConfig] = useState<Record<string, unknown> | null>(null)
   const [writing, setWriting] = useState(false)
   const [writeError, setWriteError] = useState<string | null>(null)
+  const [downloadStatus, setDownloadStatus] = useState<DownloadStatus | null>(null)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
 
   // ------------------------------------------------------------------- loading
   useEffect(() => {
@@ -411,6 +417,39 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
       setWriting(false)
     }
   }
+
+  // Model download starts on its own once the stack is confirmed — no
+  // separate button, since a written config with missing weights is unusable.
+  useEffect(() => {
+    if (!writtenConfig) return
+    let cancelled = false
+    let timer: ReturnType<typeof setInterval> | null = null
+    const poll = () => {
+      getDownloadStatus()
+        .then((s) => {
+          if (cancelled) return
+          setDownloadStatus(s)
+          if (!s.active && timer) {
+            clearInterval(timer)
+            timer = null
+          }
+        })
+        .catch(() => {})
+    }
+    postDownloadStart()
+      .then((s) => {
+        if (cancelled) return
+        setDownloadStatus(s)
+        if (s.active) timer = setInterval(poll, 1500)
+      })
+      .catch((e) => {
+        if (!cancelled) setDownloadError(errorText(e))
+      })
+    return () => {
+      cancelled = true
+      if (timer) clearInterval(timer)
+    }
+  }, [writtenConfig])
 
   const manualOptionsFor = (role: Role) => {
     if (!catalogue) return []
@@ -1076,17 +1115,78 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
         return chosenFit ? (
           <div className="space-y-6">
             {writtenConfig ? (
-              <Card className="border-green-600">
-                <CardContent className="flex items-center gap-4 pt-6">
-                  <CheckCircle2 className="size-10 text-green-600" />
-                  <div>
-                    <h3 className="text-lg font-semibold">Config written</h3>
-                    <p className="text-sm text-muted-foreground">
-                      The next boot of the container will load this stack.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
+              <>
+                <Card className="border-green-600">
+                  <CardContent className="flex items-center gap-4 pt-6">
+                    <CheckCircle2 className="size-10 text-green-600" />
+                    <div>
+                      <h3 className="text-lg font-semibold">Config written</h3>
+                      <p className="text-sm text-muted-foreground">
+                        The next boot of the container will load this stack.
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Download className="size-4" />
+                      Model weights
+                    </CardTitle>
+                    <CardDescription>
+                      {downloadStatus?.active
+                        ? "Downloading into models/ — this can take a while for larger weights."
+                        : downloadStatus
+                          ? "Done."
+                          : "Starting…"}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {downloadError && (
+                      <Alert variant="destructive">
+                        <AlertTitle>Could not start download</AlertTitle>
+                        <AlertDescription>{downloadError}</AlertDescription>
+                      </Alert>
+                    )}
+                    {downloadStatus?.models.map((m) => {
+                      const pct = m.total_bytes
+                        ? Math.min(100, (100 * m.downloaded_bytes) / m.total_bytes)
+                        : m.done
+                          ? 100
+                          : 0
+                      return (
+                        <div key={m.id} className="space-y-1">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-medium capitalize">
+                              {m.role} · {m.id}
+                            </span>
+                            <span className="text-muted-foreground">
+                              {m.error
+                                ? "failed"
+                                : m.done
+                                  ? "done"
+                                  : `${humanBytes(m.downloaded_bytes)} / ${humanBytes(m.total_bytes)}`}
+                            </span>
+                          </div>
+                          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                              className={cn(
+                                "h-full rounded-full transition-all",
+                                m.error ? "bg-destructive" : "bg-green-600"
+                              )}
+                              style={{ width: `${m.error ? 100 : pct}%` }}
+                            />
+                          </div>
+                          {m.error && (
+                            <p className="text-xs text-destructive">{m.error}</p>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </CardContent>
+                </Card>
+              </>
             ) : (
               <Card>
                 <CardHeader>

@@ -1,6 +1,7 @@
 import type {
   AutoResponse,
   Catalogue,
+  DownloadStatus,
   Fit,
   ManualFit,
   Probe,
@@ -96,4 +97,12 @@ export function postConfig(params: ConfigWriteParams): Promise<
 
 export function getInstalled(): Promise<string[]> {
   return request("/api/installed");
+}
+
+export function postDownloadStart(): Promise<DownloadStatus> {
+  return request("/api/download/start", { method: "POST" });
+}
+
+export function getDownloadStatus(): Promise<DownloadStatus> {
+  return request("/api/download/status");
 }

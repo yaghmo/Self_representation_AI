@@ -106,5 +106,19 @@ export interface Selection {
   placements: Partial<Record<Role, { model: string; device: Device }>>;
 }
 
+export interface DownloadModelStatus {
+  id: string;
+  role: Role;
+  total_bytes: number;
+  downloaded_bytes: number;
+  done: boolean;
+  error: string | null;
+}
+
+export interface DownloadStatus {
+  models: DownloadModelStatus[];
+  active: boolean;
+}
+
 export const CONTEXT_CANDIDATES = [4096, 8192, 16384, 32768, 65536] as const;
 export const ROLES: Role[] = ["llm", "embedding", "tts"];
