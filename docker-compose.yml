@@ -8,10 +8,10 @@
 # First-time setup, both profiles:
 #   1. `docker compose --profile cookbook up --build`, open localhost:3000 —
 #      probe/fit/download writes ./config/stack.json and ./models/ (same
-#      volumes fan/admin mount below, so nothing further to copy).
-#   2. Download a linux CUDA llama.cpp release into ./vendor/llama.cpp/ —
-#      see docker/entrypoint.sh's warning if this is skipped.
-#   3. GPU passthrough needs nvidia-container-toolkit installed on the host.
+#      volumes fan/admin mount below, so nothing further to copy). The
+#      llama-server binary itself is baked into the image (see Dockerfile) —
+#      nothing to download for it.
+#   2. GPU passthrough needs nvidia-container-toolkit installed on the host.
 
 services:
   cookbook:
@@ -26,7 +26,6 @@ services:
     volumes:
       - ./config:/app/config
       - ./models:/app/models
-      - ./vendor:/app/vendor
     deploy:
       resources:
         reservations:
@@ -47,7 +46,6 @@ services:
       - ./data:/app/data
       - ./config:/app/config
       - ./models:/app/models
-      - ./vendor:/app/vendor
     environment:
       ADMIN_UI_ORIGIN: ${ADMIN_UI_ORIGIN:-http://localhost:3000}
     deploy:
@@ -70,7 +68,6 @@ services:
       - ./data:/app/data
       - ./config:/app/config
       - ./models:/app/models
-      - ./vendor:/app/vendor
     environment:
       ADMIN_UI_ORIGIN: ${ADMIN_UI_ORIGIN:-http://localhost:3000}
     deploy:

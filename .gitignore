@@ -21,6 +21,7 @@
 !pyproject.toml
 !uv.lock
 !Dockerfile
+!.dockerignore
 !docker-compose.yml
 !docker/**
 !templates/**

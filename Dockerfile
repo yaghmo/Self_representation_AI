@@ -10,13 +10,20 @@
 # `--gpus all` / a compose GPU reservation — torch's cu126 wheel already
 # bundles the CUDA runtime, so no CUDA base image is needed.
 #
-# Weights, config, and the llama-server binary are all volume-mounted, not
-# baked in — see docker-compose.yml's ./models, ./config, ./vendor mounts
-# and docker/entrypoint.sh.
+# Weights and config are volume-mounted (docker-compose.yml's ./models,
+# ./config) — those are per-instance, written by the cookbook. The
+# llama-server binary itself is baked into the image below instead, since
+# it's a fixed build artifact with no per-instance variation.
 
-# trixie, not bookworm: the vendored linux llama-server binary (extracted from
-# ggml-org's official CUDA image, itself built on Ubuntu 24.04) needs
-# GLIBC_2.38 / GLIBCXX_3.4.32 — bookworm's glibc 2.36 can't satisfy that.
+# ggml-org publishes no CUDA-enabled Linux release zip (only Windows CUDA
+# zips and CPU/Vulkan/ROCm/SYCL Linux tarballs) — the Linux CUDA build only
+# ships inside their server-cuda Docker image, so that's extracted from
+# instead of a release download. CUDA 12 tag, matching torch's cu126 wheel
+# ("12.x minors are binary compatible" — runtime/llamacpp.py's cuda_dll_dirs()).
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda AS llama-cuda
+
+# trixie, not bookworm: the llama-server binary above (built on Ubuntu 24.04)
+# needs GLIBC_2.38 / GLIBCXX_3.4.32 — bookworm's glibc 2.36 can't satisfy that.
 FROM python:3.10-slim-trixie
 
 # libsndfile1: soundfile (TTS wav encode) needs it at runtime on *both*
@@ -57,6 +64,11 @@ RUN if [ "$INSTALL_ADMIN" = "true" ]; then \
     fi
 
 COPY . .
+
+# Baked in after COPY . . so a stray host vendor/ in the build context (it's
+# .dockerignored anyway) can never shadow it.
+COPY --from=llama-cuda /app/llama-server /app/vendor/llama.cpp/bin/llama-server
+RUN chmod +x /app/vendor/llama.cpp/bin/llama-server
 
 ENV PATH="/app/.venv/bin:$PATH"
 RUN chmod +x docker/entrypoint.sh
