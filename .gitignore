@@ -19,6 +19,10 @@
 !README.md
 !CLAUDE.md
 !pyproject.toml
+!uv.lock
+!Dockerfile
+!docker-compose.yml
+!docker/**
 !templates/**
 !.claude/**
 

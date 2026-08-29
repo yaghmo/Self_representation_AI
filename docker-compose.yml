@@ -1,0 +1,72 @@
+# Two ways to run this: `docker compose --profile fan up` for a deployed
+# instance (no admin tools, no scraping browser), or
+# `docker compose --profile admin up` for the creator's own machine (full
+# stack, agent mode). Never both — they're the same port and the same
+# character bible, just different route access (see CLAUDE.md's "two
+# surfaces" rule and pyproject.toml's `admin` extra).
+#
+# First-time setup, both profiles:
+#   1. Run the cookbook (probe/fit/download) to populate ./config/stack.json
+#      and ./models/ — see cookbook/README.md. Can be done on the host
+#      before ever touching Docker; it just writes to the same folders
+#      these containers mount.
+#   2. Download a linux CUDA llama.cpp release into ./vendor/llama.cpp/ —
+#      see docker/entrypoint.sh's warning if this is skipped.
+#   3. GPU passthrough needs nvidia-container-toolkit installed on the host.
+
+services:
+  service-fan:
+    build:
+      context: .
+      args:
+        INSTALL_ADMIN: "false"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./models:/app/models
+      - ./vendor:/app/vendor
+    environment:
+      ADMIN_UI_ORIGIN: ${ADMIN_UI_ORIGIN:-http://localhost:3000}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles: ["fan"]
+
+  service-admin:
+    build:
+      context: .
+      args:
+        INSTALL_ADMIN: "true"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+      - ./models:/app/models
+      - ./vendor:/app/vendor
+    environment:
+      ADMIN_UI_ORIGIN: ${ADMIN_UI_ORIGIN:-http://localhost:3000}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles: ["admin"]
+
+  web:
+    build:
+      context: ./cookbook-web
+      args:
+        NEXT_PUBLIC_CHAT_API_URL: ${NEXT_PUBLIC_CHAT_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_SERVICE_URL: ${NEXT_PUBLIC_SERVICE_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    profiles: ["fan", "admin"]
