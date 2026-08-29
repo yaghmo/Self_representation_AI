@@ -66,9 +66,14 @@ RUN if [ "$INSTALL_ADMIN" = "true" ]; then \
 COPY . .
 
 # Baked in after COPY . . so a stray host vendor/ in the build context (it's
-# .dockerignored anyway) can never shadow it.
-COPY --from=llama-cuda /app/llama-server /app/vendor/llama.cpp/bin/llama-server
+# .dockerignored anyway) can never shadow it. The whole directory, not just
+# the binary — llama-server dynamically links libggml*/libllama*/libmtmd
+# .so files that ship alongside it. The upstream image resolves them via its
+# own baked ldconfig cache, which we don't inherit (only /app's files were
+# copied, not /etc/ld.so.cache), so LD_LIBRARY_PATH stands in for that.
+COPY --from=llama-cuda /app/ /app/vendor/llama.cpp/bin/
 RUN chmod +x /app/vendor/llama.cpp/bin/llama-server
+ENV LD_LIBRARY_PATH="/app/vendor/llama.cpp/bin"
 
 ENV PATH="/app/.venv/bin:$PATH"
 RUN chmod +x docker/entrypoint.sh
