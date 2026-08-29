@@ -7,7 +7,14 @@ import { BottomBar } from "@/components/fan/BottomBar"
 import { ChatWidget } from "@/components/fan/ChatWidget"
 import { SearchBar } from "@/components/fan/SearchBar"
 import { mockProfile, mockPosts } from "@/components/fan/mockData"
-import { getPublicPosts, getPublicProfile, publicBannerUrl, publicPfpUrl } from "@/lib/socialApi"
+import {
+  getPublicPosts,
+  getPublicProfile,
+  publicBannerUrl,
+  publicChatIconUrl,
+  publicLandingPfpUrl,
+  publicPfpUrl,
+} from "@/lib/socialApi"
 import type { FanProfile, Post } from "@/components/fan/types"
 
 export default function FanPage() {
@@ -38,8 +45,14 @@ export default function FanPage() {
       setProfile({
         name: mockProfile.name,
         bio: res.bio ?? mockProfile.bio,
+        contactEmail: res.contactEmail,
         pfpUrl: res.pfpVersion != null ? publicPfpUrl(res.pfpVersion) : null,
+        pfpMime: res.pfpMime,
         bannerUrl: res.bannerVersion != null ? publicBannerUrl(res.bannerVersion) : null,
+        chatIconUrl: res.chatIconVersion != null ? publicChatIconUrl(res.chatIconVersion) : null,
+        landingPfpUrl:
+          res.landingPfpVersion != null ? publicLandingPfpUrl(res.landingPfpVersion) : null,
+        landingPfpMime: res.landingPfpMime,
       })
     })
     getPublicPosts().then(setPosts)
@@ -69,7 +82,7 @@ export default function FanPage() {
       />
       <PostGrid posts={filteredPosts} expanded={expanded} />
       <BottomBar />
-      <ChatWidget botName={mockProfile.name} />
+      <ChatWidget botName={mockProfile.name} chatIconUrl={profile.chatIconUrl} />
     </div>
   )
 }

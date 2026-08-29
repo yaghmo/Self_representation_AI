@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { ChatApiError, postChat } from "@/lib/chatApi"
 import { MarkdownMessage } from "@/components/chat/Markdown"
+import { SpeakButton } from "@/components/chat/SpeakButton"
+import { warm } from "@/lib/voice/store"
 import type { ChatMessage } from "./types"
 
 // The model already tends to write in blank-line-separated thoughts (see
@@ -35,14 +37,21 @@ const DEFAULT_HEIGHT = 448 // 28rem
 const MIN_WIDTH = 256 // 16rem
 const MIN_HEIGHT = 320 // 20rem
 
-function ChatWidget({ botName }: { botName: string }) {
+function ChatWidget({
+  botName,
+  chatIconUrl,
+}: {
+  botName: string
+  chatIconUrl?: string | null
+}) {
   const [isOpen, setIsOpen] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState("")
   const [isTyping, setIsTyping] = useState(false)
   const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
-  // Creator can drop a custom chat icon at /chat-icon.png; falls back to the
-  // default lucide icon when nothing has been saved for that slot.
+  // Creator can drop a custom chat icon; falls back to the default lucide
+  // icon when nothing has been saved for that slot (or it fails to load).
+  const iconSrc = chatIconUrl ?? "/chat-icon-fan-unset.png"
   const [customIconFailed, setCustomIconFailed] = useState(false)
   const iconRef = useRef<HTMLImageElement>(null)
   // While dragging the resize handle, the icon's `bottom` offset is
@@ -136,6 +145,7 @@ function ChatWidget({ botName }: { botName: string }) {
         text: bubbles[i],
       }
       setMessages((prev) => [...prev, botMessage])
+      warm(botMessage.id, botMessage.text)
     }
     setIsTyping(false)
   }
@@ -173,10 +183,8 @@ function ChatWidget({ botName }: { botName: string }) {
           ) : (
             // eslint-disable-next-line @next/next/no-img-element -- local static asset, not a next/image remote host
             <img
-              // No saved chat icon on this route on purpose, to exercise the
-              // fallback (default lucide icon, toggle hides while open).
               ref={iconRef}
-              src="/chat-icon-fan-unset.png"
+              src={iconSrc}
               alt=""
               className="size-full object-contain drop-shadow-lg"
               onError={() => setCustomIconFailed(true)}
@@ -223,13 +231,21 @@ function ChatWidget({ botName }: { botName: string }) {
               <div
                 key={message.id}
                 className={cn(
-                  "w-fit max-w-[80%] rounded-2xl px-3 py-2 text-sm break-words",
-                  message.role === "user"
-                    ? "ml-auto bg-primary text-primary-foreground"
-                    : "mr-auto bg-muted text-foreground"
+                  "flex items-end gap-1",
+                  message.role === "user" ? "justify-end" : "justify-start"
                 )}
               >
-                <MarkdownMessage text={message.text} />
+                <div
+                  className={cn(
+                    "w-fit max-w-[80%] rounded-2xl px-3 py-2 text-sm break-words",
+                    message.role === "user"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-foreground"
+                  )}
+                >
+                  <MarkdownMessage text={message.text} />
+                </div>
+                {message.role === "bot" && <SpeakButton id={message.id} />}
               </div>
             ))}
             {isTyping && (

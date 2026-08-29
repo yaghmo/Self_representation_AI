@@ -8,6 +8,7 @@ import {
   previewSocial,
   refreshPosts,
   saveContactEmail,
+  SocialApiError,
   tiktokDisconnect,
   tiktokLoginUrl,
   tiktokStatus,
@@ -33,7 +34,8 @@ import { Separator } from "@/components/ui/separator";
 import { BioSection } from "@/components/admin/BioSection";
 import { ProfileImages } from "@/components/admin/ProfileImages";
 import { SocialRow } from "@/components/SocialRow";
-import { Loader2, Mail, Pencil, Trash2, X } from "lucide-react";
+import { formatCount } from "@/lib/formatCount";
+import { CheckCircle2, CircleHelp, Loader2, Mail, Pencil, Search, Trash2, X } from "lucide-react";
 
 // Preview also verifies each mention's profile exists server-side, on top
 // of the primary link's scrape — needs more time than one scrape alone.
@@ -79,6 +81,12 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
   const [contactEmail, setContactEmail] = useState<string | null>(null);
   const [pfpVersion, setPfpVersion] = useState<number | null>(null);
   const [bannerVersion, setBannerVersion] = useState<number | null>(null);
+  const [chatIconVersion, setChatIconVersion] = useState<number | null>(null);
+  const [landingPfpVersion, setLandingPfpVersion] = useState<number | null>(null);
+  const [pfpMime, setPfpMime] = useState<string | null>(null);
+  const [bannerMime, setBannerMime] = useState<string | null>(null);
+  const [chatIconMime, setChatIconMime] = useState<string | null>(null);
+  const [landingPfpMime, setLandingPfpMime] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>({ ...EMPTY_FORM });
@@ -86,6 +94,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const previewRequestRef = useRef(0);
   const [mentions, setMentions] = useState<SocialMention[]>([]);
+  const [saving, setSaving] = useState(false);
 
   const [editingEmail, setEditingEmail] = useState(false);
   const [emailDraft, setEmailDraft] = useState("");
@@ -195,6 +204,12 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       setContactEmail(res.contactEmail);
       setPfpVersion(res.pfpVersion);
       setBannerVersion(res.bannerVersion);
+      setChatIconVersion(res.chatIconVersion);
+      setLandingPfpVersion(res.landingPfpVersion);
+      setPfpMime(res.pfpMime);
+      setBannerMime(res.bannerMime);
+      setChatIconMime(res.chatIconMime);
+      setLandingPfpMime(res.landingPfpMime);
       setError(null);
       tiktokStatus().then(setTiktok).catch(() => setTiktok({ connected: false }));
     } catch (e) {
@@ -265,6 +280,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       pfpUrl: form.pfpUrl || undefined,
       isAlt: form.isAlt,
     };
+    setSaving(true);
     try {
       // A Linktree link isn't a social profile — it's just a list of the
       // creator's other links. Only the mentions extracted from it get
@@ -273,7 +289,14 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
         if (form.id) {
           await updateSocial({ id: form.id, ...params });
         } else {
-          await addSocial(params);
+          try {
+            await addSocial(params);
+          } catch (e) {
+            // Re-pasting an already-linked profile's own URL (to pick up
+            // newly discovered mentions) isn't a failure — only bail out
+            // for anything that isn't that specific conflict.
+            if (!(e instanceof SocialApiError && e.status === 409)) throw e;
+          }
         }
       }
       // Whatever's still in `mentions` at this point is exactly what the
@@ -324,6 +347,8 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -382,6 +407,12 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
         <ProfileImages
           pfpVersion={pfpVersion}
           bannerVersion={bannerVersion}
+          chatIconVersion={chatIconVersion}
+          landingPfpVersion={landingPfpVersion}
+          pfpMime={pfpMime}
+          bannerMime={bannerMime}
+          chatIconMime={chatIconMime}
+          landingPfpMime={landingPfpMime}
           bio={bio}
           onSaved={refresh}
         />
@@ -390,14 +421,16 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
 
         <BioSection bio={bio} onSaved={refresh} />
 
-        {(contactEmail || editingEmail) &&
-          (editingEmail ? (
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Contact</p>
+          {editingEmail ? (
             <div className="flex items-center gap-2">
               <Mail className="size-3.5 shrink-0 text-muted-foreground" />
               <Input
                 value={emailDraft}
                 onChange={(e) => setEmailDraft(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSaveEmail()}
+                placeholder="business@example.com"
                 className="h-7 text-xs"
                 autoFocus
               />
@@ -412,18 +445,20 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
               >
                 Cancel
               </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                aria-label="Delete contact email"
-                title="Delete contact email"
-                onClick={handleDeleteEmail}
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
+              {contactEmail && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  aria-label="Delete contact email"
+                  title="Delete contact email"
+                  onClick={handleDeleteEmail}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              )}
             </div>
-          ) : (
+          ) : contactEmail ? (
             <p className="flex items-center gap-2 text-xs text-muted-foreground">
               <Mail className="size-3.5 shrink-0" />
               {contactEmail}
@@ -434,14 +469,29 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                 aria-label="Update contact email"
                 title="Update contact email"
                 onClick={() => {
-                  setEmailDraft(contactEmail ?? "");
+                  setEmailDraft(contactEmail);
                   setEditingEmail(true);
                 }}
               >
                 <Pencil className="size-3" />
               </Button>
             </p>
-          ))}
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">no contact info yet.</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setEmailDraft("");
+                  setEditingEmail(true);
+                }}
+              >
+                Add contact info
+              </Button>
+            </>
+          )}
+        </div>
 
         <Separator />
 
@@ -490,7 +540,16 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                   mention.type === "email" ? Mail : platformIcon(mention.platform ?? "");
                 return (
                   <div key={i} className="flex items-center gap-2 text-sm">
-                    <Icon className="size-4 shrink-0 text-muted-foreground" />
+                    {mention.pfpUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- unsaved candidate, not yet proxy-servable
+                      <img
+                        src={mention.pfpUrl}
+                        alt=""
+                        className="size-5 shrink-0 rounded-full object-cover"
+                      />
+                    ) : (
+                      <Icon className="size-4 shrink-0 text-muted-foreground" />
+                    )}
                     <span className={mention.type === "email" ? "text-muted-foreground" : undefined}>
                       {mention.value}
                     </span>
@@ -498,6 +557,44 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                       <span className="text-xs text-muted-foreground capitalize">
                         {mention.platform}
                       </span>
+                    )}
+                    {mention.followerCount != null && (
+                      <span className="text-xs text-muted-foreground">
+                        {formatCount(mention.followerCount)} followers
+                      </span>
+                    )}
+                    {mention.confidence === "confirmed" ? (
+                      <CheckCircle2
+                        className="size-3.5 shrink-0 text-green-600"
+                        aria-label="Confirmed — this account mentions the primary one back"
+                      >
+                        <title>Confirmed — this account mentions the primary one back</title>
+                      </CheckCircle2>
+                    ) : (
+                      <>
+                        {/* "likely" (exists, but no mutual back-reference) gets the
+                            same badge as "unverified" — a guessed handle can land
+                            on a real, unrelated account, so existing-but-uncorroborated
+                            is no more trustworthy than not-found. */}
+                        <CircleHelp
+                          className="size-3.5 shrink-0 text-muted-foreground"
+                          aria-label="Couldn't confirm this is the right account"
+                        >
+                          <title>Couldn't confirm this is the right account</title>
+                        </CircleHelp>
+                        <a
+                          href={`https://www.google.com/search?q=${encodeURIComponent(
+                            `${mention.value} ${mention.platform ?? ""}`.trim()
+                          )}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label="Search for this account"
+                          title="Search for this account"
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          <Search className="size-3.5 shrink-0" />
+                        </a>
+                      </>
                     )}
                     <Button
                       variant="ghost"
@@ -515,12 +612,13 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
             </div>
           )}
           <div className="flex gap-2">
-            <Button onClick={handleSave} disabled={previewLoading}>
-              {previewLoading && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-              Confirm
+            <Button onClick={handleSave} disabled={previewLoading || saving}>
+              {(previewLoading || saving) && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+              {saving ? "Saving…" : "Confirm"}
             </Button>
             <Button
               variant="outline"
+              disabled={saving}
               onClick={() => {
                 setForm({ ...EMPTY_FORM });
                 setMentions([]);
@@ -550,6 +648,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                 followerCount={social.followerCount}
                 pfpUrl={social.pfpUrl}
                 bio={social.bio}
+                href={social.url}
                 connected={social.platform === "tiktok" ? tiktok?.connected ?? false : undefined}
                 onConnect={handleTiktokLogin}
                 actions={
@@ -608,9 +707,23 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                 {tiktokBusy && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
                 Disconnect TikTok
               </Button>
-              <p className="text-xs text-muted-foreground">
-                Connected — video listing uses the real TikTok API
-              </p>
+              {(() => {
+                const linkedTiktok = socials.find((s) => s.platform === "tiktok");
+                const linked = linkedTiktok?.username?.replace(/^@/, "");
+                const connected = tiktok.username;
+                const matches =
+                  !!linked && !!connected && linked.toLowerCase() === connected.toLowerCase();
+                return matches ? (
+                  <p className="text-xs text-muted-foreground">
+                    Connected as @{connected} — video listing uses the real TikTok API
+                  </p>
+                ) : (
+                  <p className="text-xs text-amber-600">
+                    Connected as @{connected ?? "unknown"}, but the linked profile is @
+                    {linked ?? "?"} — listing still falls back to scraping until these match
+                  </p>
+                );
+              })()}
             </>
           ) : (
             <>

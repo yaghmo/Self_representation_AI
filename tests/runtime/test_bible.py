@@ -199,15 +199,18 @@ def test_bible_self_check():
         assert tool_split[1][0].role != "tool", "must not split into orphaned result even at history end"
 
     # The summary is pinned: it survives a budget that evicts ordinary history.
+    # Relative to persona_tokens, not a fixed constant — same reasoning as the
+    # budgets above, so this stays correct as FRAMING's own length changes.
+    summary_budget = 1024 + persona_tokens + 150
     note = "Earlier in this conversation: they described a trip."
-    out = assemble(turns, context_tokens=1400, persona=persona, summary=note)
+    out = assemble(turns, context_tokens=summary_budget, persona=persona, summary=note)
     assert out[0].role == "system", "persona stays first"
     assert out[0].content == persona, "persona stays byte-identical"
     assert out[1].role == "user" and out[1].content == note, "summary is pinned right after the persona"
 
     # Absent a summary, output is unchanged from before this feature.
-    assert assemble(turns, context_tokens=1400, persona=persona) == [
-        m for m in assemble(turns, context_tokens=1400, persona=persona, summary="")
+    assert assemble(turns, context_tokens=summary_budget, persona=persona) == [
+        m for m in assemble(turns, context_tokens=summary_budget, persona=persona, summary="")
     ], "empty summary must be a no-op"
 
     # -- compact persona / profile-section chunks ----------------------------

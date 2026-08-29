@@ -1,8 +1,13 @@
 export type FanProfile = {
   name: string
   bio: string
+  contactEmail?: string | null
   pfpUrl?: string | null
+  pfpMime?: string | null
   bannerUrl?: string | null
+  chatIconUrl?: string | null
+  landingPfpUrl?: string | null
+  landingPfpMime?: string | null
 }
 
 export type Post = {

@@ -188,12 +188,15 @@ export function getVoicePhrases(): Promise<VoicePhrases> {
   return request("/admin/voice/phrases");
 }
 
-export async function postVoiceSample(wav: Blob): Promise<VoiceStatus> {
-  const response = await fetch(`${SERVICE_URL}/admin/voice/sample`, {
-    method: "POST",
-    headers: { "Content-Type": "audio/wav" },
-    body: wav,
-  });
+export async function postVoiceSample(wav: Blob, language: string): Promise<VoiceStatus> {
+  const response = await fetch(
+    `${SERVICE_URL}/admin/voice/sample?language=${encodeURIComponent(language)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "audio/wav" },
+      body: wav,
+    }
+  );
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -204,6 +207,24 @@ export async function postVoiceSample(wav: Blob): Promise<VoiceStatus> {
     throw new ApiError(response.status, detail);
   }
   return (await response.json()) as VoiceStatus;
+}
+
+export async function postVoiceClone(language: string): Promise<Blob> {
+  const response = await fetch(`${SERVICE_URL}/admin/voice/clone`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ language }),
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      detail = (await response.json()).detail ?? detail;
+    } catch {
+      // body wasn't JSON — keep statusText
+    }
+    throw new ApiError(response.status, detail);
+  }
+  return response.blob();
 }
 
 export function postSummarize(messages: Message[], maxTokens = 256): Promise<{ content: string }> {

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -71,15 +72,25 @@ from runtime.social import (
     SocialNotFound,
     _is_cleaner_username,
     add_social,
+    banner_mime,
     banner_version,
+    chaticon_mime,
+    chaticon_version,
     delete_social,
     get_bio,
     get_contact_email,
+    landing_pfp_mime,
+    landing_pfp_version,
     list_socials,
+    pfp_mime,
     pfp_version,
     read_banner,
+    read_chat_icon,
+    read_landing_pfp,
     read_pfp,
     save_banner,
+    save_chat_icon,
+    save_landing_pfp,
     save_pfp,
     set_bio,
     set_contact_email,
@@ -100,6 +111,8 @@ from runtime.convert import ConversionFailed, to_markdown
 from runtime.stories import STORIES_DIR, load_story
 from runtime.discord_scrape import scrape_invite as scrape_discord_invite
 from runtime.og_scrape import scrape_profile as scrape_og_profile
+from runtime.og_scrape import resolve_instagram_handle
+from runtime.tiktok_scrape import resolve_handle as resolve_tiktok_handle
 from runtime.tiktok_scrape import scrape_profile as scrape_tiktok_profile
 from runtime.twitch_scrape import scrape_channel as scrape_twitch_channel
 from runtime.twitch_scrape import scrape_panel_links as scrape_twitch_panel_links
@@ -116,7 +129,7 @@ from runtime.tools import (
 )
 import runtime.voice_sample as voice_sample_module
 from runtime.voice import build_clone, build_design, synth as voice_synth, voice_status
-from runtime.voice_sample import LANGUAGES, PHRASES, sample_status, save_sample
+from runtime.voice_sample import LANGUAGES, PHRASES, TEST_PHRASES, sample_status, save_sample
 from runtime.youtube_scrape import scrape_channel
 from runtime.linktree_scrape import scrape_links as scrape_linktree_links
 from service.logging_config import log_payload, setup_logging
@@ -487,6 +500,16 @@ class SocialMention(BaseModel):
     type: str  # "platform" | "email"
     platform: str | None = None  # set when type == "platform"
     value: str  # bare handle/username, or the email address
+    # "confirmed" — the candidate's own bio mentions the primary account
+    # back; "likely" — verified to exist, no mutual reference; "unverified"
+    # — couldn't confirm (a nickname that isn't the real @handle, a
+    # platform with no verification scrape, or a failed scrape). Set by
+    # `_filter_mentions`, the only place with the scrape data to judge it.
+    confidence: str = "unverified"
+    # Populated from the same verification scrape `confidence` comes from —
+    # None whenever confidence is "unverified" (no scrape data to show).
+    pfpUrl: str | None = None
+    followerCount: int | None = None
 
 
 class SocialPreviewResponse(BaseModel):
@@ -529,8 +552,10 @@ class VoiceSpeakRequest(BaseModel):
 
 BIO_GENERATE_PROMPT = (
     "Write one short bio (2-4 sentences, no hashtags, no emoji) that combines "
-    "the following per-platform bios into a single overview. Do not invent "
-    "anything not stated in them."
+    "the following per-platform bios into a single overview. Write it in FIRST "
+    "PERSON, as the creator themself talking to a fan ('I'm ...', 'I make ...', "
+    "'find me on ...') — never third person ('they are', 'their work'), never "
+    "the detached tone of a press bio. Do not invent anything not stated in them."
 )
 
 VOICE_INSTRUCT_PROMPT = (
@@ -555,6 +580,28 @@ MENTION_EXTRACT_PROMPT = (
 )
 
 
+# X serves its "website" profile field as og:description verbatim when set
+# — a t.co shortlink, not the real destination. Small, explicit allowlist:
+# only follow a redirect for a known shortener domain, not every unmatched
+# URL the broad bio regex turns up.
+_URL_SHORTENERS = {"t.co", "bit.ly", "tinyurl.com"}
+
+
+def _resolve_shortlink(url: str) -> str:
+    """Best-effort: any failure (network, non-shortener, no redirect)
+    just returns the original URL, same as a shortener pointing somewhere
+    unsupported would."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").removeprefix("www.")
+    if host not in _URL_SHORTENERS:
+        return url
+    try:
+        return str(httpx.head(url, follow_redirects=True, timeout=5).url)
+    except Exception:
+        return url
+
+
 def _mentions_from_urls(urls: list[str], exclude_platform: str) -> list[SocialMention]:
     """Turn literal URLs (e.g. Twitch panel links) into platform mentions —
     no LLM guessing needed, `_parse_social_url` already knows how to read
@@ -562,7 +609,7 @@ def _mentions_from_urls(urls: list[str], exclude_platform: str) -> list[SocialMe
     (the platform this scrape is already for)."""
     mentions: list[SocialMention] = []
     for url in urls:
-        found = _parse_social_url(url)
+        found = _parse_social_url(_resolve_shortlink(url))
         if not found:
             continue
         found_platform, found_username = found
@@ -572,11 +619,41 @@ def _mentions_from_urls(urls: list[str], exclude_platform: str) -> list[SocialMe
     return mentions
 
 
+# Broad on purpose — creators paste links into bios as plain text
+# ("linktr.ee/name"), not markup, so this just finds URL-shaped substrings;
+# _parse_social_url's domain allowlist is what actually decides whether one
+# means anything, so over-matching here is harmless.
+_BIO_URL_RE = re.compile(r'(?:https?://)?(?:www\.)?[a-z0-9-]+\.[a-z]{2,}(?:/[^\s,;)"\']*)?', re.IGNORECASE)
+
+
+def _bio_urls(text: str) -> list[str]:
+    """URL-looking substrings pulled out of free bio text, schemed if bare
+    so `urlparse` (and so `_parse_social_url`) can read a hostname off them."""
+    urls = []
+    for match in _BIO_URL_RE.finditer(text):
+        url = match.group(0)
+        urls.append(url if url.startswith("http") else f"https://{url}")
+    return urls
+
+
+def _dedupe_mentions(mentions: list[SocialMention]) -> list[SocialMention]:
+    """Collapse mentions found redundantly by more than one source — e.g. an
+    alt account named as a bare @handle AND linked as a raw URL in the same
+    bio, or listed again inside an expanded Linktree page."""
+    seen: set[tuple] = set()
+    kept: list[SocialMention] = []
+    for m in mentions:
+        key = (m.type, m.platform, m.value.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(m)
+    return kept
+
+
 # Only these platforms have a scrape that can tell "gone" apart from
-# "worked" — telegram/throne/other have none, and Instagram's og-tag scrape
-# returns None for nearly every unauthenticated request regardless of
-# whether the account exists (see og_scrape.py), so None there is noise.
-_VERIFIABLE_MENTION_PLATFORMS = {"tiktok", "x", "youtube", "twitch", "discord"}
+# "worked" — telegram/throne/other have none.
+_VERIFIABLE_MENTION_PLATFORMS = {"tiktok", "x", "youtube", "twitch", "discord", "instagram"}
 
 
 def _scrape_mention(mention: SocialMention) -> dict | None:
@@ -591,24 +668,97 @@ def _scrape_mention(mention: SocialMention) -> dict | None:
     if not url:
         return None
     if mention.platform == "tiktok":
-        return scrape_tiktok_profile(url)
+        guessed = scrape_tiktok_profile(url)
+        # Always cross-check against search, even when the literal guess
+        # already scraped fine — TikTok lets a display nickname collide
+        # with someone else's *real* @handle, so a guess that "works" can
+        # still be the wrong account. A search-resolved handle that
+        # disagrees with the guess is treated as authoritative (it's
+        # keyed off the actual displayed name, not off treating the
+        # nickname text as if it were the handle).
+        resolved = resolve_tiktok_handle(mention.value)
+        if resolved and resolved.lower() != mention.value.lstrip("@").lower():
+            resolved_data = scrape_tiktok_profile(_build_social_url("tiktok", resolved))
+            if resolved_data is not None:
+                mention.value = resolved  # point the chip at the real handle
+                return resolved_data
+        return guessed
     if mention.platform == "youtube":
         return scrape_channel(url)
-    return scrape_og_profile(url)  # instagram, x
+    if mention.platform == "instagram":
+        data = scrape_og_profile(url)
+        if data is not None:
+            return data
+        # Same nickname-vs-real-handle gap as TikTok's, above.
+        resolved = resolve_instagram_handle(mention.value)
+        if not resolved:
+            return None
+        data = scrape_og_profile(_build_social_url("instagram", resolved))
+        if data is not None:
+            mention.value = resolved  # point the chip at the real handle
+        return data
+    return scrape_og_profile(url)  # x
 
 
-def _filter_mentions(mentions: list[SocialMention]) -> list[SocialMention]:
+def _normalized_bio_links(bio: str | None) -> set[tuple[str, str]]:
+    """(host, path) pairs for every URL-looking substring in a bio, scheme/
+    www/trailing-slash/query stripped — good enough to notice the same
+    Linktree or website listed verbatim in two different bios without
+    chasing redirects."""
+    if not bio:
+        return set()
+    from urllib.parse import urlparse
+
+    links = set()
+    for url in _bio_urls(bio):
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").removeprefix("www.")
+        if host:
+            links.add((host, parsed.path.rstrip("/")))
+    return links
+
+
+def _filter_mentions(
+    mentions: list[SocialMention],
+    primary_platform: str,
+    primary_username: str,
+    primary_bio: str | None = None,
+    model: Model | None = None,
+) -> list[SocialMention]:
     """A chip that would just bounce off add_social's own dedup on Confirm
-    — already linked, dead, or the same real profile behind a different
-    literal link — shouldn't be offered for Confirm in the first place.
-    Mirrors add_social's own matching (same platform+username already
-    saved, or same platform+pfp already saved) plus the same "prefer the
-    clean link" call between two mentions that turn out to be duplicates
-    of each other within this one batch. The scrapes needed to check any
-    of that run concurrently, so N mentions cost about one scrape's
-    latency, not N of them."""
+    — already linked or the same real profile behind a different literal
+    link — shouldn't be offered for Confirm in the first place. Mirrors
+    add_social's own matching (same platform+username already saved, or
+    same platform+pfp already saved) plus the same "prefer the clean link"
+    call between two mentions that turn out to be duplicates of each other
+    within this one batch. The scrapes needed to check any of that run
+    concurrently, so N mentions cost about one scrape's latency, not N of
+    them.
+
+    Second hop: each first-hop candidate's own (already-scraped) bio gets
+    mined the same way the primary bio was — LLM extraction plus a literal-
+    URL scan — since an alt's bio often carries links the creator's own bio
+    doesn't. Newly discovered accounts get scraped and verified exactly like
+    any first-hop candidate, but their bios are never mined again — capped
+    at one hop, not an open-ended crawl. Pass `model=None` (e.g. in tests) to
+    skip this step entirely.
+
+    Every returned mention also gets a `confidence`: "confirmed" if the
+    candidate's own bio tags the primary account back, or lists a bio link
+    that also appears in the primary's own bio (same Linktree, same website
+    — the mutual-backreference check misses this when the alt doesn't
+    @-tag the primary by name). "likely" if the candidate merely exists.
+    A verifiable-platform mention that fails every one of these checks —
+    guessed profile 404s, search resolution finds nothing, no shared link —
+    is dropped outright: with a full resolve pass and a second hop both
+    behind it now, whatever's left really is noise. An unscrapeable
+    platform (telegram, throne, ...) still can't be checked at all, so
+    those stay kept-but-flagged "unverified" — dropping them would lose a
+    real mention the creator could still find manually."""
     existing = list_socials()
     known_handles = {s["username"].lstrip("@").lower() for s in existing}
+    primary_tag = f"@{primary_username.lstrip('@').lower()}"
+    primary_links = _normalized_bio_links(primary_bio)
 
     def already_linked(mention: SocialMention) -> bool:
         handle = mention.value.lstrip("@").lower()
@@ -618,31 +768,65 @@ def _filter_mentions(mentions: list[SocialMention]) -> list[SocialMention]:
             for s in existing
         )
 
-    candidates = [
-        m
-        for m in mentions
-        if m.type == "platform"
-        and m.platform in _VERIFIABLE_MENTION_PLATFORMS
-        and not already_linked(m)
-    ]
+    def verifiable_candidates(pool: list[SocialMention]) -> list[SocialMention]:
+        return [
+            m
+            for m in pool
+            if m.type == "platform"
+            and m.platform in _VERIFIABLE_MENTION_PLATFORMS
+            and not already_linked(m)
+        ]
+
+    candidates = verifiable_candidates(mentions)
     with ThreadPoolExecutor(max_workers=8) as pool:
         scraped_by_id = dict(zip((id(m) for m in candidates), pool.map(_scrape_mention, candidates)))
 
+    secondary: list[SocialMention] = []
+    if model is not None:
+        for mention in candidates:
+            candidate_bio = (scraped_by_id.get(id(mention)) or {}).get("bio")
+            if not candidate_bio:
+                continue
+            found = _extract_mentions(model, candidate_bio, mention.platform)
+            found += _mentions_from_urls(_bio_urls(candidate_bio), exclude_platform=mention.platform)
+            secondary.extend(found)
+
+    combined = _dedupe_mentions(mentions + secondary)
+    already_scraped = {id(m) for m in candidates}
+    new_candidates = [m for m in verifiable_candidates(combined) if id(m) not in already_scraped]
+    if new_candidates:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            scraped_by_id.update(
+                zip((id(m) for m in new_candidates), pool.map(_scrape_mention, new_candidates))
+            )
+
     kept: list[SocialMention] = []
     seen_pfp: dict[tuple[str, str], SocialMention] = {}
-    for mention in mentions:
+    for mention in combined:
         if mention.type != "platform":
             kept.append(mention)
             continue
         if already_linked(mention):
             continue  # already saved — nothing new to confirm
         if mention.platform not in _VERIFIABLE_MENTION_PLATFORMS:
-            kept.append(mention)
+            kept.append(mention)  # confidence stays "unverified" — no scrape possible
             continue
         data = scraped_by_id.get(id(mention))
         if not data:
-            continue  # scrape failed / profile confirmed gone
+            continue  # 404 even after resolution — a weak connection, drop it
+        # Two ways to earn "confirmed": the candidate's own bio tags the
+        # primary account back, or its bio lists a link (Linktree, website,
+        # ...) that also appears in the primary's bio — the same real-world
+        # signal a human would use to tell an alt from a same-named stranger.
+        shares_bio_link = bool(primary_links and primary_links & _normalized_bio_links(data.get("bio")))
+        mention.confidence = (
+            "confirmed"
+            if primary_tag in (data.get("bio") or "").lower() or shares_bio_link
+            else "likely"
+        )
         pfp = data.get("pfp_url")
+        mention.pfpUrl = pfp
+        mention.followerCount = data.get("follower_count")
         if pfp and any(
             s["platform"].lower() == mention.platform and s.get("pfpUrl") == pfp for s in existing
         ):
@@ -685,8 +869,14 @@ def _extract_mentions(model: Model, bio: str, current_platform: str) -> list[Soc
             'above (or null for email), "value": the bare handle without @ or url '
             'prefix (or the email address)}. If nothing found, reply with [].'
         )
+        # A raw newline inside the bio (common — scraped bios keep the
+        # creator's own line breaks) sits right where the prompt's own
+        # instruction/content separator does, and derails this model's JSON
+        # extraction into an empty array. Collapsing to single spaces costs
+        # nothing here — only the handles/platforms matter, not layout.
+        bio_text = " ".join(bio[:1000].split())
         content = model.chat(
-            [Message("user", f"{prompt}\n\n{bio[:1000]}")],
+            [Message("user", f"{prompt}\n\n{bio_text}")],
             temperature=0.0,
             max_tokens=256,
             thinking=False,
@@ -710,6 +900,13 @@ def _extract_mentions(model: Model, bio: str, current_platform: str) -> list[Soc
                 mentions.append(
                     SocialMention(type="platform", platform=item["platform"], value=value)
                 )
+            elif kind == "bare":
+                # The prompt's own "2. Bare handles" heading — this model
+                # sometimes echoes "bare" back as the type instead of the
+                # "platform" the schema asks for. Same meaning either way:
+                # a handle with no named platform belongs to current_platform.
+                platform = item.get("platform") if item.get("platform") in _MENTION_PLATFORMS else current_platform
+                mentions.append(SocialMention(type="platform", platform=platform, value=value))
         return mentions
     except Exception:
         return []
@@ -953,12 +1150,18 @@ def social_list() -> dict:
         "socials": list_socials(),
         "pfpVersion": pfp_version(),
         "bannerVersion": banner_version(),
+        "chatIconVersion": chaticon_version(),
+        "landingPfpVersion": landing_pfp_version(),
+        "pfpMime": pfp_mime(),
+        "bannerMime": banner_mime(),
+        "chatIconMime": chaticon_mime(),
+        "landingPfpMime": landing_pfp_mime(),
     }
 
 
 @app.get("/social/pfp")
 def social_pfp() -> Response:
-    """Public — the fan profile header's `<img>` src. 404 if never uploaded."""
+    """Public — the fan profile header's `<img>`/`<video>` src. 404 if never uploaded."""
     found = read_pfp()
     if not found:
         raise HTTPException(status_code=404, detail="no pfp uploaded")
@@ -971,6 +1174,26 @@ def social_banner() -> Response:
     found = read_banner()
     if not found:
         raise HTTPException(status_code=404, detail="no banner uploaded")
+    data, mime = found
+    return Response(content=data, media_type=mime)
+
+
+@app.get("/social/chat_icon")
+def social_chat_icon() -> Response:
+    """Public — the fan chat toggle's icon src. 404 if never uploaded."""
+    found = read_chat_icon()
+    if not found:
+        raise HTTPException(status_code=404, detail="no chat icon uploaded")
+    data, mime = found
+    return Response(content=data, media_type=mime)
+
+
+@app.get("/social/landing_pfp")
+def social_landing_pfp() -> Response:
+    """Public — the fan landing hero's `<img>`/`<video>` src. 404 if never uploaded."""
+    found = read_landing_pfp()
+    if not found:
+        raise HTTPException(status_code=404, detail="no landing pfp uploaded")
     data, mime = found
     return Response(content=data, media_type=mime)
 
@@ -1482,7 +1705,7 @@ def admin_voice_phrases() -> dict:
 
 
 @app.post("/admin/voice/sample")
-async def admin_voice_sample(request: Request) -> dict:
+async def admin_voice_sample(request: Request, language: str = "en") -> dict:
     model = _require_loaded()
     _require_agent(model)
     data = await request.body()
@@ -1490,6 +1713,18 @@ async def admin_voice_sample(request: Request) -> dict:
         save_sample(data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Build the clone right away — the expensive reference-audio encode
+    # happens once here, not deferred until someone clicks "hear yourself".
+    # `language` is whichever script the creator was actually reading (the
+    # same picker state the record dialog showed), so ref_text matches the
+    # audio. Best-effort: the sample is already saved either way, and a
+    # failed build here just leaves voice_status() at "none" for the next
+    # /admin/voice/clone call to report clearly.
+    if language in PHRASES:
+        try:
+            build_clone(voice_sample_module.SAMPLE_PATH, PHRASES[language])
+        except Exception:
+            logger.exception("voice clone build failed after sample save")
     return {"status": sample_status()}
 
 
@@ -1497,23 +1732,21 @@ async def admin_voice_sample(request: Request) -> dict:
 def admin_voice_clone(request: VoiceCloneRequest) -> Response:
     model = _require_loaded()
     _require_agent(model)
-    if sample_status() is None:
+    if voice_status() != "clone":
         raise HTTPException(
             status_code=422,
-            detail="no sample recorded — POST /admin/voice/sample first",
+            detail="no voice clone built yet — record a sample first",
         )
     if request.language not in PHRASES:
         raise HTTPException(status_code=400, detail=f"unknown language {request.language!r}")
     try:
-        ref_text = PHRASES[request.language]
         # Qwen3-TTS wants a full language name ("English"), not the ISO code
         # voice_sample.py's LANGUAGES keys on — LANGUAGES already carries that
         # label as each tuple's second element.
         clone_language = dict(LANGUAGES)[request.language]
-        build_clone(voice_sample_module.SAMPLE_PATH, ref_text)
-        audio = b"".join(voice_synth(ref_text, language=clone_language))
+        audio = b"".join(voice_synth(TEST_PHRASES[request.language], language=clone_language))
     except Exception as exc:
-        logger.exception("voice clone failed")
+        logger.exception("voice clone playback failed")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return Response(content=audio, media_type="audio/wav")
 
@@ -1549,6 +1782,12 @@ def admin_social_list() -> dict:
         "socials": list_socials(),
         "pfpVersion": pfp_version(),
         "bannerVersion": banner_version(),
+        "chatIconVersion": chaticon_version(),
+        "landingPfpVersion": landing_pfp_version(),
+        "pfpMime": pfp_mime(),
+        "bannerMime": banner_mime(),
+        "chatIconMime": chaticon_mime(),
+        "landingPfpMime": landing_pfp_mime(),
     }
 
 
@@ -1574,6 +1813,30 @@ async def admin_social_banner(request: Request) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"bannerVersion": banner_version()}
+
+
+@app.post("/admin/social/chat_icon")
+async def admin_social_chat_icon(request: Request) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    data = await request.body()
+    try:
+        save_chat_icon(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"chatIconVersion": chaticon_version()}
+
+
+@app.post("/admin/social/landing_pfp")
+async def admin_social_landing_pfp(request: Request) -> dict:
+    model = _require_loaded()
+    _require_agent(model)
+    data = await request.body()
+    try:
+        save_landing_pfp(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"landingPfpVersion": landing_pfp_version()}
 
 
 @app.post("/admin/social/posts/refresh")
@@ -1708,6 +1971,21 @@ def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse
         bio = scraped["bio"]
         if bio:
             mentions = _extract_mentions(model, bio, platform)
+            # The LLM prompt above only catches "platform: handle" text and
+            # bare @handles — a raw link pasted into a bio (most often a
+            # Linktree URL, but any supported platform) matches neither, so
+            # scan for literal URLs too and let _parse_social_url read them.
+            mentions = _dedupe_mentions(
+                mentions + _mentions_from_urls(_bio_urls(bio), exclude_platform=platform)
+            )
+        bio_link = scraped.get("bio_link")
+        if bio_link:
+            # TikTok's clickable "link" button under the bio — a separate
+            # profile field, not part of the bio text, so nothing that scans
+            # `bio` above ever sees it.
+            mentions = _dedupe_mentions(
+                mentions + _mentions_from_urls([bio_link], exclude_platform=platform)
+            )
     if platform == "linktree":
         mentions = _mentions_from_urls(
             scrape_linktree_links(request.url) or [], exclude_platform="linktree"
@@ -1722,13 +2000,23 @@ def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse
             scrape_twitch_panel_links(username) + scrape_twitch_social_medias(username),
             exclude_platform="twitch",
         )
-        seen = {(m.type, m.platform, m.value.lower()) for m in mentions}
-        for mention in panel_mentions:
-            key = (mention.type, mention.platform, mention.value.lower())
-            if key not in seen:
-                mentions.append(mention)
-                seen.add(key)
-    mentions = _filter_mentions(mentions)
+        mentions = _dedupe_mentions(mentions + panel_mentions)
+    # A Linktree link surfacing anywhere — bio text, Twitch panels — isn't
+    # itself a profile worth confirming (Confirm has no canonical URL for
+    # "linktree"). Expand it into its own mentions, same as pasting it as
+    # the primary link does above, instead of leaving a dead chip.
+    expanded: list[SocialMention] = []
+    for mention in mentions:
+        if mention.type == "platform" and mention.platform == "linktree":
+            expanded.extend(
+                _mentions_from_urls(
+                    scrape_linktree_links(f"https://linktr.ee/{mention.value}") or [],
+                    exclude_platform="linktree",
+                )
+            )
+        else:
+            expanded.append(mention)
+    mentions = _filter_mentions(_dedupe_mentions(expanded), platform, username, bio, model)
     return SocialPreviewResponse(
         platform=platform,
         username=username,
@@ -2491,20 +2779,61 @@ def _self_check() -> None:
     _model.agent = False
 
     # -- /admin/voice --------------------------------------------------------
+    # build_clone is patched before the very first /admin/voice/sample call,
+    # not after — saving a sample now triggers a clone build as a side
+    # effect, so the fake has to be in place for that first call too, or it
+    # would reach the real qwen_tts loader.
     _model.agent = True
     with tempfile.TemporaryDirectory() as tmp:
         import runtime.voice_sample as voice_module
+        import runtime.voice as voice_synth_module
 
         original_voice_dir = voice_module.VOICE_DIR
         original_sample_path = voice_module.SAMPLE_PATH
+        original_synth_dir = voice_synth_module.VOICE_DIR
+        original_clone_path = voice_synth_module.CLONE_PATH
+        original_design_path = voice_synth_module.DESIGN_PATH
         voice_module.VOICE_DIR = Path(tmp) / "voice"
         voice_module.SAMPLE_PATH = voice_module.VOICE_DIR / "sample.wav"
+        voice_synth_module.VOICE_DIR = Path(tmp) / "synth-voice"
+        voice_synth_module.CLONE_PATH = voice_synth_module.VOICE_DIR / "clone.pt"
+        voice_synth_module.DESIGN_PATH = voice_synth_module.VOICE_DIR / "design.json"
+
+        def fake_build_clone(ref_audio, ref_text, seed=0):
+            voice_synth_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
+            voice_synth_module.CLONE_PATH.write_bytes(b"fake-clone")
+
+        def fake_build_design(instruct, seed, language="Auto"):
+            voice_synth_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
+            voice_synth_module.DESIGN_PATH.write_text("{}", encoding="utf-8")
+
+        def fake_synth(text, language="Auto"):
+            yield b"RIFFfake-wav-bytes"
+
+        # Patch service.main's own bound names, not runtime.voice's —
+        # `from X import Y` copies the reference, doesn't stay linked to X.Y.
+        original_build_clone = build_clone
+        original_build_design = build_design
+        original_synth = voice_synth
+        build_clone = fake_build_clone
+        build_design = fake_build_design
+        voice_synth = fake_synth
         try:
+            # No voice configured yet — speak refuses with a clear status, not a 500.
+            response = client.post("/voice/speak", json={"text": "hi"})
+            assert response.status_code == 404, (response.status_code, response.text)
+
             response = client.get("/admin/voice/status")
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["status"] is None
+            assert response.json()["synthStatus"] == "none", response.json()
 
-            # Non-WAV bytes are refused, not written.
+            # No clone built yet — "hear yourself" refuses with a clear reason.
+            response = client.post("/admin/voice/clone", json={"language": "en"})
+            assert response.status_code == 422, (response.status_code, response.text)
+            assert "no voice clone" in response.json()["detail"], response.text
+
+            # Non-WAV bytes are refused, not written — and no clone attempted.
             response = client.post(
                 "/admin/voice/sample",
                 content=b"not-a-wav",
@@ -2512,110 +2841,57 @@ def _self_check() -> None:
             )
             assert response.status_code == 400, (response.status_code, response.text)
             assert not voice_module.SAMPLE_PATH.exists()
+            assert not voice_synth_module.CLONE_PATH.exists()
 
+            # Saving a real sample builds the clone right away — no separate
+            # /admin/voice/clone call needed to reach synthStatus == "clone".
             response = client.post(
-                "/admin/voice/sample",
+                "/admin/voice/sample?language=en",
                 content=b"RIFF" + b"fake-wav-bytes",
                 headers={"Content-Type": "audio/wav"},
             )
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["status"] is not None
+            assert voice_synth_module.CLONE_PATH.exists(), "sample save must build the clone automatically"
 
             response = client.get("/admin/voice/status")
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["status"] is not None
+            assert response.json()["synthStatus"] == "clone", response.json()
 
             response = client.get("/admin/voice/phrases")
             assert response.status_code == 200, (response.status_code, response.text)
             body = response.json()
             assert [tuple(x) for x in body["languages"]] == LANGUAGES
             assert body["phrases"] == PHRASES
+
+            # "Hear yourself" is pure playback now — no rebuild.
+            response = client.post("/admin/voice/clone", json={"language": "en"})
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.content == b"RIFFfake-wav-bytes"
+
+            # design build reuses the compact persona -> one LLM call. Needs
+            # a real data/character.md to read; `data_available` was already
+            # computed earlier in this function against exactly that file.
+            if data_available:
+                seen.clear()
+                response = client.post("/admin/voice/design")
+                assert response.status_code == 200, (response.status_code, response.text)
+                assert response.content == b"RIFFfake-wav-bytes"
+                assert "messages" in seen, "design must call model.chat() for the instruct text"
+            else:
+                print("service self-check: voice design skipped (no data/character.md)")
+
+            response = client.post("/voice/speak", json={"text": "read this aloud"})
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.headers["content-type"] == "audio/wav"
+            assert response.content == b"RIFFfake-wav-bytes"
         finally:
+            build_clone = original_build_clone
+            build_design = original_build_design
+            voice_synth = original_synth
             voice_module.VOICE_DIR = original_voice_dir
             voice_module.SAMPLE_PATH = original_sample_path
-
-        import runtime.voice as voice_synth_module
-
-        original_synth_dir = voice_synth_module.VOICE_DIR
-        original_clone_path = voice_synth_module.CLONE_PATH
-        original_design_path = voice_synth_module.DESIGN_PATH
-        voice_synth_module.VOICE_DIR = Path(tmp) / "synth-voice"
-        voice_synth_module.CLONE_PATH = voice_synth_module.VOICE_DIR / "clone.pt"
-        voice_synth_module.DESIGN_PATH = voice_synth_module.VOICE_DIR / "design.json"
-        try:
-            # No voice configured yet — speak refuses with a clear status, not a 500.
-            response = client.post("/voice/speak", json={"text": "hi"})
-            assert response.status_code == 404, (response.status_code, response.text)
-
-            # status now reports synthStatus alongside the recording status.
-            response = client.get("/admin/voice/status")
-            assert response.status_code == 200, (response.status_code, response.text)
-            assert response.json()["synthStatus"] == "none", response.json()
-
-            def fake_build_clone(ref_audio, ref_text):
-                voice_synth_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
-                voice_synth_module.CLONE_PATH.write_bytes(b"fake-clone")
-
-            def fake_build_design(instruct, seed, language="Auto"):
-                voice_synth_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
-                voice_synth_module.DESIGN_PATH.write_text("{}", encoding="utf-8")
-
-            def fake_synth(text, language="Auto"):
-                yield b"RIFFfake-wav-bytes"
-
-            # Patch service.main's own bound names, not runtime.voice's —
-            # `from X import Y` copies the reference, doesn't stay linked to X.Y.
-            original_build_clone = build_clone
-            original_build_design = build_design
-            original_synth = voice_synth
-            build_clone = fake_build_clone
-            build_design = fake_build_design
-            voice_synth = fake_synth
-            try:
-                # Fresh subdirectory, not the outer block's "voice" — that
-                # one has a leftover sample.wav on disk from its own test.
-                voice_module.VOICE_DIR = Path(tmp) / "voice-clone-test"
-                voice_module.SAMPLE_PATH = voice_module.VOICE_DIR / "sample.wav"
-                try:
-                    # No recorded sample yet — clone refuses with a clear reason.
-                    response = client.post("/admin/voice/clone", json={"language": "en"})
-                    assert response.status_code == 422, (response.status_code, response.text)
-                    assert "no sample" in response.json()["detail"], response.text
-
-                    voice_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
-                    voice_module.SAMPLE_PATH.write_bytes(b"RIFFfake-sample")
-                    response = client.post("/admin/voice/clone", json={"language": "en"})
-                    assert response.status_code == 200, (response.status_code, response.text)
-                    assert response.content == b"RIFFfake-wav-bytes"
-                    assert voice_synth_module.CLONE_PATH.exists()
-                finally:
-                    voice_module.VOICE_DIR = original_voice_dir
-                    voice_module.SAMPLE_PATH = original_sample_path
-
-                response = client.get("/admin/voice/status")
-                assert response.json()["synthStatus"] == "clone", response.json()
-
-                # design build reuses the compact persona -> one LLM call. Needs
-                # a real data/character.md to read; `data_available` was already
-                # computed earlier in this function against exactly that file.
-                if data_available:
-                    seen.clear()
-                    response = client.post("/admin/voice/design")
-                    assert response.status_code == 200, (response.status_code, response.text)
-                    assert response.content == b"RIFFfake-wav-bytes"
-                    assert "messages" in seen, "design must call model.chat() for the instruct text"
-                else:
-                    print("service self-check: voice design skipped (no data/character.md)")
-
-                response = client.post("/voice/speak", json={"text": "read this aloud"})
-                assert response.status_code == 200, (response.status_code, response.text)
-                assert response.headers["content-type"] == "audio/wav"
-                assert response.content == b"RIFFfake-wav-bytes"
-            finally:
-                build_clone = original_build_clone
-                build_design = original_build_design
-                voice_synth = original_synth
-        finally:
             voice_synth_module.VOICE_DIR = original_synth_dir
             voice_synth_module.CLONE_PATH = original_clone_path
             voice_synth_module.DESIGN_PATH = original_design_path
@@ -2631,6 +2907,8 @@ def _self_check() -> None:
             social_module.IMAGES_DIR,
             social_module.PFP_PATH,
             social_module.BANNER_PATH,
+            social_module.CHATICON_PATH,
+            social_module.LANDING_PFP_PATH,
         )
         original_posts_path = posts_module.POSTS_PATH
         posts_module.POSTS_PATH = Path(tmp) / "posts.json"
@@ -2638,6 +2916,8 @@ def _self_check() -> None:
         social_module.IMAGES_DIR = Path(tmp) / "images"
         social_module.PFP_PATH = social_module.IMAGES_DIR / "pfp.img"
         social_module.BANNER_PATH = social_module.IMAGES_DIR / "banner.img"
+        social_module.CHATICON_PATH = social_module.IMAGES_DIR / "chaticon.img"
+        social_module.LANDING_PFP_PATH = social_module.IMAGES_DIR / "landingpfp.img"
         try:
             # The public route needs no loaded model and no agent mode —
             # it must work even in whatever state `_model` is currently in.
@@ -2649,9 +2929,21 @@ def _self_check() -> None:
                 "socials": [],
                 "pfpVersion": None,
                 "bannerVersion": None,
+                "chatIconVersion": None,
+                "landingPfpVersion": None,
+                "pfpMime": None,
+                "bannerMime": None,
+                "chatIconMime": None,
+                "landingPfpMime": None,
             }
 
             response = client.get("/social/pfp")
+            assert response.status_code == 404, (response.status_code, response.text)
+
+            response = client.get("/social/chat_icon")
+            assert response.status_code == 404, (response.status_code, response.text)
+
+            response = client.get("/social/landing_pfp")
             assert response.status_code == 404, (response.status_code, response.text)
 
             # The admin routes are refused like every other /admin/* route
@@ -2707,6 +2999,12 @@ def _self_check() -> None:
                 "socials": [],
                 "pfpVersion": None,
                 "bannerVersion": None,
+                "chatIconVersion": None,
+                "landingPfpVersion": None,
+                "pfpMime": None,
+                "bannerMime": None,
+                "chatIconMime": None,
+                "landingPfpMime": None,
             }
 
             response = client.post(
@@ -2714,40 +3012,48 @@ def _self_check() -> None:
             )
             assert response.status_code == 404, (response.status_code, response.text)
 
-            # /admin/social/preview: parses + detects isAlt without touching
-            # the network — instagram, not youtube, so this doesn't depend
-            # on a live scrape (that's youtube_scrape.py's own self-check).
-            response = client.post(
-                "/admin/social/add",
-                json={
-                    "platform": "instagram",
-                    "username": "first",
-                    "url": "https://instagram.com/first",
-                },
-            )
-            first_id = response.json()["id"]
+            # /admin/social/preview: parses + detects isAlt — instagram, not
+            # youtube, so this is about isAlt collision logic, not a live
+            # scrape (that's youtube_scrape.py's own self-check). Instagram
+            # is scrape-verifiable now (Scrapling), so stub it here too —
+            # otherwise "second"/"first-renamed" would hit real network for
+            # data this isAlt check never even reads.
+            original_scrape_og_profile_alt = scrape_og_profile
+            scrape_og_profile = lambda url: None
+            try:
+                response = client.post(
+                    "/admin/social/add",
+                    json={
+                        "platform": "instagram",
+                        "username": "first",
+                        "url": "https://instagram.com/first",
+                    },
+                )
+                first_id = response.json()["id"]
 
-            response = client.post(
-                "/admin/social/preview",
-                json={"url": "https://instagram.com/second"},
-            )
-            assert response.status_code == 200, (response.status_code, response.text)
-            body = response.json()
-            assert body["platform"] == "instagram"
-            assert body["username"] == "second"
-            assert body["isAlt"] is True, "a second instagram link must be flagged -Alt"
+                response = client.post(
+                    "/admin/social/preview",
+                    json={"url": "https://instagram.com/second"},
+                )
+                assert response.status_code == 200, (response.status_code, response.text)
+                body = response.json()
+                assert body["platform"] == "instagram"
+                assert body["username"] == "second"
+                assert body["isAlt"] is True, "a second instagram link must be flagged -Alt"
 
-            # Editing the existing entry's own link is not -Alt against itself.
-            response = client.post(
-                "/admin/social/preview",
-                json={"url": "https://instagram.com/first-renamed", "id": first_id},
-            )
-            assert response.json()["isAlt"] is False
+                # Editing the existing entry's own link is not -Alt against itself.
+                response = client.post(
+                    "/admin/social/preview",
+                    json={"url": "https://instagram.com/first-renamed", "id": first_id},
+                )
+                assert response.json()["isAlt"] is False
 
-            response = client.post(
-                "/admin/social/preview", json={"url": "not a real url"}
-            )
-            assert response.status_code == 422, (response.status_code, response.text)
+                response = client.post(
+                    "/admin/social/preview", json={"url": "not a real url"}
+                )
+                assert response.status_code == 422, (response.status_code, response.text)
+            finally:
+                scrape_og_profile = original_scrape_og_profile_alt
 
             # /admin/social/preview's YouTube branch reads
             # scraped["pfp_url"/"follower_count"/"bio"] — join that shape to
@@ -2820,6 +3126,7 @@ def _self_check() -> None:
             original_scrape_twitch_channel = scrape_twitch_channel
             original_scrape_twitch_panel_links = scrape_twitch_panel_links
             original_scrape_twitch_social_medias = scrape_twitch_social_medias
+            original_scrape_og_profile_ig = scrape_og_profile
             scrape_twitch_channel = lambda username: {
                 "pfp_url": "https://example.com/twitch-pic.jpg",
                 "follower_count": 3000,
@@ -2833,6 +3140,11 @@ def _self_check() -> None:
             scrape_twitch_social_medias = lambda username: [
                 "https://www.youtube.com/@realchannel",
             ]
+            scrape_og_profile = lambda url: (
+                {"pfp_url": "https://example.com/ig-pic.jpg", "follower_count": 400, "bio": None}
+                if url == "https://instagram.com/realhandle"
+                else None
+            )
             try:
                 response = client.post(
                     "/admin/social/preview",
@@ -2843,17 +3155,29 @@ def _self_check() -> None:
                 assert body["pfpUrl"] == "https://example.com/twitch-pic.jpg", body
                 assert body["followerCount"] == 3000, body
                 assert body["bio"] == "twitch test bio", body
-                assert {"type": "platform", "platform": "instagram", "value": "realhandle"} in body[
-                    "mentions"
-                ], body["mentions"]
-                assert {"type": "platform", "platform": "youtube", "value": "@realchannel"} in body[
-                    "mentions"
-                ], body["mentions"]
+                # instagram is now verifiable (Scrapling gets past its og-tag
+                # gate) — the panel link's guessed profile scrapes fine here,
+                # so it's confirmed-to-exist, same tier as the youtube one
+                # below (no mutual bio back-reference to be "confirmed").
+                assert {
+                    "type": "platform",
+                    "platform": "instagram",
+                    "value": "realhandle",
+                    "confidence": "likely",
+                    "pfpUrl": "https://example.com/ig-pic.jpg",
+                    "followerCount": 400,
+                } in body["mentions"], body["mentions"]
+                assert any(
+                    m["type"] == "platform" and m["platform"] == "youtube"
+                    and m["value"] == "@realchannel" and m["confidence"] in ("likely", "confirmed")
+                    for m in body["mentions"]
+                ), body["mentions"]
                 assert not any(m["platform"] == "twitch" for m in body["mentions"]), body["mentions"]
             finally:
                 scrape_twitch_channel = original_scrape_twitch_channel
                 scrape_twitch_panel_links = original_scrape_twitch_panel_links
                 scrape_twitch_social_medias = original_scrape_twitch_social_medias
+                scrape_og_profile = original_scrape_og_profile_ig
 
             # Same join for the discord branch, against scrape_discord_invite
             # — takes the invite code (the "username"), not a url.
@@ -2880,6 +3204,7 @@ def _self_check() -> None:
             # through the model and surface anything found, tagged by type.
             original_chat = _model.chat
             original_scrape_discord_invite = scrape_discord_invite
+            original_scrape_og_profile_bio = scrape_og_profile
             scrape_discord_invite = lambda code: {
                 "pfp_url": None,
                 "follower_count": None,
@@ -2889,6 +3214,18 @@ def _self_check() -> None:
                 {"type": "platform", "platform": "instagram", "value": "realhandle"},
                 {"type": "email", "value": "biz@example.com"},
             ])
+            # "realhandle" isn't a placeholder here — Instagram, now
+            # scrape-verifiable, has a real (if obscure) account by that
+            # name. Stubbed to a successful scrape (not None) since a
+            # verifiable mention that fails to scrape is now dropped
+            # outright, not kept "unverified" — a None stub here would
+            # make the instagram mention vanish, defeating what this block
+            # means to check (extraction surfacing both mention types).
+            scrape_og_profile = lambda url: {
+                "pfp_url": "https://example.com/realhandle-pic.jpg",
+                "follower_count": 42,
+                "bio": None,
+            }
             try:
                 response = client.post(
                     "/admin/social/preview",
@@ -2896,10 +3233,25 @@ def _self_check() -> None:
                 )
                 assert response.status_code == 200, (response.status_code, response.text)
                 mentions = response.json()["mentions"]
-                assert {"type": "platform", "platform": "instagram", "value": "realhandle"} in mentions, mentions
-                assert {"type": "email", "platform": None, "value": "biz@example.com"} in mentions, mentions
+                assert {
+                    "type": "platform",
+                    "platform": "instagram",
+                    "value": "realhandle",
+                    "confidence": "likely",
+                    "pfpUrl": "https://example.com/realhandle-pic.jpg",
+                    "followerCount": 42,
+                } in mentions, mentions
+                assert {
+                    "type": "email",
+                    "platform": None,
+                    "value": "biz@example.com",
+                    "confidence": "unverified",
+                    "pfpUrl": None,
+                    "followerCount": None,
+                } in mentions, mentions
             finally:
                 scrape_discord_invite = original_scrape_discord_invite
+                scrape_og_profile = original_scrape_og_profile_bio
                 _model.chat = original_chat
 
             # A model reply that isn't valid JSON must degrade to no
@@ -2988,9 +3340,44 @@ def _self_check() -> None:
             response = client.get("/social/banner")
             assert response.headers["content-type"] == "image/jpeg"
 
+            # chat icon upload + serve — same shape as pfp/banner, plus a
+            # video clip this time, and the oversized-upload rejection.
+            response = client.post(
+                "/admin/social/chat_icon",
+                content=b"\x1a\x45\xdf\xa3" + b"fake-webm-bytes",
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["chatIconVersion"] is not None
+
+            response = client.get("/social/chat_icon")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.headers["content-type"] == "video/webm"
+
+            oversized = b"\x89PNG\r\n\x1a\n" + b"0" * social_module.MAX_MEDIA_BYTES
+            response = client.post("/admin/social/chat_icon", content=oversized)
+            assert response.status_code == 400, (response.status_code, response.text)
+
+            # landing pfp upload + serve — its own asset, separate from /pfp.
+            response = client.post(
+                "/admin/social/landing_pfp", content=b"\x89PNG\r\n\x1a\nfake-landing"
+            )
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.json()["landingPfpVersion"] is not None
+
+            response = client.get("/social/landing_pfp")
+            assert response.status_code == 200, (response.status_code, response.text)
+            assert response.headers["content-type"] == "image/png"
+            assert response.content == b"\x89PNG\r\n\x1a\nfake-landing"
+
             response = client.get("/social/list")
             body = response.json()
             assert body["pfpVersion"] is not None and body["bannerVersion"] is not None
+            assert body["chatIconVersion"] is not None
+            assert body["landingPfpVersion"] is not None
+            assert body["pfpMime"] == "image/png"
+            assert body["bannerMime"] == "image/jpeg"
+            assert body["chatIconMime"] == "video/webm"
+            assert body["landingPfpMime"] == "image/png"
 
             # /social/posts + /admin/social/posts/refresh — no socials left
             # in this tmp profile (deleted above), so refresh hits zero
@@ -3014,6 +3401,8 @@ def _self_check() -> None:
                 social_module.IMAGES_DIR,
                 social_module.PFP_PATH,
                 social_module.BANNER_PATH,
+                social_module.CHATICON_PATH,
+                social_module.LANDING_PFP_PATH,
             ) = original_images
     _model.agent = False
 

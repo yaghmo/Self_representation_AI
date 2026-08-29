@@ -44,9 +44,18 @@
 #    what gets allowed above. This is the line that matters.
 # ---------------------------------------------------------------
 data/
+media/
+*.mov
 *.private.md
 *.local.md
 conversation.txt
+
+# Runtime logs — request/response payloads, scraped profile data, real
+# handles hit during dev testing. Not application code, so none of section
+# 3's wholesale allows (service/** etc.) should ever have reached these —
+# a bare "logs/" matches at any depth, so this blocks every one of them,
+# current and future, instead of naming each wholesale-allowed dir by hand.
+logs/
 
 # Secrets and machine-specific generated config. Blocked even inside
 # cookbook/, which section 3 allows wholesale.

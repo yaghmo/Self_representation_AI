@@ -1,16 +1,30 @@
+import os
+import shutil
+import subprocess
+import tempfile
+
+import pytest
+
 import runtime.social as social_module
 from runtime.social import (
     SocialAlreadyExists,
     SocialNotFound,
     add_social,
+    chaticon_version,
     delete_social,
     get_bio,
     get_contact_email,
+    landing_pfp_version,
     list_socials,
+    pfp_mime,
     pfp_version,
     read_banner,
+    read_chat_icon,
+    read_landing_pfp,
     read_pfp,
     save_banner,
+    save_chat_icon,
+    save_landing_pfp,
     save_pfp,
     set_bio,
     set_contact_email,
@@ -179,3 +193,124 @@ def test_social_self_check(tmp_path):
     finally:
         social_module.PROFILE_JSON_PATH = original
         social_module.IMAGES_DIR, social_module.PFP_PATH, social_module.BANNER_PATH = original_images
+
+
+def test_save_media_rejects_oversized_upload(tmp_path, monkeypatch):
+    monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
+    monkeypatch.setattr(social_module, "PFP_PATH", social_module.IMAGES_DIR / "pfp.img")
+
+    oversized = b"\x89PNG\r\n\x1a\n" + b"0" * social_module.MAX_MEDIA_BYTES
+    try:
+        save_pfp(oversized)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("save_pfp accepted an upload over MAX_MEDIA_BYTES")
+
+
+def test_save_media_accepts_mp4_and_webm(tmp_path, monkeypatch):
+    monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
+    monkeypatch.setattr(social_module, "PFP_PATH", social_module.IMAGES_DIR / "pfp.img")
+    monkeypatch.setattr(social_module, "BANNER_PATH", social_module.IMAGES_DIR / "banner.img")
+
+    mp4 = b"\x00\x00\x00\x18ftypmp42" + b"fake-mp4-bytes"
+    save_pfp(mp4)
+    assert read_pfp() == (mp4, "video/mp4")
+
+    webm = b"\x1a\x45\xdf\xa3" + b"fake-webm-bytes"
+    save_banner(webm)
+    assert read_banner() == (webm, "video/webm")
+
+
+def test_chat_icon_slot_mirrors_pfp(tmp_path, monkeypatch):
+    monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
+    monkeypatch.setattr(social_module, "CHATICON_PATH", social_module.IMAGES_DIR / "chaticon.img")
+
+    assert read_chat_icon() is None
+    assert chaticon_version() is None
+
+    png = b"\x89PNG\r\n\x1a\n" + b"fake-png-bytes"
+    save_chat_icon(png)
+    assert read_chat_icon() == (png, "image/png")
+    assert chaticon_version() is not None
+
+
+def test_landing_pfp_slot_mirrors_pfp(tmp_path, monkeypatch):
+    monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
+    monkeypatch.setattr(
+        social_module, "LANDING_PFP_PATH", social_module.IMAGES_DIR / "landingpfp.img"
+    )
+
+    assert read_landing_pfp() is None
+    assert landing_pfp_version() is None
+
+    png = b"\x89PNG\r\n\x1a\n" + b"fake-png-bytes"
+    save_landing_pfp(png)
+    assert read_landing_pfp() == (png, "image/png")
+    assert landing_pfp_version() is not None
+
+
+def test_pfp_mime_reflects_stored_type_without_full_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
+    monkeypatch.setattr(social_module, "PFP_PATH", social_module.IMAGES_DIR / "pfp.img")
+
+    assert pfp_mime() is None
+    save_pfp(b"\xff\xd8\xff" + b"fake-jpg-bytes")
+    assert pfp_mime() == "image/jpeg"
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+def test_save_media_transcodes_alpha_mov_to_webm(tmp_path, monkeypatch):
+    monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
+    monkeypatch.setattr(social_module, "PFP_PATH", social_module.IMAGES_DIR / "pfp.img")
+
+    with tempfile.NamedTemporaryFile(suffix=".mov", delete=False) as mov:
+        mov_path = mov.name
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red@0.5:s=32x32:d=1:r=10",
+             "-pix_fmt", "yuva420p", "-c:v", "qtrle", mov_path],
+            capture_output=True, check=True,
+        )
+        alpha_mov = open(mov_path, "rb").read()
+    finally:
+        os.unlink(mov_path)
+
+    save_pfp(alpha_mov)
+    data, mime = read_pfp()
+    assert mime == "video/webm", "an alpha mov must be transcoded, not stored as-is"
+    assert data.startswith(b"\x1a\x45\xdf\xa3"), "the stored bytes must actually be a webm"
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+def test_save_media_transcodes_gif_to_webm(tmp_path, monkeypatch):
+    monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
+    monkeypatch.setattr(social_module, "PFP_PATH", social_module.IMAGES_DIR / "pfp.img")
+
+    with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as gif:
+        gif_path = gif.name
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:d=1:r=10", gif_path],
+            capture_output=True, check=True,
+        )
+        gif_bytes = open(gif_path, "rb").read()
+    finally:
+        os.unlink(gif_path)
+
+    assert gif_bytes[:6] in (b"GIF87a", b"GIF89a")
+    save_pfp(gif_bytes)
+    data, mime = read_pfp()
+    assert mime == "video/webm", "a gif upload must be transcoded, not stored as-is"
+    assert data.startswith(b"\x1a\x45\xdf\xa3"), "the stored bytes must actually be a webm"
+
+
+def test_save_media_leaves_alpha_free_mp4_untouched(tmp_path, monkeypatch):
+    monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
+    monkeypatch.setattr(social_module, "PFP_PATH", social_module.IMAGES_DIR / "pfp.img")
+
+    # Not a decodable video, so ffprobe (if present) fails and alpha
+    # detection falls back to False — the existing passthrough behavior.
+    mp4 = b"\x00\x00\x00\x18ftypmp42" + b"fake-mp4-bytes"
+    save_pfp(mp4)
+    assert read_pfp() == (mp4, "video/mp4")

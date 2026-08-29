@@ -62,6 +62,20 @@ PHRASES: dict[str, str] = {
     "ar": "نص حكيم له سر قاطع وذو شأن عظيم مكتوب على ثوب أخضر ومغلف بجلد أزرق",
 }
 
+# For "hear yourself" playback after cloning — deliberately NOT the phrase
+# above, so the test proves the clone generalizes past the exact recording.
+TEST_PHRASES: dict[str, str] = {
+    "en": "Hey, it's really nice to meet you. I hope I sound like myself.",
+    "fr": "Salut, c'est un plaisir de te rencontrer. J'espère que je me ressemble.",
+    "de": "Hallo, schön dich kennenzulernen. Ich hoffe, das klingt nach mir.",
+    "ru": "Привет, приятно познакомиться. Надеюсь, это похоже на меня.",
+    "es": "Hola, un placer conocerte. Espero sonar como yo mismo.",
+    "pt": "Olá, é um prazer conhecer você. Espero que isso soe como eu.",
+    "zh": "你好，很高兴认识你。希望这听起来像我自己。",
+    "ja": "こんにちは、はじめまして。自分らしく聞こえるといいな。",
+    "ar": "مرحبًا، سعيد بلقائك. أتمنى أن يبدو هذا مثل صوتي.",
+}
+
 
 def save_sample(data: bytes) -> Path:
     """Snapshot the existing clip (if any), then write `data` over it."""

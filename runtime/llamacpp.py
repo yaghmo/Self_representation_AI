@@ -88,7 +88,11 @@ class Placement:
 
 
 def find_server() -> Path | None:
-    for name in ("llama-server.exe", "llama-server"):
+    # vendor/llama.cpp/bin can hold both a Windows .exe and a Linux binary
+    # side by side (host dev machine vs. container, same bind mount) —
+    # check the OS-native name first so the wrong-platform binary never wins.
+    names = ("llama-server.exe", "llama-server") if os.name == "nt" else ("llama-server", "llama-server.exe")
+    for name in names:
         found = shutil.which(name)
         if found:
             return Path(found)
@@ -257,6 +261,10 @@ class LlamaServer:
         # llama-server loads its CUDA DLLs from PATH. Torch's copies count.
         prefix = os.pathsep.join(str(d) for d in cuda_dll_dirs())
         env["PATH"] = f"{prefix}{os.pathsep}{env.get('PATH', '')}"
+        # The Linux binary has no RPATH baked in, so its own co-located .so's
+        # (libllama-server-impl.so etc., not just CUDA) need LD_LIBRARY_PATH.
+        # Windows ignores this var and resolves DLLs via PATH above instead.
+        env["LD_LIBRARY_PATH"] = f"{prefix}{os.pathsep}{env.get('LD_LIBRARY_PATH', '')}"
 
         self.process = subprocess.Popen(
             self.command(),

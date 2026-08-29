@@ -16,6 +16,8 @@ import re
 
 import httpx
 
+from .handle_resolve import resolve_handle as _resolve_handle
+
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -44,9 +46,21 @@ def scrape_profile(url: str) -> dict | None:
             "pfp_url": user.get("avatarLarger"),
             "follower_count": stats.get("followerCount"),
             "bio": user.get("signature"),
+            # The clickable "link" button TikTok shows under the bio — a
+            # separate profile field, not part of `signature`/bio text, so
+            # nothing that scans bio text will ever see it.
+            "bio_link": (user.get("bioLink") or {}).get("link"),
         }
     except Exception:
         return None
+
+
+def resolve_handle(display_text: str) -> str | None:
+    """TikTok bios can @-mention a display nickname that isn't the account's
+    real @handle (e.g. "@sam" for the account "@thesamshow") — the direct
+    profile-URL guess 404s. See `handle_resolve.resolve_handle` for how the
+    real handle gets found."""
+    return _resolve_handle(display_text, "tiktok")
 
 
 _OEMBED_URL = "https://www.tiktok.com/oembed"

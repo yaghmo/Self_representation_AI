@@ -16,7 +16,13 @@ fact eventually falls out of context" for free.
 
 from __future__ import annotations
 
+import time
+
+from service.logging_config import get_logger
+
 from .index import Embedder, Index
+
+logger = get_logger("runtime.recall")
 
 def recall_schema(include_profile: bool) -> dict:
     """The fan surface's one tool. Wording changes with the mode: in
@@ -78,6 +84,7 @@ def recall(
     request — matching tools.run_tool's "a handler must never kill the
     loop" stance already established for the admin side.
     """
+    t0 = time.monotonic()
     try:
         hits = index.search(query, embed, limit=limit, kind="event")
         if include_profile and profile_index is not None:
@@ -85,7 +92,18 @@ def recall(
             hits.sort(key=lambda h: h.score, reverse=True)
             hits = hits[:limit]
     except Exception as exc:
+        logger.exception("recall failed: query=%r", query)
         return f"recall failed: {exc}"
+
+    logger.info(
+        "recall: query=%r include_profile=%s elapsed=%.3fs hits=%s",
+        query, include_profile, time.monotonic() - t0,
+        [
+            {"key": h.chunk.key, "kind": h.chunk.kind, "story_id": h.chunk.story_id,
+             "score": round(h.score, 4)}
+            for h in hits
+        ],
+    )
 
     if not hits:
         return f"no matching stories for {query!r}"

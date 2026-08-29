@@ -15,6 +15,7 @@ export function SocialRow({
   proxyPfp = true,
   connected,
   onConnect,
+  href,
 }: {
   platform: string;
   username: string;
@@ -32,12 +33,16 @@ export function SocialRow({
   // Pass true/false only for a platform with a real connect/disconnect flow.
   connected?: boolean;
   onConnect?: () => void;
+  // Set only for the admin's saved-socials list, so the creator can open
+  // their own link — the not-yet-saved preview row has nowhere to send it.
+  href?: string;
 }) {
   const Icon = platformIcon(platform);
   const imgSrc =
     pfpUrl && proxyPfp
       ? `${SERVICE_URL}/social/image_proxy?url=${encodeURIComponent(pfpUrl)}`
       : pfpUrl;
+  const NameTag = href ? "a" : "span";
   return (
     <div className="border-b py-2 text-sm last:border-b-0">
       <div className="flex items-center gap-3">
@@ -50,7 +55,12 @@ export function SocialRow({
             <User className="size-4 text-muted-foreground" />
           </div>
         )}
-        <span className="font-medium">{username}</span>
+        <NameTag
+          className={`font-medium ${href ? "hover:underline" : ""}`}
+          {...(href ? { href, target: "_blank", rel: "noopener noreferrer" } : {})}
+        >
+          {username}
+        </NameTag>
         <span className="text-xs text-muted-foreground capitalize">{platform}</span>
         {isAlt && <span className="text-xs text-muted-foreground">- Alt</span>}
         {followerCount != null && (

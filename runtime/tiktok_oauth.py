@@ -26,9 +26,13 @@ from .bible import PROFILE_PATH
 
 _AUTHORIZE_URL = "https://www.tiktok.com/v2/auth/authorize/"
 _TOKEN_URL = "https://open.tiktokapis.com/v2/oauth/token/"
+_USER_INFO_URL = "https://open.tiktokapis.com/v2/user/info/"
 _VIDEO_LIST_URL = "https://open.tiktokapis.com/v2/video/list/"
 _VIDEO_FIELDS = "id,create_time,cover_image_url,share_url,title"
-_SCOPE = "user.info.basic,video.list"
+# user.info.profile (not just .basic) is what actually gets the `username`
+# field back — display_name alone isn't enough to check against the linked
+# social's handle, same nickname-vs-handle gap handle_resolve.py exists for.
+_SCOPE = "user.info.basic,user.info.profile,video.list"
 
 TOKEN_PATH = PROFILE_PATH.parent / "tiktok_token.json"
 
@@ -88,14 +92,69 @@ def handle_callback(code: str, state: str, redirect_uri: str) -> None:
     if "access_token" not in data:
         raise ValueError(f"token exchange failed: {data}")
     data["obtained_at"] = int(time.time())
+    data["username"] = _fetch_username(data["access_token"])
     _save_token(data)
+
+
+def _fetch_username(access_token: str) -> str | None:
+    """Best-effort — a failure here shouldn't fail the whole connect flow,
+    it just leaves `username` unset until the next successful call (see
+    `_ensure_username`, which retries on every status/match check)."""
+    try:
+        response = httpx.get(
+            _USER_INFO_URL,
+            params={"fields": "username"},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()["data"]["user"]["username"]
+    except Exception:
+        return None
+
+
+def _ensure_username(token: dict) -> dict:
+    """Backfills `username` on a token saved before this field existed, or
+    left unset by a `_fetch_username` failure at connect time."""
+    if token.get("username"):
+        return token
+    access_token = _valid_access_token()
+    if not access_token:
+        return token
+    username = _fetch_username(access_token)
+    if username:
+        token["username"] = username
+        _save_token(token)
+    return token
 
 
 def connection_status() -> dict:
     token = _load_token()
     if not token:
         return {"connected": False}
-    return {"connected": True, "openId": token.get("open_id"), "scope": token.get("scope")}
+    token = _ensure_username(token)
+    return {
+        "connected": True,
+        "openId": token.get("open_id"),
+        "username": token.get("username"),
+        "scope": token.get("scope"),
+    }
+
+
+def is_connected_to(username: str) -> bool:
+    """Whether the OAuth-connected account is the same one behind a given
+    @handle — the connected account can silently be a different one than
+    the profile actually listed on the site (wrong login, a test account,
+    an old connection nobody re-checked), so callers that would otherwise
+    trust "connected == True" alone must check this instead."""
+    token = _load_token()
+    if not token:
+        return False
+    token = _ensure_username(token)
+    connected_username = token.get("username")
+    if not connected_username:
+        return False
+    return connected_username.lstrip("@").lower() == username.lstrip("@").lower()
 
 
 def disconnect() -> None:

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getVoicePhrases, getVoiceStatus, postVoiceSample } from "@/lib/chat/api";
+import { getVoicePhrases, getVoiceStatus, postVoiceClone, postVoiceSample } from "@/lib/chat/api";
 import { blobToWav } from "@/lib/wav";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -97,6 +97,10 @@ export function VoiceRecorder() {
   // State, not a ref: the live waveform reads it during render, and a ref's
   // `.current` is off-limits there.
   const [liveStream, setLiveStream] = useState<MediaStream | null>(null);
+  const [testing, setTesting] = useState(false);
+  // Clone-and-synth playback of a phrase never in the recording script —
+  // proves the clone generalizes rather than echoing the training line.
+  const [testClip, setTestClip] = useState<{ url: string } | null>(null);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -107,8 +111,9 @@ export function VoiceRecorder() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
+  // Loaded once at mount — the language picker now lives in the card itself
+  // (shared by Record and Hear yourself), not gated behind opening the dialog.
   useEffect(() => {
-    if (!open || languages.length > 0) return;
     getVoicePhrases()
       .then((p) => {
         setLanguages(p.languages);
@@ -116,7 +121,23 @@ export function VoiceRecorder() {
         if (p.languages.length > 0) setLanguage((prev) => prev || p.languages[0][0]);
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [open, languages.length]);
+  }, []);
+
+  async function handleTest() {
+    setTesting(true);
+    setError(null);
+    try {
+      const blob = await postVoiceClone(language);
+      setTestClip((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return { url: URL.createObjectURL(blob) };
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTesting(false);
+    }
+  }
 
   function discardClip() {
     setClip((prev) => {
@@ -161,7 +182,7 @@ export function VoiceRecorder() {
     setError(null);
     try {
       const wav = await blobToWav(clip.blob);
-      const result = await postVoiceSample(wav);
+      const result = await postVoiceSample(wav, language);
       setStatus(result.status);
       discardClip();
       setOpen(false);
@@ -192,9 +213,37 @@ export function VoiceRecorder() {
         <p className="text-xs text-muted-foreground">
           {status ? status : "Not recorded yet"} — one reference clip, read aloud once.
         </p>
-        <Button variant="outline" size="sm" className="w-full" onClick={() => setOpen(true)}>
-          Record
-        </Button>
+
+        {languages.length > 0 && (
+          <Select value={language} onValueChange={(v) => v !== null && setLanguage(v)}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Language" />
+            </SelectTrigger>
+            <SelectContent>
+              {languages.map(([code, name]) => (
+                <SelectItem key={code} value={code}>
+                  {name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" className="flex-1" onClick={() => setOpen(true)}>
+            Record
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1"
+            disabled={!status || testing}
+            onClick={handleTest}
+          >
+            {testing ? "Synthesizing…" : "Hear yourself"}
+          </Button>
+        </div>
+        {testClip && <audio controls autoPlay src={testClip.url} className="w-full" />}
       </CardContent>
 
       <Dialog open={open} onOpenChange={(next) => (next ? setOpen(true) : handleCancel())}>
@@ -212,20 +261,6 @@ export function VoiceRecorder() {
             </Alert>
           )}
 
-          {languages.length > 0 && (
-            <Select value={language} onValueChange={(v) => v !== null && setLanguage(v)}>
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Language" />
-              </SelectTrigger>
-              <SelectContent>
-                {languages.map(([code, name]) => (
-                  <SelectItem key={code} value={code}>
-                    {name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
           {phrases[language] && (
             <p className="rounded-md border bg-muted p-2 text-sm italic">{phrases[language]}</p>
           )}

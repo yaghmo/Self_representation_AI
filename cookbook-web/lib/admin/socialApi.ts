@@ -44,6 +44,12 @@ export interface SocialListResult {
   socials: Social[]
   pfpVersion: number | null
   bannerVersion: number | null
+  chatIconVersion: number | null
+  landingPfpVersion: number | null
+  pfpMime: string | null
+  bannerMime: string | null
+  chatIconMime: string | null
+  landingPfpMime: string | null
 }
 
 export function getSocials(): Promise<SocialListResult> {
@@ -56,6 +62,14 @@ export function pfpUrl(version: number): string {
 
 export function bannerUrl(version: number): string {
   return `${SERVICE_URL}/social/banner?v=${version}`
+}
+
+export function chatIconUrl(version: number): string {
+  return `${SERVICE_URL}/social/chat_icon?v=${version}`
+}
+
+export function landingPfpUrl(version: number): string {
+  return `${SERVICE_URL}/social/landing_pfp?v=${version}`
 }
 
 async function uploadImage(path: string, blob: Blob): Promise<{ version: number }> {
@@ -75,7 +89,9 @@ async function uploadImage(path: string, blob: Blob): Promise<{ version: number 
     throw new SocialApiError(res.status, detail)
   }
   const body = await res.json()
-  return { version: body.pfpVersion ?? body.bannerVersion }
+  return {
+    version: body.pfpVersion ?? body.bannerVersion ?? body.chatIconVersion ?? body.landingPfpVersion,
+  }
 }
 
 export function uploadPfp(blob: Blob): Promise<{ version: number }> {
@@ -84,6 +100,14 @@ export function uploadPfp(blob: Blob): Promise<{ version: number }> {
 
 export function uploadBanner(blob: Blob): Promise<{ version: number }> {
   return uploadImage("/admin/social/banner", blob)
+}
+
+export function uploadChatIcon(blob: Blob): Promise<{ version: number }> {
+  return uploadImage("/admin/social/chat_icon", blob)
+}
+
+export function uploadLandingPfp(blob: Blob): Promise<{ version: number }> {
+  return uploadImage("/admin/social/landing_pfp", blob)
 }
 
 export interface AddSocialParams {
@@ -130,6 +154,9 @@ export interface SocialMention {
   type: "platform" | "email"
   platform: string | null
   value: string
+  confidence: "confirmed" | "likely" | "unverified"
+  pfpUrl: string | null
+  followerCount: number | null
 }
 
 export interface PreviewSocialResult {
@@ -178,6 +205,7 @@ export function refreshPosts(): Promise<{ posts: unknown[] }> {
 export interface TiktokStatus {
   connected: boolean
   openId?: string
+  username?: string | null
   scope?: string
 }
 

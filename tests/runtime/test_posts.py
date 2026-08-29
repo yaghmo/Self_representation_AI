@@ -13,6 +13,8 @@ def test_posts_self_check(tmp_path):
     original_yt = posts_module.list_youtube_videos
     original_tw = posts_module.list_twitch_vods
     original_tk = posts_module.list_tiktok_videos
+    original_ig = posts_module.list_instagram_posts
+    original_x = posts_module.list_x_posts
 
     posts_module.list_youtube_videos = lambda url, limit: [
         {"kind": "video", "embedId": "yt1", "url": "https://y", "title": "t", "thumbnailUrl": "th"}
@@ -22,6 +24,12 @@ def test_posts_self_check(tmp_path):
          "publishedAt": "2026-01-01T00:00:00Z"}
     ]
     posts_module.list_tiktok_videos = lambda url, limit: []
+    posts_module.list_instagram_posts = lambda url, limit: [
+        {"kind": "image", "embedId": "ig1", "url": "https://i", "title": "t", "thumbnailUrl": "th"}
+    ]
+    posts_module.list_x_posts = lambda url, limit: [
+        {"kind": "post", "embedId": "x1", "url": "https://x", "title": None, "thumbnailUrl": None}
+    ]
 
     try:
         posts_module.POSTS_PATH = tmp_path / "posts.json"
@@ -38,10 +46,11 @@ def test_posts_self_check(tmp_path):
         add_social({"platform": "youtube", "username": "h", "url": "https://youtube.com/@h"})
         add_social({"platform": "twitch", "username": "h2", "url": "https://twitch.tv/h2"})
         add_social({"platform": "instagram", "username": "h3", "url": "https://instagram.com/h3"})
+        add_social({"platform": "x", "username": "h4", "url": "https://x.com/h4"})
 
         posts = posts_module.refresh_posts()
-        assert len(posts) == 2, "instagram has no scraper -> skipped, not an error"
-        assert {p["platform"] for p in posts} == {"youtube", "twitch"}
+        assert len(posts) == 4
+        assert {p["platform"] for p in posts} == {"youtube", "twitch", "instagram", "x"}
         for post in posts:
             assert post["id"] == f"{post['platform']}-{post['embedId']}"
             assert post["socialId"]
@@ -53,3 +62,5 @@ def test_posts_self_check(tmp_path):
         posts_module.list_youtube_videos = original_yt
         posts_module.list_twitch_vods = original_tw
         posts_module.list_tiktok_videos = original_tk
+        posts_module.list_instagram_posts = original_ig
+        posts_module.list_x_posts = original_x

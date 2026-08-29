@@ -54,10 +54,38 @@ function TikTokEmbed({ post }: { post: Post }) {
   )
 }
 
+function InstagramEmbed({ post }: { post: Post }) {
+  // post.url is the profile-grid permalink ("/p/{id}/" or "/reel/{id}/"),
+  // and both accept the same "embed" suffix — no separate widget JS needed,
+  // same direct-iframe approach as TikTok above.
+  return (
+    <iframe
+      src={`${post.url}embed`}
+      title={post.title ?? "Instagram post"}
+      allowFullScreen
+      className="size-full border-0"
+    />
+  )
+}
+
+function XEmbed({ post }: { post: Post }) {
+  // platform.twitter.com's embed page needs no widgets.js on our side —
+  // same direct-iframe approach as TikTok/Instagram above.
+  return (
+    <iframe
+      src={`https://platform.twitter.com/embed/Tweet.html?id=${post.embedId}`}
+      title={post.title ?? "X post"}
+      className="size-full border-0"
+    />
+  )
+}
+
 function PostPlayer({ post }: { post: Post }) {
   if (post.platform === "youtube") return <YouTubeEmbed post={post} />
   if (post.platform === "twitch") return <TwitchEmbed post={post} />
   if (post.platform === "tiktok") return <TikTokEmbed post={post} />
+  if (post.platform === "instagram") return <InstagramEmbed post={post} />
+  if (post.platform === "x") return <XEmbed post={post} />
   return null
 }
 

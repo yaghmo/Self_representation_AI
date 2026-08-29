@@ -57,3 +57,23 @@ export async function postChat(history: ChatMessage[]): Promise<string> {
   const data = (await res.json()) as { content: string }
   return data.content
 }
+
+export async function postVoiceSpeak(text: string): Promise<Blob> {
+  const res = await fetch(`${CHAT_API_URL}/voice/speak`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  })
+
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      detail = (await res.json()).detail ?? detail
+    } catch {
+      // body wasn't JSON — keep statusText
+    }
+    throw new ChatApiError(res.status, detail)
+  }
+
+  return res.blob()
+}
