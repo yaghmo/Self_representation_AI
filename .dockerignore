@@ -1,0 +1,25 @@
+# Volume-mounted at runtime, not baked into the image — see docker-compose.yml.
+data/
+config/
+models/
+vendor/
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+.git/
+.github/
+
+cookbook-web/node_modules/
+cookbook-web/.next/
+cookbook-web/graphify-out/
+cookbook/graphify-out/
+graphify-out/
+
+service/logs/
+*.log
+
+.env
+.env.local
