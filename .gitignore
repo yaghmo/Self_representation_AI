@@ -16,6 +16,7 @@
 
 # 3. Explicitly allowed: project scaffolding and generic templates only.
 !.gitignore
+!.gitattributes
 !README.md
 !CLAUDE.md
 !pyproject.toml
