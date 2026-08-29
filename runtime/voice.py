@@ -53,9 +53,11 @@ CLONE_PATH = VOICE_DIR / "clone.pt"
 DESIGN_PATH = VOICE_DIR / "design.json"
 # Generated clips, cached to disk keyed by text — a fan re-asking (or the
 # creator re-testing) the same question skips the GPU synth entirely.
-# ponytail: no eviction/size cap — fine for the current single-tenant
-# scale, revisit if this ever needs a real cache-size budget.
+# Auto-warm (ChatWidget fires synth on every bot bubble, not just on click)
+# means this fills on conversation volume rather than deliberate play-button
+# clicks, so it's capped at CACHE_MAX_FILES, oldest evicted first.
 CACHE_DIR = VOICE_DIR / "cache"
+CACHE_MAX_FILES = 300
 
 CLONE_MODEL_ID = "qwen3-tts-12hz-1.7b-base"
 DESIGN_MODEL_ID = "qwen3-tts-12hz-1.7b-voicedesign"
@@ -164,6 +166,12 @@ def _chunk(data: bytes, size: int = 32_768) -> Iterator[bytes]:
         yield data[start : start + size]
 
 
+def _evict_oldest(cache_dir: Path, keep: int) -> None:
+    clips = sorted(cache_dir.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+    for clip in clips[: len(clips) - keep]:
+        clip.unlink()
+
+
 def _cache_path(text: str, language: str, status: str) -> Path:
     # Keyed on the active checkpoint's mtime too — a rebuilt clone/design
     # must not serve a clip synthesized from the old voice.
@@ -212,4 +220,5 @@ def synth(text: str, language: str = "Auto") -> Iterator[bytes]:
     )
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path.write_bytes(audio)
+    _evict_oldest(CACHE_DIR, CACHE_MAX_FILES)
     yield from _chunk(audio)

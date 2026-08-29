@@ -4,6 +4,7 @@ Invented placeholder content only — this file is tracked, and CLAUDE.md
 forbids instance details in tracked files.
 """
 
+import os
 import pickle
 import tempfile
 from pathlib import Path
@@ -12,7 +13,30 @@ import numpy as np
 import torch
 
 import runtime.voice as voice_module
-from runtime.voice import build_clone, build_design, synth, voice_status
+from runtime.voice import _evict_oldest, build_clone, build_design, synth, voice_status
+
+
+def test_evict_oldest_keeps_newest_n(tmp_path):
+    for i in range(5):
+        clip = tmp_path / f"clip{i}.wav"
+        clip.write_bytes(b"x")
+        # Distinct mtimes in creation order — os.utime avoids relying on
+        # filesystem timestamp resolution being finer than this loop is fast.
+        os.utime(clip, (i, i))
+
+    _evict_oldest(tmp_path, keep=3)
+
+    remaining = {p.name for p in tmp_path.glob("*.wav")}
+    assert remaining == {"clip2.wav", "clip3.wav", "clip4.wav"}
+
+
+def test_evict_oldest_noop_under_cap(tmp_path):
+    clip = tmp_path / "clip0.wav"
+    clip.write_bytes(b"x")
+
+    _evict_oldest(tmp_path, keep=3)
+
+    assert clip.exists()
 
 
 def test_voice_self_check():
