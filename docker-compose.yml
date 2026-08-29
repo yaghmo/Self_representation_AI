@@ -6,15 +6,36 @@
 # surfaces" rule and pyproject.toml's `admin` extra).
 #
 # First-time setup, both profiles:
-#   1. Run the cookbook (probe/fit/download) to populate ./config/stack.json
-#      and ./models/ — see cookbook/README.md. Can be done on the host
-#      before ever touching Docker; it just writes to the same folders
-#      these containers mount.
+#   1. `docker compose --profile cookbook up --build`, open localhost:3000 —
+#      probe/fit/download writes ./config/stack.json and ./models/ (same
+#      volumes fan/admin mount below, so nothing further to copy).
 #   2. Download a linux CUDA llama.cpp release into ./vendor/llama.cpp/ —
 #      see docker/entrypoint.sh's warning if this is skipped.
 #   3. GPU passthrough needs nvidia-container-toolkit installed on the host.
 
 services:
+  cookbook:
+    build:
+      context: .
+      args:
+        INSTALL_ADMIN: "false"
+    entrypoint: []
+    command: ["uvicorn", "cookbook.api:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./config:/app/config
+      - ./models:/app/models
+      - ./vendor:/app/vendor
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles: ["cookbook"]
+
   service-fan:
     build:
       context: .
@@ -67,6 +88,7 @@ services:
       args:
         NEXT_PUBLIC_CHAT_API_URL: ${NEXT_PUBLIC_CHAT_API_URL:-http://localhost:8000}
         NEXT_PUBLIC_SERVICE_URL: ${NEXT_PUBLIC_SERVICE_URL:-http://localhost:8000}
+        NEXT_PUBLIC_COOKBOOK_API_URL: ${NEXT_PUBLIC_COOKBOOK_API_URL:-http://localhost:8001}
     ports:
       - "3000:3000"
-    profiles: ["fan", "admin"]
+    profiles: ["fan", "admin", "cookbook"]
