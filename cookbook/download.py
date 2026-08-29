@@ -29,6 +29,13 @@ MODELS_DIR = REPO_ROOT / "models"
 os.environ.setdefault("HF_HOME", str(MODELS_DIR / ".hf"))
 os.environ.setdefault("HF_HUB_CACHE", str(MODELS_DIR / ".hf" / "hub"))
 
+# The Xet transfer backend stages chunks in a shared cache outside local_dir
+# and only materializes the destination file on completion, so on_disk_bytes()
+# below would read ~0 for the whole download then jump to 100% at the end.
+# Disabling it falls back to plain HTTP, which writes (and resumes) directly
+# into local_dir, matching what progress polling assumes.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 from .config import read_config  # noqa: E402
 from .schema import Catalogue, ModelEntry, human_bytes, load_catalogue  # noqa: E402
 
