@@ -871,7 +871,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                             {ROLES.map((r) => {
                               const p = fit.placements[r]
                               return (
-                                <TableCell key={r} className="max-w-[180px] truncate">
+                                <TableCell key={r} className="whitespace-nowrap">
                                   {p ? (
                                     <>
                                       {p.model}
