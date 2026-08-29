@@ -48,8 +48,8 @@
 # 4. HARD BLOCK — filled-in creator data. Never tracked, no matter
 #    what gets allowed above. This is the line that matters.
 # ---------------------------------------------------------------
-data/
-media/
+/data/
+/media/
 *.mov
 *.private.md
 *.local.md
