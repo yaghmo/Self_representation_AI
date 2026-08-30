@@ -9,7 +9,15 @@ import type { FanProfile } from "./types"
 
 const PFP_REPLAY_INTERVAL_MS = 60_000
 const INTRO_PFP_SIZE = "min(85vmin, 900px)"
+const INTRO_PFP_RADIUS = `calc(${INTRO_PFP_SIZE} / 2)`
 const INTRO_TRANSITION_MS = 900
+
+// Punches a circular hole through an otherwise-solid black panel: black
+// (opaque, panel visible) everywhere outside the circle, transparent
+// (panel hidden, real content shows through) inside it.
+function introMask(centerY: "0%" | "100%"): string {
+  return `radial-gradient(circle at 50% ${centerY}, transparent calc(${INTRO_PFP_RADIUS} - 1px), black ${INTRO_PFP_RADIUS})`
+}
 
 const BANNER_HEIGHT = 420
 const EXPANDED_PFP = 176
@@ -144,41 +152,43 @@ function ProfileHeader({
 
       {showIntro && heroUrl && (
         <>
-          {/* Two independently-clipped copies of the same clip, each showing
-              its own half — a video's rendered pixels can't be split by a
-              single CSS clip that then physically travels, so this is the
-              standard way to make one video visually split apart. Each
-              half's own local coordinate space anchors the circle at that
-              half's edge touching true screen-center, so at rest the two
-              halves form one continuous, centered circle. */}
+          {/* One real video, decoded once — two independently-playing
+              copies of the same clip drift out of sync within seconds,
+              which is exactly the glitch this replaced. It sits centered
+              and completely still the whole time; the two black panels
+              above it each have a circular hole (CSS mask) punched where
+              the video already is, so at rest they fully hide everything
+              except that one continuous, centered circle. Splitting them
+              apart just reveals more of the (unmoving) video underneath —
+              the visor opens, the video never jumps. */}
+          <div
+            className="fixed left-1/2 top-1/2 z-40 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full"
+            style={{ width: INTRO_PFP_SIZE, height: INTRO_PFP_SIZE }}
+          >
+            <PlayOnceVideo src={heroUrl} className="size-full object-cover" onEnded={handleIntroEnd} />
+          </div>
           <div
             className={cn(
-              "fixed inset-x-0 top-0 z-50 h-1/2 overflow-hidden bg-black transition-transform ease-[cubic-bezier(.65,0,.35,1)]",
+              "fixed inset-x-0 top-0 z-50 h-1/2 bg-black transition-transform ease-[cubic-bezier(.65,0,.35,1)]",
               introShrinking && "-translate-y-full"
             )}
-            style={{ transitionDuration: `${INTRO_TRANSITION_MS}ms` }}
-          >
-            <div
-              className="absolute left-1/2 top-full -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full"
-              style={{ width: INTRO_PFP_SIZE, height: INTRO_PFP_SIZE }}
-            >
-              <PlayOnceVideo src={heroUrl} className="size-full object-cover" onEnded={handleIntroEnd} />
-            </div>
-          </div>
+            style={{
+              transitionDuration: `${INTRO_TRANSITION_MS}ms`,
+              WebkitMaskImage: introMask("100%"),
+              maskImage: introMask("100%"),
+            }}
+          />
           <div
             className={cn(
-              "fixed inset-x-0 bottom-0 z-50 h-1/2 overflow-hidden bg-black transition-transform ease-[cubic-bezier(.65,0,.35,1)]",
+              "fixed inset-x-0 bottom-0 z-50 h-1/2 bg-black transition-transform ease-[cubic-bezier(.65,0,.35,1)]",
               introShrinking && "translate-y-full"
             )}
-            style={{ transitionDuration: `${INTRO_TRANSITION_MS}ms` }}
-          >
-            <div
-              className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full"
-              style={{ width: INTRO_PFP_SIZE, height: INTRO_PFP_SIZE }}
-            >
-              <PlayOnceVideo src={heroUrl} className="size-full object-cover" />
-            </div>
-          </div>
+            style={{
+              transitionDuration: `${INTRO_TRANSITION_MS}ms`,
+              WebkitMaskImage: introMask("0%"),
+              maskImage: introMask("0%"),
+            }}
+          />
         </>
       )}
 
