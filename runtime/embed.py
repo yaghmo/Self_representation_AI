@@ -61,6 +61,12 @@ def bge_embedder(stack_path: Path | None = None):
         )
 
     try:
+        # transformers' own lazy-import machinery pulls in pandas, which
+        # carries the same OpenMP runtime as torch — import it first or
+        # loading torch then transformers is an access violation, the same
+        # class of crash the sentence-transformers/sklearn switch above was
+        # written to dodge.
+        import pandas  # noqa: F401
         import torch
         from transformers import AutoModel, AutoTokenizer
     except ImportError as exc:
