@@ -40,3 +40,12 @@ def test_backend_self_check():
     assert backend._payload([plain], False, repeat_penalty=1.1)["repeat_penalty"] == 1.1
     assert backend._payload([plain], False)["repeat_last_n"] == 512
     assert backend._payload([plain], False, repeat_last_n=64)["repeat_last_n"] == 64
+
+
+def test_backend_payload_seed_is_fixed_by_default():
+    # A fixed default seed rides along on every request so the same
+    # conversation reproduces the same reply, unless a caller overrides it.
+    backend = LocalBackend()
+    plain = Message("user", "hi")
+    assert backend._payload([plain], False)["seed"] == 42
+    assert backend._payload([plain], False, seed=7)["seed"] == 7

@@ -94,6 +94,10 @@ class LocalBackend:
     # max_tokens, so repeat_penalty stops seeing its own last reply by the
     # next request. Wide enough to cover several turns back.
     repeat_last_n: int = 512
+    # Fixed by default so the same conversation produces the same reply on
+    # every run — deterministic testing/comparison over chat variety. -1
+    # would hand llama-server's own random seed instead.
+    seed: int = 42
     # Qwen3 and friends emit a <think> block before answering. llama.cpp splits
     # it into `reasoning_content`, so a thinking model that runs out of tokens
     # mid-thought returns an EMPTY `content` and looks broken. For a persona bot
@@ -125,7 +129,8 @@ class LocalBackend:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         payload["repeat_penalty"] = kwargs.get("repeat_penalty", self.repeat_penalty)
         payload["repeat_last_n"] = kwargs.get("repeat_last_n", self.repeat_last_n)
-        for key in ("top_p", "top_k", "stop", "seed"):
+        payload["seed"] = kwargs.get("seed", self.seed)
+        for key in ("top_p", "top_k", "stop"):
             if key in kwargs:
                 payload[key] = kwargs[key]
         if kwargs.get("tools"):
