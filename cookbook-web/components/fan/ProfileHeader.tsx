@@ -8,8 +8,8 @@ import { introAlreadySeen, isVideo, markIntroSeen } from "@/lib/introSplash"
 import type { FanProfile } from "./types"
 
 const PFP_REPLAY_INTERVAL_MS = 60_000
-const INTRO_PFP_SIZE = "min(60vmin, 520px)"
-const INTRO_TRANSITION_MS = 700
+const INTRO_PFP_SIZE = "min(85vmin, 900px)"
+const INTRO_TRANSITION_MS = 900
 
 const BANNER_HEIGHT = 420
 const EXPANDED_PFP = 176
@@ -143,20 +143,43 @@ function ProfileHeader({
       </div>
 
       {showIntro && heroUrl && (
-        <div
-          className={cn(
-            "fixed inset-0 z-50 flex items-center justify-center bg-black transition-all ease-out",
-            introShrinking ? "scale-0 opacity-0" : "scale-100 opacity-100"
-          )}
-          style={{ transitionDuration: `${INTRO_TRANSITION_MS}ms` }}
-        >
-          <PlayOnceVideo
-            src={heroUrl}
-            className="rounded-full object-cover"
-            style={{ width: INTRO_PFP_SIZE, height: INTRO_PFP_SIZE }}
-            onEnded={handleIntroEnd}
-          />
-        </div>
+        <>
+          {/* Two independently-clipped copies of the same clip, each showing
+              its own half — a video's rendered pixels can't be split by a
+              single CSS clip that then physically travels, so this is the
+              standard way to make one video visually split apart. Each
+              half's own local coordinate space anchors the circle at that
+              half's edge touching true screen-center, so at rest the two
+              halves form one continuous, centered circle. */}
+          <div
+            className={cn(
+              "fixed inset-x-0 top-0 z-50 h-1/2 overflow-hidden bg-black transition-transform ease-[cubic-bezier(.65,0,.35,1)]",
+              introShrinking && "-translate-y-full"
+            )}
+            style={{ transitionDuration: `${INTRO_TRANSITION_MS}ms` }}
+          >
+            <div
+              className="absolute left-1/2 top-full -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full"
+              style={{ width: INTRO_PFP_SIZE, height: INTRO_PFP_SIZE }}
+            >
+              <PlayOnceVideo src={heroUrl} className="size-full object-cover" onEnded={handleIntroEnd} />
+            </div>
+          </div>
+          <div
+            className={cn(
+              "fixed inset-x-0 bottom-0 z-50 h-1/2 overflow-hidden bg-black transition-transform ease-[cubic-bezier(.65,0,.35,1)]",
+              introShrinking && "translate-y-full"
+            )}
+            style={{ transitionDuration: `${INTRO_TRANSITION_MS}ms` }}
+          >
+            <div
+              className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full"
+              style={{ width: INTRO_PFP_SIZE, height: INTRO_PFP_SIZE }}
+            >
+              <PlayOnceVideo src={heroUrl} className="size-full object-cover" />
+            </div>
+          </div>
+        </>
       )}
 
       {expanded && (
