@@ -26,7 +26,10 @@ const PlayOnceVideo = forwardRef<PlayOnceVideoHandle, {
       const video = videoRef.current
       if (!video) return
       video.currentTime = 0
-      video.play()
+      // play() can reject (AbortError) if the browser's power-saver pauses
+      // a video-only autoplay mid-request — always a possibility for any
+      // programmatic play(), not a bug to chase, just one to not crash on.
+      video.play().catch(() => {})
     },
   }))
 
