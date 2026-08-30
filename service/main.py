@@ -1159,43 +1159,88 @@ def social_list() -> dict:
     }
 
 
+def _media_response(data: bytes, mime: str, request: Request) -> Response:
+    """Serves in-memory media with HTTP Range support.
+
+    <video>/<audio> elements need this to buffer and seek smoothly —
+    without it the browser can only fetch the whole file in one shot,
+    which shows up as stutter on anything but a very short clip (the file
+    plays back fine in a real media player, which just reads it directly,
+    making the gap easy to miss until a browser-embedded clip is long or
+    heavy enough to matter).
+    """
+    total = len(data)
+    range_header = request.headers.get("range")
+    if not range_header:
+        return Response(
+            content=data,
+            media_type=mime,
+            headers={"Accept-Ranges": "bytes", "Content-Length": str(total)},
+        )
+
+    try:
+        unit, _, range_spec = range_header.partition("=")
+        start_s, _, end_s = range_spec.partition("-")
+        start = int(start_s) if start_s else 0
+        end = int(end_s) if end_s else total - 1
+    except ValueError:
+        unit, start, end = "bytes", 0, total - 1
+
+    start = max(0, start)
+    end = min(total - 1, end)
+    if unit != "bytes" or start > end:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{total}"})
+
+    chunk = data[start : end + 1]
+    return Response(
+        content=chunk,
+        status_code=206,
+        media_type=mime,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes {start}-{end}/{total}",
+            "Content-Length": str(len(chunk)),
+        },
+    )
+
+
 @app.get("/social/pfp")
-def social_pfp() -> Response:
+def social_pfp(request: Request) -> Response:
     """Public — the fan profile header's `<img>`/`<video>` src. 404 if never uploaded."""
     found = read_pfp()
     if not found:
         raise HTTPException(status_code=404, detail="no pfp uploaded")
     data, mime = found
-    return Response(content=data, media_type=mime)
+    return _media_response(data, mime, request)
 
 
 @app.get("/social/banner")
-def social_banner() -> Response:
+def social_banner(request: Request) -> Response:
     found = read_banner()
     if not found:
         raise HTTPException(status_code=404, detail="no banner uploaded")
     data, mime = found
-    return Response(content=data, media_type=mime)
+    return _media_response(data, mime, request)
 
 
 @app.get("/social/chat_icon")
-def social_chat_icon() -> Response:
+def social_chat_icon(request: Request) -> Response:
     """Public — the fan chat toggle's icon src. 404 if never uploaded."""
     found = read_chat_icon()
     if not found:
         raise HTTPException(status_code=404, detail="no chat icon uploaded")
     data, mime = found
-    return Response(content=data, media_type=mime)
+    return _media_response(data, mime, request)
 
 
 @app.get("/social/landing_pfp")
-def social_landing_pfp() -> Response:
+def social_landing_pfp(request: Request) -> Response:
     """Public — the fan landing hero's `<img>`/`<video>` src. 404 if never uploaded."""
     found = read_landing_pfp()
     if not found:
         raise HTTPException(status_code=404, detail="no landing pfp uploaded")
     data, mime = found
-    return Response(content=data, media_type=mime)
+    return _media_response(data, mime, request)
 
 
 @app.get("/social/posts")
@@ -3366,6 +3411,20 @@ def _self_check() -> None:
             response = client.get("/social/chat_icon")
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.headers["content-type"] == "video/webm"
+            assert response.headers["accept-ranges"] == "bytes"
+
+            # Range support — <video>/<audio> need this to buffer/seek
+            # smoothly; a plain single-shot response is what caused visible
+            # stutter on a real banner clip in the browser despite the same
+            # file playing back fine in a media player.
+            chat_icon_bytes = b"\x1a\x45\xdf\xa3" + b"fake-webm-bytes"
+            response = client.get("/social/chat_icon", headers={"Range": "bytes=0-3"})
+            assert response.status_code == 206, (response.status_code, response.text)
+            assert response.content == chat_icon_bytes[:4]
+            assert response.headers["content-range"] == f"bytes 0-3/{len(chat_icon_bytes)}"
+
+            response = client.get("/social/chat_icon", headers={"Range": "bytes=9999-"})
+            assert response.status_code == 416, (response.status_code, response.text)
 
             oversized = b"\x89PNG\r\n\x1a\n" + b"0" * social_module.MAX_MEDIA_BYTES
             response = client.post("/admin/social/chat_icon", content=oversized)
