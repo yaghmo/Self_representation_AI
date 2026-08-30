@@ -18,7 +18,7 @@ GB = 1024**3
 MB = 1024**2
 
 Role = Literal["llm", "embedding", "tts"]
-Device = Literal["gpu", "cpu"]
+Device = Literal["gpu", "cpu", "transient-gpu"]
 
 # How a model does tool calling.
 #   native   — trained for it, with a chat template that emits structured calls

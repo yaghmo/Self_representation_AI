@@ -211,8 +211,10 @@ def evaluate(
 
         if placement.device == "gpu":
             vram_used += cost
-        else:
+        elif placement.device == "cpu":
             ram_used += cost
+        # transient-gpu: loaded only for the duration of one synth batch,
+        # never resident — excluded from both steady-state pools entirely.
 
         if not model.supports(placement.device):
             blockers.append(f"{model.id} cannot run on {placement.device}")
@@ -239,7 +241,9 @@ def evaluate(
             f"{provider.context_tokens:,} token context"
         )
 
-    if not budget.has_gpu and vram_used > 0:
+    if not budget.has_gpu and any(
+        p.device in ("gpu", "transient-gpu") for p in selection.placements.values()
+    ):
         blockers.append("no usable GPU, yet something was placed on one")
 
     vram_over = max(0, vram_used - budget.vram_bytes)
@@ -283,7 +287,7 @@ def _candidates(
         if role == "tts" and model.cloning is not require_cloning:
             continue
         for device in model.devices:
-            if device == "gpu" and not budget.has_gpu:
+            if device in ("gpu", "transient-gpu") and not budget.has_gpu:
                 continue
             out.append(Placement(model.id, device))
     return out
