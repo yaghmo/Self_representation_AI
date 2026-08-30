@@ -350,171 +350,50 @@
       "figures": "hub"
     },
     {
-      "id": "xtts-v2",
+      "id": "qwen3-tts-gguf-base",
       "role": "tts",
-      "repo": "coqui/XTTS-v2",
-      "quant": "fp32",
-      "weights_bytes": 2086568992,
-      "runtime_overhead_bytes": 671088640,
+      "repo": "Serveurperso/Qwen3-TTS-GGUF",
+      "quant": "Q8_0",
+      "weights_bytes": 2370598880,
+      "runtime_overhead_bytes": 1065374956,
       "devices": [
-        "gpu",
-        "cpu"
-      ],
-      "cloning": true,
-      "quality": 78,
-      "download": {
-        "repo": "coqui/XTTS-v2",
-        "allow_patterns": [
-          "*.json",
-          "*.pth",
-          "*.txt",
-          "vocab.json"
-        ],
-        "total_bytes": 2086568992
-      },
-      "notes": "Few-second reference clip. Coqui is unmaintained \u2014 check the licence.",
-      "figures": "hub"
-    },
-    {
-      "id": "f5-tts-base",
-      "role": "tts",
-      "repo": "SWivid/F5-TTS",
-      "quant": "fp32",
-      "weights_bytes": 1348449561,
-      "runtime_overhead_bytes": 536870912,
-      "devices": [
-        "gpu",
-        "cpu"
-      ],
-      "cloning": true,
-      "quality": 82,
-      "download": {
-        "repo": "SWivid/F5-TTS",
-        "allow_patterns": [
-          "F5TTS_v1_Base/*.safetensors",
-          "F5TTS_v1_Base/*.txt",
-          "*.json"
-        ],
-        "total_bytes": 1348449561
-      },
-      "notes": "Strong zero-shot cloning, actively maintained.",
-      "figures": "hub"
-    },
-    {
-      "id": "chatterbox",
-      "role": "tts",
-      "repo": "ResembleAI/chatterbox",
-      "quant": "fp32",
-      "weights_bytes": 3191966992,
-      "runtime_overhead_bytes": 671088640,
-      "devices": [
-        "gpu",
-        "cpu"
-      ],
-      "cloning": true,
-      "quality": 84,
-      "download": {
-        "repo": "ResembleAI/chatterbox",
-        "allow_patterns": [
-          "t3_cfg.safetensors",
-          "s3gen.safetensors",
-          "ve.safetensors",
-          "conds.pt",
-          "tokenizer.json"
-        ],
-        "total_bytes": 3191966992
-      },
-      "notes": "MIT licence, emotion control. Heaviest of the three. Repo holds four alternative checkpoints \u2014 English base only here; the 23-language t3_mtl23ls variants are another 2GB each.",
-      "figures": "hub"
-    },
-    {
-      "id": "kokoro-82m",
-      "role": "tts",
-      "repo": "hexgrad/Kokoro-82M",
-      "quant": "fp32",
-      "weights_bytes": 355479286,
-      "runtime_overhead_bytes": 134217728,
-      "devices": [
-        "gpu",
-        "cpu"
-      ],
-      "cloning": false,
-      "quality": 70,
-      "voices": [
-        {
-          "id": "af_bella",
-          "label": "Bella",
-          "gender": "female"
-        },
-        {
-          "id": "am_michael",
-          "label": "Michael",
-          "gender": "male"
-        }
-      ],
-      "download": {
-        "repo": "hexgrad/Kokoro-82M",
-        "allow_patterns": [
-          "*.pth",
-          "*.json",
-          "voices/*.pt"
-        ],
-        "total_bytes": 355479286
-      },
-      "notes": "No cloning \u2014 fixed voices only. Tiny and fast on CPU; the fallback when nothing else fits.",
-      "figures": "hub"
-    },
-    {
-      "id": "qwen3-tts-12hz-1.7b-base",
-      "role": "tts",
-      "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-      "quant": "bf16",
-      "weights_bytes": 3861933962,
-      "runtime_overhead_bytes": 671088640,
-      "devices": [
-        "gpu",
-        "cpu"
+        "transient-gpu"
       ],
       "cloning": true,
       "quality": 88,
       "download": {
-        "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "repo": "Serveurperso/Qwen3-TTS-GGUF",
         "allow_patterns": [
-          "*.json",
-          "*.txt",
-          "model.safetensors",
-          "speech_tokenizer/*"
+          "qwen-talker-1.7b-base-Q8_0.gguf",
+          "qwen-tokenizer-12hz-Q8_0.gguf"
         ],
-        "total_bytes": 3861933962
+        "total_bytes": 2370598880
       },
-      "notes": "3-second voice clone from a reference clip, 10 languages (zh/en/ja/ko/de/fr/ru/pt/es/it), Apache-2.0. Best-in-catalogue TTS; the flow-matching LM wants a real GPU \u2014 CPU is a last resort. Cloning only \u2014 no instruct param on generate_voice_clone(); pair with qwen3-tts-12hz-1.7b-voicedesign for the no-sample, description-driven fallback voice instead.",
-      "figures": "hub"
+      "notes": "qwentts.cpp GGUF port of the 1.7B base (cloning) talker, served on-demand via tts-server \u2014 see docs/superpowers/specs/2026-08-30-tts-on-demand-gguf-design.md. weights_bytes/runtime_overhead_bytes sum to the ~3.2GB measured live VRAM footprint (talker+codec weights are ~2.2GB on disk; the rest is codec/compute-buffer overhead measured at load time). transient-gpu: never counted against the steady-state budget, see cookbook/fit.py.",
+      "figures": "measured"
     },
     {
-      "id": "qwen3-tts-12hz-1.7b-voicedesign",
+      "id": "qwen3-tts-gguf-voicedesign",
       "role": "tts",
-      "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-      "quant": "bf16",
-      "weights_bytes": 3837868094,
-      "runtime_overhead_bytes": 671088640,
+      "repo": "Serveurperso/Qwen3-TTS-GGUF",
+      "quant": "Q8_0",
+      "weights_bytes": 2333984448,
+      "runtime_overhead_bytes": 1101989388,
       "devices": [
-        "gpu",
-        "cpu"
+        "transient-gpu"
       ],
       "cloning": false,
       "quality": 88,
       "download": {
-        "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        "repo": "Serveurperso/Qwen3-TTS-GGUF",
         "allow_patterns": [
-          "*.json",
-          "*.txt",
-          "model.safetensors",
-          "speech_tokenizer/*"
+          "qwen-talker-1.7b-voicedesign-Q8_0.gguf",
+          "qwen-tokenizer-12hz-Q8_0.gguf"
         ],
-        "total_bytes": 3837868094
+        "total_bytes": 2333984448
       },
-      "notes": "No-clip, no presets. generate_voice_design(text, language, instruct) builds a voice purely from the instruct description \u2014 character.md is the natural input. This is the fallback when no reference sample was uploaded. Same quality tier as the 1.7B base.",
-      "figures": "hub"
+      "notes": "qwentts.cpp GGUF port of the 1.7B VoiceDesign (no-clip, instruct-driven) talker, served on-demand via tts-server. No presets or reference clip \u2014 see docs/superpowers/specs/2026-08-30-tts-api-findings.md for whether the instruct string reaches this over HTTP. weights_bytes/runtime_overhead_bytes sum to the same measured ~3.2GB class as the base talker.",
+      "figures": "measured"
     }
   ]
 }
