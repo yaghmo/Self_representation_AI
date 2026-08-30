@@ -32,7 +32,7 @@ from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -128,7 +128,7 @@ from runtime.tools import (
     summary_path,
 )
 import runtime.voice_sample as voice_sample_module
-from runtime.voice import build_clone, build_design, synth as voice_synth, voice_status
+from runtime.voice import build_clone, build_design, synth as voice_synth, voice_status, warm_bubbles as voice_warm_bubbles
 from runtime.voice_sample import LANGUAGES, PHRASES, TEST_PHRASES, sample_status, save_sample
 from runtime.youtube_scrape import scrape_channel
 from runtime.linktree_scrape import scrape_links as scrape_linktree_links
@@ -1228,8 +1228,18 @@ def social_image_proxy(url: str) -> Response:
     )
 
 
+def _prewarm_voice_bubbles(bubbles: list[str]) -> None:
+    """Runs after the response has already been sent to the fan. A start()
+    failure here must never crash the request — same silent-fail contract
+    the old always-resident pre-warm had."""
+    try:
+        voice_warm_bubbles(bubbles)
+    except Exception:
+        logger.warning("voice pre-warm failed for this turn", exc_info=True)
+
+
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatResponse:
     model = _require_loaded()
     log_payload(
         logger,
@@ -1292,6 +1302,10 @@ def chat(request: ChatRequest) -> ChatResponse:
             "tool_calls": tool_calls,
         },
     )
+    if not request.tools:
+        bubbles = [b.strip() for b in re.split(r"\n{2,}", content) if b.strip()]
+        background_tasks.add_task(_prewarm_voice_bubbles, bubbles)
+
     return ChatResponse(
         content=content,
         reasoning=getattr(backend, "last_reasoning", ""),
@@ -2791,17 +2805,17 @@ def _self_check() -> None:
         original_voice_dir = voice_module.VOICE_DIR
         original_sample_path = voice_module.SAMPLE_PATH
         original_synth_dir = voice_synth_module.VOICE_DIR
-        original_clone_path = voice_synth_module.CLONE_PATH
+        original_clone_path = voice_synth_module.CLONE_META_PATH
         original_design_path = voice_synth_module.DESIGN_PATH
         voice_module.VOICE_DIR = Path(tmp) / "voice"
         voice_module.SAMPLE_PATH = voice_module.VOICE_DIR / "sample.wav"
         voice_synth_module.VOICE_DIR = Path(tmp) / "synth-voice"
-        voice_synth_module.CLONE_PATH = voice_synth_module.VOICE_DIR / "clone.pt"
+        voice_synth_module.CLONE_META_PATH = voice_synth_module.VOICE_DIR / "clone.json"
         voice_synth_module.DESIGN_PATH = voice_synth_module.VOICE_DIR / "design.json"
 
         def fake_build_clone(ref_audio, ref_text, seed=0):
             voice_synth_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
-            voice_synth_module.CLONE_PATH.write_bytes(b"fake-clone")
+            voice_synth_module.CLONE_META_PATH.write_bytes(b"fake-clone")
 
         def fake_build_design(instruct, seed, language="Auto"):
             voice_synth_module.VOICE_DIR.mkdir(parents=True, exist_ok=True)
@@ -2841,7 +2855,7 @@ def _self_check() -> None:
             )
             assert response.status_code == 400, (response.status_code, response.text)
             assert not voice_module.SAMPLE_PATH.exists()
-            assert not voice_synth_module.CLONE_PATH.exists()
+            assert not voice_synth_module.CLONE_META_PATH.exists()
 
             # Saving a real sample builds the clone right away — no separate
             # /admin/voice/clone call needed to reach synthStatus == "clone".
@@ -2852,7 +2866,7 @@ def _self_check() -> None:
             )
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["status"] is not None
-            assert voice_synth_module.CLONE_PATH.exists(), "sample save must build the clone automatically"
+            assert voice_synth_module.CLONE_META_PATH.exists(), "sample save must build the clone automatically"
 
             response = client.get("/admin/voice/status")
             assert response.status_code == 200, (response.status_code, response.text)
@@ -2893,7 +2907,7 @@ def _self_check() -> None:
             voice_module.VOICE_DIR = original_voice_dir
             voice_module.SAMPLE_PATH = original_sample_path
             voice_synth_module.VOICE_DIR = original_synth_dir
-            voice_synth_module.CLONE_PATH = original_clone_path
+            voice_synth_module.CLONE_META_PATH = original_clone_path
             voice_synth_module.DESIGN_PATH = original_design_path
     _model.agent = False
 
