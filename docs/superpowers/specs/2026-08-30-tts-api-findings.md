@@ -1,61 +1,56 @@
-# qwentts.cpp API — findings (unverified against a live build)
+# qwentts.cpp API — findings (live-verified)
 
-**Status: NOT live-verified.** This machine has no CUDA/MSVC toolchain to
-build `qwentts.cpp` from source, no usable WSL distro, and Docker Desktop's
-daemon isn't running — so Task 1's planned build+curl verification
-(`docs/superpowers/plans/2026-08-30-tts-on-demand-implementation.md`, Task 1)
-could not run. By explicit decision, the implementation proceeds on
-documentation alone; the values below are best-available, not confirmed.
-
-Sourced from `ServeurpersoCom/qwentts.cpp`'s own `docs/ARCHITECTURE.md`.
+**Status: LIVE-VERIFIED**, 2026-08-30, against `ghcr.io/serveurpersocom/qwentts.cpp:cuda12`
+run via Docker (Docker Desktop + `--gpus all`, RTX 4070 Laptop GPU), for
+both the base (cloning) and voicedesign talkers, using the real GGUF files
+already downloaded into `models/qwen3-tts-gguf-{base,voicedesign}/`.
 
 ## /v1/audio/speech request field for the text to speak
 
-Hypothesis: **`text`** (this is what `docs/ARCHITECTURE.md` states explicitly).
-A separate, less authoritative README excerpt used `input` instead —
-possibly conflating this server with the real OpenAI TTS API's field name.
-**Not confirmed.**
+**`input`** — confirmed. `docs/ARCHITECTURE.md`'s claim of `"text"` was
+wrong; a `{"text": ...}` payload returns `400 {"error": {"message": "'input'
+must be a non-empty string", ...}}`. `runtime/voice.py`'s `_synth_via_server()`
+now sends `"input"`.
 
 ## Voice cloning registration
 
-Confirmed with reasonable confidence (consistent across multiple doc
-excerpts): `POST /v1/audio/voices` with `{"name", "ref_text", "wav_b64"}`
-triggers server-side embedding extraction from the raw reference clip.
-Registration lives in that `tts-server` process's memory only — lost on
-every restart, which is why `runtime/voice.py`'s `warm_bubbles()` calls
+**Confirmed working end-to-end.** `POST /v1/audio/voices` with
+`{"name", "ref_text", "wav_b64"}` (base64 of the raw reference WAV) returns
+`{"name": "...", "status": "registered"}`. A subsequent
+`POST /v1/audio/speech` with `{"input": ..., "voice": "<name>", ...}`
+returns real, audible WAV. Verified with `data/voice/sample.wav` as the
+reference clip.
+
+As designed: registration lives in that `tts-server` process's memory
+only — lost on restart — so `runtime/voice.py`'s `warm_bubbles()` calls
 `_register_clone()` on every fresh `TTSServer.start()`, not once.
 
 ## VoiceDesign over HTTP
 
-**Not confirmed.** The CLI tool `qwen-tts` documents a `--instruct` flag,
-but that's a separate offline binary, not `tts-server`. `tts-server`'s own
-CLI flags (`--model`, `--codec`, `--alias`, `--host`, `--port`, `--lang`,
-`--no-fa`, `--clamp-fp16`) have no instruct-related flag. Whether
-`/v1/audio/speech` accepts an instruction string at all — and under what
-field name — is undocumented in what was fetched during planning.
-
-`runtime/voice.py`'s `_synth_via_server()` ships with `"instructions"` as
-its best-available guess for the design-mode branch (matching the real
-OpenAI TTS API's own field name, which this server otherwise imitates).
-**This is unverified and may not work.**
+**Confirmed working.** `POST /v1/audio/speech` with `{"input": ...,
+"instructions": "<description>", ...}` against the voicedesign talker
+returns real WAV audio. The server actively validates this: the identical
+request *without* `"instructions"` returns `400 {"error": {"message":
+"voice_design models require --instruct", "type": "server_error"}}` —
+strong confirmation this is the real, required field, not a silently
+ignored one. `runtime/voice.py` already used `"instructions"`; no change
+needed there.
 
 ## What this means for testing
 
-Every test in this implementation mocks `_register_clone`/`_synth_via_server`
-directly rather than hitting a real `tts-server` — so the test suite proves
-the lock/batching/caching logic is correct, but proves nothing about whether
-the actual HTTP payloads are accepted by a real `tts-server` process.
+The unit test suite still mocks `_register_clone`/`_synth_via_server`
+directly (proving the lock/batching/caching logic), but the actual HTTP
+payload shapes those two functions send are now confirmed correct against
+a real server, not just documentation.
 
-## Required before this ships to a real fan
+## Residual gaps
 
-Before voice actually works end-to-end:
-1. Get a real build of `qwentts.cpp` (CUDA toolchain, a working WSL
-   Ubuntu distro, or a running Docker Desktop with GPU passthrough).
-2. Re-run the verification steps in Task 1 of
-   `docs/superpowers/plans/2026-08-30-tts-on-demand-implementation.md`
-   against the real binary.
-3. Fix `runtime/voice.py`'s `"text"`/`"instructions"` field names in
-   `_synth_via_server()` if the real server disagrees.
-4. If VoiceDesign turns out not to work over HTTP at all, `_synth_via_server`'s
-   `design` branch needs to raise a clear error instead of silently sending
-   a payload the server ignores.
+- `TTSServer.command()` spawns a local `tts-server` binary from
+  `vendor/qwentts.cpp/build/`, which still doesn't exist on this machine —
+  verification here used the Docker image directly (`docker run ... -p
+  8091:8080 ...`), not `TTSServer.start()`'s own subprocess path. Building
+  the actual binary (or switching `TTSServer` to run the Docker image
+  instead of a bare subprocess) is still open.
+- Not tested: behavior when `wav_b64` is large enough to matter for request
+  size, or repeated re-registration across many `start()`/`stop()` cycles
+  in quick succession.

@@ -168,14 +168,14 @@ def _register_clone(server: "qwentts.TTSServer") -> None:
 
 
 def _synth_via_server(server: "qwentts.TTSServer", text: str, language: str, status: str) -> bytes:
-    payload: dict[str, Any] = {"text": text, "response_format": "wav"}
+    # Field names verified against a real tts-server (CUDA Docker image) —
+    # see docs/superpowers/specs/2026-08-30-tts-api-findings.md.
+    payload: dict[str, Any] = {"input": text, "response_format": "wav"}
     if status == "clone":
         cached = json.loads(CLONE_META_PATH.read_text(encoding="utf-8"))
         payload["voice"] = CLONE_VOICE_NAME
         payload["seed"] = cached["seed"]
     elif status == "design":
-        # Field name per docs/superpowers/specs/2026-08-30-tts-api-findings.md
-        # — unverified, see that file.
         cached = json.loads(DESIGN_PATH.read_text(encoding="utf-8"))
         payload["instructions"] = cached["instruct"]
         payload["seed"] = cached["seed"]
