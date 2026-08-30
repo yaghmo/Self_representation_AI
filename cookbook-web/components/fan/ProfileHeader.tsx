@@ -8,7 +8,7 @@ import { introAlreadySeen, isVideo, markIntroSeen } from "@/lib/introSplash"
 import type { FanProfile } from "./types"
 
 const PFP_REPLAY_INTERVAL_MS = 60_000
-const INTRO_PFP_SIZE = 320
+const INTRO_PFP_SIZE = "min(60vmin, 520px)"
 const INTRO_TRANSITION_MS = 700
 
 const BANNER_HEIGHT = 420
@@ -83,7 +83,12 @@ function ProfileHeader({
             <PlayOnceVideo
               ref={bannerVideoRef}
               src={profile.bannerUrl}
-              className="size-full object-cover"
+              // Forces its own GPU compositing layer — a clipped (rounded,
+              // overflow-hidden) <video> otherwise falls off the hardware
+              // decode path onto software compositing in some browsers,
+              // which shows up as visible stutter at this size even though
+              // the same file plays smoothly outside the browser.
+              className="size-full object-cover [transform:translateZ(0)]"
             />
           ) : (
             // eslint-disable-next-line @next/next/no-img-element -- served from our own service, not a next/image remote host
