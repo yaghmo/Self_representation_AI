@@ -1,16 +1,19 @@
-"""Runs qwen3-tts through qwentts.cpp's own `tts-server` binary, on demand.
+"""Runs qwen3-tts via qwentts.cpp's published tts-server Docker image, on
+demand, one turn's synth batch at a time.
 
-Mirrors runtime/llamacpp.py's LlamaServer shape: spawn a subprocess, poll
-/health, talk HTTP, terminate on stop(). Unlike LlamaServer, this process is
-started and stopped around every batch of synths rather than held resident —
-see docs/superpowers/specs/2026-08-30-tts-on-demand-gguf-design.md.
+No local build of qwentts.cpp exists on this machine, and building one
+needs a CUDA/MSVC toolchain or a working WSL distro this machine doesn't
+have — verified live instead against
+`ghcr.io/serveurpersocom/qwentts.cpp:cuda12` via Docker (GPU passthrough
+confirmed working), see
+docs/superpowers/specs/2026-08-30-tts-api-findings.md. Mirrors
+runtime/llamacpp.py's LlamaServer shape (spawn, poll /health, HTTP, stop())
+with the spawned process being `docker run` instead of a bare binary.
 """
 
 from __future__ import annotations
 
 import atexit
-import os
-import shutil
 import subprocess
 import threading
 import time
@@ -20,13 +23,12 @@ from pathlib import Path
 
 import httpx
 
-from runtime.llamacpp import cuda_dll_dirs
 from service.logging_config import get_logger
 
 logger = get_logger("runtime.qwentts")
 
 # Mirrors llamacpp.py's own WeakSet — a crashed request must never leave a
-# tts-server process holding VRAM with nobody owning it.
+# tts-server container holding VRAM with nobody owning it.
 _running: "weakref.WeakSet[TTSServer]" = weakref.WeakSet()
 
 
@@ -39,9 +41,7 @@ def _stop_all_servers() -> None:
             pass
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-VENDOR_DIR = REPO_ROOT / "vendor" / "qwentts.cpp"
-BIN_DIR = VENDOR_DIR / "build"
+IMAGE = "ghcr.io/serveurpersocom/qwentts.cpp:cuda12"
 
 # Single-tenant, one GPU: tts-server and llama-server are the only two VRAM
 # consumers, and there is never a case where two tts-server instances should
@@ -49,25 +49,12 @@ BIN_DIR = VENDOR_DIR / "build"
 LOCK = threading.Lock()
 
 
-def find_tts_server() -> Path | None:
-    names = ("tts-server.exe", "tts-server") if os.name == "nt" else ("tts-server", "tts-server.exe")
-    for name in names:
-        found = shutil.which(name)
-        if found:
-            return Path(found)
-        candidate = BIN_DIR / name
-        if candidate.exists():
-            return candidate
-    return None
-
-
 @dataclass(eq=False)
 class TTSServer:
-    """A tts-server subprocess, owned and cleaned up by this object."""
+    """A qwentts.cpp tts-server container, owned and cleaned up by this object."""
 
     talker_path: Path
     codec_path: Path
-    alias: str = "qwen3-tts"
     host: str = "127.0.0.1"
     port: int = 8091
     process: subprocess.Popen | None = None
@@ -77,20 +64,24 @@ class TTSServer:
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    @property
+    def container_name(self) -> str:
+        return f"qwentts-{self.port}"
+
     def command(self) -> list[str]:
-        server = find_tts_server()
-        if server is None:
-            raise RuntimeError(
-                "tts-server not found. Build qwentts.cpp into vendor/qwentts.cpp/ "
-                "(see docs/superpowers/specs/2026-08-30-tts-on-demand-gguf-design.md)."
-            )
+        # talker and codec always sit in the same catalogue-entry directory
+        # (see runtime/voice.py's _talker_and_codec_paths) — mount that
+        # whole directory once rather than the two files separately.
+        model_dir = self.talker_path.parent
         return [
-            str(server),
-            "--model", str(self.talker_path),
-            "--codec", str(self.codec_path),
-            "--alias", self.alias,
-            "--host", self.host,
-            "--port", str(self.port),
+            "docker", "run", "--rm",
+            "--name", self.container_name,
+            "--gpus", "all",
+            "-p", f"{self.port}:8080",
+            "-v", f"{model_dir.as_posix()}:/models:ro",
+            "-e", f"MODEL_PATH=/models/{self.talker_path.name}",
+            "-e", f"CODEC_PATH=/models/{self.codec_path.name}",
+            IMAGE,
         ]
 
     def already_running(self) -> bool:
@@ -108,19 +99,21 @@ class TTSServer:
             )
             return self
 
-        logger.info(
-            "starting tts-server: talker=%s port=%d", self.talker_path.name, self.port
+        # A crash on a previous run can leave a stopped container holding
+        # this name, and `docker run --name` refuses to start over it.
+        subprocess.run(
+            ["docker", "rm", "-f", self.container_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        env = dict(os.environ)
-        prefix = os.pathsep.join(str(d) for d in cuda_dll_dirs())
-        env["PATH"] = f"{prefix}{os.pathsep}{env.get('PATH', '')}"
-        env["LD_LIBRARY_PATH"] = f"{prefix}{os.pathsep}{env.get('LD_LIBRARY_PATH', '')}"
 
+        logger.info(
+            "starting tts-server container: talker=%s port=%d",
+            self.talker_path.name, self.port,
+        )
         self.process = subprocess.Popen(
             self.command(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            env=env,
             text=True,
             errors="replace",
         )
@@ -132,9 +125,9 @@ class TTSServer:
             while time.time() < deadline:
                 if self.process.poll() is not None:
                     output = self.process.stdout.read() if self.process.stdout else ""
-                    logger.error("tts-server exited with %s", self.process.returncode)
+                    logger.error("tts-server container exited with %s", self.process.returncode)
                     raise RuntimeError(
-                        f"tts-server exited with {self.process.returncode}.\n{output[-2000:]}"
+                        f"tts-server container exited with {self.process.returncode}.\n{output[-2000:]}"
                     )
                 if self.already_running():
                     logger.info("tts-server healthy after %.1fs", time.time() - started)
@@ -143,18 +136,22 @@ class TTSServer:
 
             raise RuntimeError(f"tts-server did not become healthy within {wait_seconds}s")
         except Exception:
-            logger.exception("tts-server failed to come up — cleaning up the process")
+            logger.exception("tts-server failed to come up — cleaning up the container")
             self.stop()
             raise
 
     def stop(self) -> None:
+        # `docker run`'s client process doesn't reliably forward a stop
+        # signal to the container on every platform — stop the container by
+        # name explicitly rather than trusting the client process's exit.
+        subprocess.run(
+            ["docker", "stop", self.container_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
         if self.process and self.process.poll() is None:
-            logger.info("stopping tts-server pid %s", self.process.pid)
-            self.process.terminate()
             try:
                 self.process.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                logger.warning("tts-server ignored terminate, killing")
                 self.process.kill()
         self.process = None
         _running.discard(self)
