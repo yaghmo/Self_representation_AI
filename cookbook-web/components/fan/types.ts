@@ -5,6 +5,7 @@ export type FanProfile = {
   pfpUrl?: string | null
   pfpMime?: string | null
   bannerUrl?: string | null
+  bannerMime?: string | null
   chatIconUrl?: string | null
   landingPfpUrl?: string | null
   landingPfpMime?: string | null

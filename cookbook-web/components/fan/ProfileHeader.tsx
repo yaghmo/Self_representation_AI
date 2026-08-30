@@ -1,22 +1,21 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { ChevronDown, Mail } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { PlayOnceVideo, type PlayOnceVideoHandle } from "@/components/media/PlayOnceVideo"
+import { introAlreadySeen, isVideo, markIntroSeen } from "@/lib/introSplash"
 import type { FanProfile } from "./types"
 
 const PFP_REPLAY_INTERVAL_MS = 60_000
+const INTRO_PFP_SIZE = 320
+const INTRO_TRANSITION_MS = 700
 
 const BANNER_HEIGHT = 420
 const EXPANDED_PFP = 176
 const COMPACT_PFP = 112
 const EXPANDED_MARGIN_PERCENT = 10
 const COMPACT_MARGIN_PERCENT = 4
-
-function isVideo(mime: string | null | undefined) {
-  return !!mime?.startsWith("video/")
-}
 
 function ProfileHeader({
   profile,
@@ -36,6 +35,33 @@ function ProfileHeader({
   const heroUrl = showingLandingHero ? profile.landingPfpUrl : profile.pfpUrl
   const heroMime = showingLandingHero ? profile.landingPfpMime : profile.pfpMime
   const pfpVideoRef = useRef<PlayOnceVideoHandle>(null)
+  const bannerVideoRef = useRef<PlayOnceVideoHandle>(null)
+  const bannerIsVideo = isVideo(profile.bannerMime)
+
+  const introEligible = showingLandingHero && isVideo(heroMime)
+  const [showIntro, setShowIntro] = useState(false)
+  const [introShrinking, setIntroShrinking] = useState(false)
+
+  // Decided once, on mount: a video hero that hasn't been seen before gets
+  // the full-screen intro; everything else renders normally, same as today.
+  useEffect(() => {
+    if (!introEligible || introAlreadySeen()) return
+    markIntroSeen()
+    setShowIntro(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mount-only
+  }, [])
+
+  function handleIntroEnd() {
+    setIntroShrinking(true)
+    setTimeout(() => {
+      setShowIntro(false)
+      // The docked pfp/banner have been autoplaying behind the overlay the
+      // whole time and are likely already frozen on their last frame —
+      // replay them so the reveal looks like they're starting fresh.
+      pfpVideoRef.current?.replay()
+      bannerVideoRef.current?.replay()
+    }, INTRO_TRANSITION_MS)
+  }
 
   // Only the main pfp (not the landing hero) auto-replays — it plays once
   // on mount like any other slot, then re-triggers itself on a timer so a
@@ -53,8 +79,16 @@ function ProfileHeader({
         style={{ height: BANNER_HEIGHT, marginInline: `${marginPercent}%` }}
       >
         {profile.bannerUrl && (
-          // eslint-disable-next-line @next/next/no-img-element -- served from our own service, not a next/image remote host
-          <img src={profile.bannerUrl} alt="" className="size-full object-cover" />
+          bannerIsVideo ? (
+            <PlayOnceVideo
+              ref={bannerVideoRef}
+              src={profile.bannerUrl}
+              className="size-full object-cover"
+            />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element -- served from our own service, not a next/image remote host
+            <img src={profile.bannerUrl} alt="" className="size-full object-cover" />
+          )
         )}
       </div>
       <div
@@ -71,7 +105,7 @@ function ProfileHeader({
           {heroUrl && (
             isVideo(heroMime) ? (
               <PlayOnceVideo
-                ref={showingLandingHero ? undefined : pfpVideoRef}
+                ref={pfpVideoRef}
                 src={heroUrl}
                 className="size-full object-cover"
               />
@@ -102,6 +136,23 @@ function ProfileHeader({
           )}
         </div>
       </div>
+
+      {showIntro && heroUrl && (
+        <div
+          className={cn(
+            "fixed inset-0 z-50 flex items-center justify-center bg-black transition-all ease-out",
+            introShrinking ? "scale-0 opacity-0" : "scale-100 opacity-100"
+          )}
+          style={{ transitionDuration: `${INTRO_TRANSITION_MS}ms` }}
+        >
+          <PlayOnceVideo
+            src={heroUrl}
+            className="rounded-full object-cover"
+            style={{ width: INTRO_PFP_SIZE, height: INTRO_PFP_SIZE }}
+            onEnded={handleIntroEnd}
+          />
+        </div>
+      )}
 
       {expanded && (
         <button

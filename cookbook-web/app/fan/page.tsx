@@ -49,6 +49,7 @@ export default function FanPage() {
         pfpUrl: res.pfpVersion != null ? publicPfpUrl(res.pfpVersion) : null,
         pfpMime: res.pfpMime,
         bannerUrl: res.bannerVersion != null ? publicBannerUrl(res.bannerVersion) : null,
+        bannerMime: res.bannerMime,
         chatIconUrl: res.chatIconVersion != null ? publicChatIconUrl(res.chatIconVersion) : null,
         landingPfpUrl:
           res.landingPfpVersion != null ? publicLandingPfpUrl(res.landingPfpVersion) : null,
