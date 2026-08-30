@@ -260,7 +260,13 @@ def test_pfp_mime_reflects_stored_type_without_full_read(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
-def test_save_media_transcodes_alpha_mov_to_webm(tmp_path, monkeypatch):
+def test_save_media_flattens_alpha_mov_to_opaque_mp4(tmp_path, monkeypatch):
+    # HTML5 <video> never renders alpha transparency in any codec — every
+    # slot that plays these clips sits on an opaque background regardless,
+    # so an alpha export gets flattened to a plain mp4, not preserved as an
+    # alpha-carrying webm (that path was a heavier, more fragile decode for
+    # a browser feature that doesn't exist, and it visibly corrupted
+    # playback on a real 1080p banner).
     monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
     monkeypatch.setattr(social_module, "PFP_PATH", social_module.IMAGES_DIR / "pfp.img")
 
@@ -278,8 +284,8 @@ def test_save_media_transcodes_alpha_mov_to_webm(tmp_path, monkeypatch):
 
     save_pfp(alpha_mov)
     data, mime = read_pfp()
-    assert mime == "video/webm", "an alpha mov must be transcoded, not stored as-is"
-    assert data.startswith(b"\x1a\x45\xdf\xa3"), "the stored bytes must actually be a webm"
+    assert mime == "video/mp4", "an alpha mov must be flattened to opaque mp4, not preserved as alpha-webm"
+    assert data[4:8] == b"ftyp", "the stored bytes must actually be an mp4"
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
@@ -303,6 +309,36 @@ def test_save_media_transcodes_gif_to_webm(tmp_path, monkeypatch):
     data, mime = read_pfp()
     assert mime == "video/webm", "a gif upload must be transcoded, not stored as-is"
     assert data.startswith(b"\x1a\x45\xdf\xa3"), "the stored bytes must actually be a webm"
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+def test_save_media_moves_moov_atom_to_front_for_mp4(tmp_path, monkeypatch):
+    monkeypatch.setattr(social_module, "IMAGES_DIR", tmp_path / "images")
+    monkeypatch.setattr(social_module, "PFP_PATH", social_module.IMAGES_DIR / "pfp.img")
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as mp4:
+        mp4_path = mp4.name
+    try:
+        # +faststart deliberately omitted — ffmpeg's default mp4 muxer
+        # writes moov after mdat, exactly the shape that glitches in
+        # Chrome's <video> but plays fine in a real media player.
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=32x32:d=1:r=10",
+             "-pix_fmt", "yuv420p", "-c:v", "libx264", mp4_path],
+            capture_output=True, check=True,
+        )
+        original = open(mp4_path, "rb").read()
+    finally:
+        os.unlink(mp4_path)
+
+    assert original.find(b"moov") > original.find(b"mdat"), (
+        "test setup must produce a non-faststart source file"
+    )
+
+    save_pfp(original)
+    data, mime = read_pfp()
+    assert mime == "video/mp4"
+    assert data.find(b"moov") < data.find(b"mdat"), "moov must be moved before mdat (faststart)"
 
 
 def test_save_media_leaves_alpha_free_mp4_untouched(tmp_path, monkeypatch):

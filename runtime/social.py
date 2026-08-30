@@ -82,17 +82,24 @@ def _has_alpha_channel(data: bytes) -> bool:
         tmp_path.unlink(missing_ok=True)
 
 
-def _transcode_alpha_to_webm(data: bytes) -> bytes:
-    """Browsers can't render alpha in mp4/mov — re-encode to VP9/webm, the
-    one container+codec combo <video> actually composites transparency for."""
+def _flatten_alpha_to_mp4(data: bytes) -> bytes:
+    """HTML5 <video> never renders alpha transparency, in any codec — every
+    slot that plays one of these clips sits on an opaque background anyway
+    (object-cover inside a rounded, non-transparent container), so there is
+    nothing in this app that alpha would ever be visible through. Alpha-VP9
+    is also a much heavier, largely-software decode path at any real
+    resolution, which showed up as visible corruption in Chrome even though
+    the source file played back fine in a real media player. Just decode
+    and re-encode to plain opaque h264/mp4 — ffmpeg's colorspace conversion
+    drops the alpha plane on the way to yuv420p."""
     with tempfile.NamedTemporaryFile(suffix=".mov", delete=False) as src:
         src.write(data)
         src_path = Path(src.name)
-    dst_path = src_path.with_suffix(".webm")
+    dst_path = src_path.with_suffix(".mp4")
     try:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", str(src_path), "-an", "-c:v", "libvpx-vp9",
-             "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", "-b:v", "2M", str(dst_path)],
+            ["ffmpeg", "-y", "-i", str(src_path), "-an", "-c:v", "libx264",
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst_path)],
             capture_output=True, timeout=120, check=True,
         )
         return dst_path.read_bytes()
@@ -129,14 +136,43 @@ def _transcode_gif_to_webm(data: bytes) -> bytes:
         dst_path.unlink(missing_ok=True)
 
 
+def _ensure_faststart(data: bytes) -> bytes:
+    """Browsers stream/seek mp4 by reading the moov atom (the frame index)
+    before the mdat (the actual frame data) — many export tools write moov
+    at the *end* of the file instead of the front. A real media player just
+    reads the whole file and doesn't care, but Chrome's <video>, issuing
+    incremental Range requests, can start decoding before it's found the
+    index — visible as corrupted/garbled frames until it does. `-c copy`
+    only repositions the atom, it doesn't touch a single frame — lossless
+    and fast, unlike the alpha/gif paths above which really do re-encode."""
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as src:
+        src.write(data)
+        src_path = Path(src.name)
+    dst_path = src_path.with_suffix(".fast.mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(src_path), "-c", "copy",
+             "-movflags", "+faststart", str(dst_path)],
+            capture_output=True, timeout=60, check=True,
+        )
+        return dst_path.read_bytes()
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return data  # no ffmpeg, or this container can't be remuxed as-is — store unchanged
+    finally:
+        src_path.unlink(missing_ok=True)
+        dst_path.unlink(missing_ok=True)
+
+
 def _save_image(path: Path, data: bytes) -> Path:
     if len(data) > MAX_MEDIA_BYTES:
         raise ValueError(f"upload too large ({len(data)} bytes, max {MAX_MEDIA_BYTES})")
     mime = _sniff_media_type(data)  # raises ValueError if unrecognized
     if mime == "video/mp4" and _has_alpha_channel(data):
-        data = _transcode_alpha_to_webm(data)
+        data = _flatten_alpha_to_mp4(data)
     elif mime == "image/gif":
         data = _transcode_gif_to_webm(data)
+    elif mime == "video/mp4":
+        data = _ensure_faststart(data)
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     if path.exists():
         snapshot(path)
