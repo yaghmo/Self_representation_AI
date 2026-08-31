@@ -12,9 +12,9 @@ __pycache__/
 .git/
 .github/
 
-cookbook-web/node_modules/
-cookbook-web/.next/
-cookbook-web/graphify-out/
+web/node_modules/
+web/.next/
+web/graphify-out/
 cookbook/graphify-out/
 graphify-out/
 

@@ -81,7 +81,7 @@ services:
 
   web:
     build:
-      context: ./cookbook-web
+      context: ./web
       args:
         NEXT_PUBLIC_CHAT_API_URL: ${NEXT_PUBLIC_CHAT_API_URL:-http://localhost:8000}
         NEXT_PUBLIC_SERVICE_URL: ${NEXT_PUBLIC_SERVICE_URL:-http://localhost:8000}

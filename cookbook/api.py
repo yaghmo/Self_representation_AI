@@ -1,6 +1,6 @@
 """HTTP front end for the cookbook.
 
-The Next.js page in `cookbook-web/` calls this instead of running Streamlit.
+The Next.js page in `web/` calls this instead of running Streamlit.
 Same two modes as the old app — auto ranks every legal stack, manual checks a
 choice — and nothing is written to `config/stack.json` until the confirm
 endpoint is called, which re-evaluates the fit itself rather than trusting

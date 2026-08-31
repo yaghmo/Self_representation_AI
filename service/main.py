@@ -439,7 +439,7 @@ _SOCIAL_DOMAIN_PLATFORMS = {
 
 
 def _parse_social_url(url: str) -> tuple[str, str] | None:
-    """Server-side mirror of cookbook-web/lib/admin/socialUrl.ts's
+    """Server-side mirror of web/lib/admin/socialUrl.ts's
     parseSocialUrl — intentionally duplicated, not shared, since one is
     TypeScript and one is Python; see the spec's "Duplicating the URL
     parser" note."""
@@ -465,7 +465,7 @@ def _parse_social_url(url: str) -> tuple[str, str] | None:
     return platform, segments[0]
 
 
-# Server-side mirror of cookbook-web/lib/admin/socialUrl.ts's
+# Server-side mirror of web/lib/admin/socialUrl.ts's
 # buildSocialUrl — the inverse of _SOCIAL_DOMAIN_PLATFORMS, one canonical
 # domain per platform, needed to turn a bare mention (platform + handle,
 # no URL) into something scrapable for _verify_mention_exists below.
