@@ -26,6 +26,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -47,7 +48,6 @@ from runtime.backend import Message
 from runtime.bible import (
     MessageTooLarge,
     PROFILE_PATH,
-    ProcedureMissing,
     ProfileIncomplete,
     ProfileMissing,
     ProfileTooLarge,
@@ -273,10 +273,27 @@ def ingest_cap(context_tokens: int, persona_tokens: int) -> int:
     return int((context_tokens - persona_tokens - REPLY_FLOOR) / (1 + REPLY_RATIO))
 
 
+def _autoload_model() -> None:
+    """Runs off the request path so the API comes up (and answers /health)
+    immediately, instead of leaving the container looking dead until
+    something POSTs /model/load — which used to mean a human had to open
+    the sidebar and click "Load model" before anything else could work,
+    every single container start."""
+    try:
+        model = _get_model()
+        logger.info("autoload: loading %s ...", model.name)
+        model.load(wait_seconds=300)
+        logger.info("autoload: %s ready", model.name)
+    except Exception:
+        logger.exception("autoload failed — POST /model/load to retry manually")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = read_config() or {}
     logger.info("service starting (agent=%s)", config.get("agent", False))
+    if config:
+        threading.Thread(target=_autoload_model, daemon=True).start()
     yield
     global _model
     if _model is not None:
@@ -1080,8 +1097,6 @@ def _prompt_for(model: Model, request: ChatRequest, use_compact: bool = False) -
             summary=request.summary,
         )
     except ProfileMissing as exc:
-        raise HTTPException(status_code=424, detail=str(exc)) from exc
-    except ProcedureMissing as exc:
         raise HTTPException(status_code=424, detail=str(exc)) from exc
     except ProfileTooLarge as exc:
         logger.error("prompt does not fit: %s", exc)

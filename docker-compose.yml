@@ -1,17 +1,19 @@
-# Two ways to run this: `docker compose --profile fan up` for a deployed
-# instance (no admin tools, no scraping browser), or
-# `docker compose --profile admin up` for the creator's own machine (full
-# stack, agent mode). Never both — they're the same port and the same
-# character bible, just different route access (see CLAUDE.md's "two
-# surfaces" rule and pyproject.toml's `admin` extra).
+# `docker compose up --build` runs everything at once — cookbook (probe/fit/
+# download, port 8001), the admin-side chat service (port 8000, agent mode —
+# see CLAUDE.md's "two surfaces" rule), and the web frontend (port 3000). No
+# `--profile` flag needed for local/dev use.
 #
-# First-time setup, both profiles:
-#   1. `docker compose --profile cookbook up --build`, open localhost:3000 —
-#      probe/fit/download writes ./config/stack.json and ./models/ (same
-#      volumes fan/admin mount below, so nothing further to copy). The
-#      llama-server binary itself is baked into the image (see Dockerfile) —
-#      nothing to download for it.
-#   2. GPU passthrough needs nvidia-container-toolkit installed on the host.
+# The old fan/admin split still exists for a real deployment later — it's
+# just not the default anymore. Bring up the public, tools-off surface
+# instead with `docker compose --profile fan up service-fan web` (profiles
+# opt a service *out* of the default group, so naming service-fan explicitly
+# is what pulls it back in).
+#
+# First-time setup: open localhost:3000, use the cookbook page to probe/fit/
+# download — writes ./config/stack.json and ./models/ (same volumes
+# service-admin mounts below, so nothing further to copy). The llama-server
+# binary itself is baked into the image (see Dockerfile) — nothing to
+# download for it. GPU passthrough needs nvidia-container-toolkit on the host.
 
 services:
   cookbook:
@@ -33,7 +35,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    profiles: ["cookbook"]
 
   service-fan:
     build:
@@ -77,7 +78,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    profiles: ["admin"]
 
   web:
     build:
@@ -88,4 +88,3 @@ services:
         NEXT_PUBLIC_COOKBOOK_API_URL: ${NEXT_PUBLIC_COOKBOOK_API_URL:-http://localhost:8001}
     ports:
       - "3000:3000"
-    profiles: ["fan", "admin", "cookbook"]

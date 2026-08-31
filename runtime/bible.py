@@ -288,11 +288,50 @@ def profile_section_chunks(path: Path | None = None) -> list[Chunk]:
     return profile_section_chunks_from(load_profile(path))
 
 
-PROCEDURE_PATH = REPO_ROOT / ".claude" / "skills" / "add" / "SKILL.md"
+# The full /add skill at .claude/skills/add/SKILL.md is written for Claude
+# Code's own offline authoring pass — dense, example-heavy, and far past
+# what the small local model running this live chat can reliably follow.
+# Fed to it verbatim, it pattern-matches on the skill's transcript examples
+# and refuses a plain one-line statement ("the character is 51 years old")
+# with something like "please provide the actual conversation or transcript"
+# — exactly backwards, since case 2 below is built for precisely that input.
+# This is the same rules, cut down to what a small model can actually execute.
+ADMIN_EDIT_PROCEDURE = """
+## Logging what the creator tells you
 
+The creator authors the character. You transcribe — never invent, infer, or
+tidy up what they say.
 
-class ProcedureMissing(FileNotFoundError):
-    pass
+Two input shapes, both valid, never refuse either one:
+
+1. **A direct statement, right here in chat** — the creator states a fact
+   about the character in their message (e.g. "the character is 51000 years
+   old", "she has a younger brother"). This is the strongest evidence there
+   is. Log it immediately with `append_source`: `entry_type: creator
+   statement`, `question: — (stated directly by the creator)`, `answer:` the
+   statement verbatim, `feeds:` whichever profile sections it touches. Do
+   not ask for more context first — one sentence is enough to log.
+2. **A conversation or transcript** — a pasted chat log, a Q&A set, a file's
+   contents. Pull out only the creator's own words (never the other
+   party's), one `append_source` call per distinct answer: `entry_type:
+   direct answer` for something they said in character, `observed event`
+   for something visible in *how* they wrote it (register, hesitation,
+   what they volunteered unprompted).
+
+Only ask what to log when you were handed nothing at all — an empty
+message, or a question about your own process. A short factual sentence is
+never "nothing," and is never a reason to ask for a different format.
+
+Never fabricate a plausible detail. Never log a fact belonging to someone
+other than the creator, at any precision. Fuzz identifying detail on the
+creator's own facts per `data/redaction-policy.md` (a city instead of an
+address, a first name only for a third party, an approximate date) — never
+write the precise original anywhere, including in your reply.
+
+After `append_source` returns an id, if the fact belongs in `character.md`,
+add it with `add_profile_line` / `replace_profile_line`, one line at a
+time, citing that id. Report back in one short line what you logged.
+"""
 
 
 def section_index_from(text: str) -> str:
@@ -312,21 +351,13 @@ def section_index(path: Path | None = None) -> str:
 
 
 def build_procedure(path: Path | None = None) -> str:
-    """The admin system prompt: the /add procedure, plus what sections exist.
-
-    Read live rather than baked into a constant, so the index cannot drift from
-    the file — and so the agent spends no tool call asking what it could have
-    been told for sixty tokens.
+    """The admin system prompt: the compact edit procedure, plus what sections
+    exist. The section index is read live rather than baked into a constant,
+    so it cannot drift from the file — and so the agent spends no tool call
+    asking what it could have been told for sixty tokens.
     """
-    try:
-        procedure = PROCEDURE_PATH.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise ProcedureMissing(
-            f"{PROCEDURE_PATH} does not exist — agent mode has no procedure to "
-            "follow. Restore the /add skill, or turn agent mode off."
-        ) from exc
     return (
-        procedure
+        ADMIN_EDIT_PROCEDURE
         + "\n\n## Sections in the profile you are editing\n\n"
         + section_index(path)
         + "\n"

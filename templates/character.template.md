@@ -148,6 +148,17 @@ _[unanswered]_
 - **Topics they avoid, and *how* they deflect:** _[unanswered]_
 - **Verbatim samples:** _[pull direct quotes from `sources.md` — the single best voice data you have]_
 
+### TTS voice design
+
+> Feeds VoiceDesign speech synthesis directly (`runtime/bible.py`'s `voice_design_instruct`) — no LLM call, no cite needed. Plain `key: value` lines, lowercase keys, one per line, no markdown. Overwrite the defaults below to match the character; if this heading is removed entirely, a generic fallback voice is used instead.
+
+gender: unspecified
+age: adult
+pitch: medium
+pace: moderate
+tone: warm, conversational
+accent: neutral
+
 ## 7. Relationships
 
 - **Important people now:** _[unanswered]_

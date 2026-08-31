@@ -68,14 +68,23 @@ def models_from_config(catalogue: Catalogue) -> list[ModelEntry]:
         raise SystemExit(
             "no config found — run the cookbook first, or name models explicitly"
         )
-    ids = [
-        role["model_id"]
-        for role in config["roles"].values()
-        if role.get("source") == "local"
-    ]
+    ids = []
+    for role_name, role in config["roles"].items():
+        if role.get("source") != "local":
+            continue
+        if role_name == "tts":
+            # stack.json only names the one tts checkpoint fit.py placed for
+            # the steady-state VRAM budget, but voice.py's design->clone
+            # chaining (see runtime/voice.py's CLONE_MODEL_ID/DESIGN_MODEL_ID)
+            # needs both the cloning and VoiceDesign talkers on disk — they
+            # load one at a time, on demand, never resident together.
+            ids.extend(m.id for m in catalogue.by_role("tts"))
+        else:
+            ids.append(role["model_id"])
     if not ids:
         raise SystemExit("stack.json selects no local models — nothing to download")
-    return [catalogue.model(i) for i in ids]
+    seen: set[str] = set()
+    return [catalogue.model(i) for i in ids if not (i in seen or seen.add(i))]
 
 
 def select(catalogue: Catalogue, args) -> list[ModelEntry]:

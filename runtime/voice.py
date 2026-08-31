@@ -138,9 +138,19 @@ def _talker_and_codec_paths(kind: Literal["clone", "design"]) -> tuple[Path, Pat
     model_id = CLONE_MODEL_ID if kind == "clone" else DESIGN_MODEL_ID
     entry = load_catalogue().model(model_id)
     directory = target_dir(entry)
-    talker = next(directory.glob("qwen-talker-*.gguf"))
+    talkers = sorted(directory.glob("qwen-talker-*.gguf"))
+    if not talkers:
+        # A bare next() here used to raise StopIteration straight out of
+        # synth()'s generator frame — PEP 479 turns that into an opaque
+        # "generator raised StopIteration" RuntimeError instead of this
+        # message. Most likely cause: only one of the two tts role entries
+        # was downloaded — see cookbook/download.py's models_from_config().
+        raise RuntimeError(
+            f"{model_id} has no qwen-talker-*.gguf under {directory} — "
+            f"download it first: python -m cookbook.download --models {model_id}"
+        )
     codec = directory / CODEC_FILENAME
-    return talker, codec
+    return talkers[0], codec
 
 
 def build_clone(

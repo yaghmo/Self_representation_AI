@@ -58,6 +58,17 @@ export function ModelSidebar({
     refresh().catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [refresh]);
 
+  // The backend autoloads the model on container startup now — no click
+  // required — so poll until it's up rather than leaving a stale "Load
+  // model" button showing after a page load that landed mid-autoload.
+  useEffect(() => {
+    if (health?.model_loaded) return;
+    const id = setInterval(() => {
+      refresh().catch(() => {});
+    }, 3000);
+    return () => clearInterval(id);
+  }, [health?.model_loaded, refresh]);
+
   async function handleLoad() {
     setLoading(true);
     setError(null);

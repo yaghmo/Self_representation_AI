@@ -829,7 +829,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
               )}
               {autoFits !== null && autoFits.length > 0 && (
                 <>
-                  <div className="max-h-80 overflow-auto rounded-lg border">
+                  <div className="max-h-80 overflow-y-auto overflow-x-hidden rounded-lg border">
                     <Table className="text-xs">
                       <TableHeader>
                         <TableRow>
