@@ -216,6 +216,47 @@ def build_compact_persona(path: Path | None = None) -> str:
     return build_compact_persona_from(load_profile(path))
 
 
+VOICE_DESIGN_HEADING = "### TTS voice design"
+
+# Used whenever a profile has no TTS voice design block yet — a generic,
+# inoffensive fallback so voice generation always has *something* to work
+# from rather than failing outright. Never a substitute for the creator's
+# own answers; see character.template.md.
+DEFAULT_VOICE_INSTRUCT = (
+    "A natural, warm, conversational voice with clear articulation, "
+    "moderate pitch and pace, and a friendly, approachable tone."
+)
+
+_VOICE_DESIGN_FIELD = re.compile(r"^([a-z]+):[ \t]*(.+)$", re.MULTILINE)
+
+
+def voice_design_instruct_from(text: str) -> str:
+    """Pure function of profile text — flattens the §6 TTS-design field
+    block into one instruct string for qwentts.cpp's VoiceDesign mode.
+
+    No LLM call: the creator's own field values are the instruction,
+    verbatim, not something a model improvises from the rest of the profile.
+    Falls back to DEFAULT_VOICE_INSTRUCT when the profile has no such block
+    yet — this is a bootstrap default, not a claim about the creator.
+    """
+    start = text.find(VOICE_DESIGN_HEADING)
+    if start == -1:
+        return DEFAULT_VOICE_INSTRUCT
+    end = text.find("\n##", start + len(VOICE_DESIGN_HEADING))
+    block = text[start : end if end != -1 else None]
+    fields = _VOICE_DESIGN_FIELD.findall(block)
+    if not fields:
+        raise ProfileIncomplete(
+            f"{VOICE_DESIGN_HEADING!r} has no 'field: value' lines to build "
+            "an instruction from."
+        )
+    return " ".join(f"{key.capitalize()}: {value}." for key, value in fields)
+
+
+def voice_design_instruct(path: Path | None = None) -> str:
+    return voice_design_instruct_from(load_profile(path))
+
+
 def profile_section_chunks_from(text: str) -> list[Chunk]:
     """Pure function of profile text — one Chunk per RETRIEVABLE_SECTIONS
     entry actually present in `text`. A section missing from the profile is

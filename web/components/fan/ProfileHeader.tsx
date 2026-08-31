@@ -4,13 +4,13 @@ import { useEffect, useRef, useState } from "react"
 import { ChevronDown, Mail } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { PlayOnceVideo, type PlayOnceVideoHandle } from "@/components/media/PlayOnceVideo"
-import { introAlreadySeen, isVideo, markIntroSeen } from "@/lib/introSplash"
+import { isVideo } from "@/lib/introSplash"
 import type { FanProfile } from "./types"
 
 const PFP_REPLAY_INTERVAL_MS = 60_000
+const INTRO_TRANSITION_MS = 900
 const INTRO_PFP_SIZE = "min(85vmin, 900px)"
 const INTRO_PFP_RADIUS = `calc(${INTRO_PFP_SIZE} / 2)`
-const INTRO_TRANSITION_MS = 900
 
 // Punches a circular hole through an otherwise-solid black panel: black
 // (opaque, panel visible) everywhere outside the circle, transparent
@@ -28,41 +28,33 @@ const COMPACT_MARGIN_PERCENT = 4
 function ProfileHeader({
   profile,
   expanded,
+  introPlaying = false,
+  onIntroEnded,
   onCollapse,
 }: {
   profile: FanProfile
   expanded: boolean
+  introPlaying?: boolean
+  onIntroEnded?: () => void
   onCollapse: () => void
 }) {
   const dockedPfpSize = expanded ? EXPANDED_PFP : COMPACT_PFP
   const nameSize = expanded ? 1.75 : 1.25
   const marginPercent = expanded ? EXPANDED_MARGIN_PERCENT : COMPACT_MARGIN_PERCENT
-  // The landing hero gets its own uploaded asset (often a clip) instead of
-  // reusing the docked pfp — falls back to the regular pfp when unset.
-  const showingLandingHero = expanded && !!profile.landingPfpUrl
-  const heroUrl = showingLandingHero ? profile.landingPfpUrl : profile.pfpUrl
-  const heroMime = showingLandingHero ? profile.landingPfpMime : profile.pfpMime
   const pfpVideoRef = useRef<PlayOnceVideoHandle>(null)
   const bannerVideoRef = useRef<PlayOnceVideoHandle>(null)
   const bannerIsVideo = isVideo(profile.bannerMime)
 
-  const introEligible = showingLandingHero && isVideo(heroMime)
-  const [showIntro, setShowIntro] = useState(false)
-  const [introShrinking, setIntroShrinking] = useState(false)
-
-  // Decided once, on mount: a video hero that hasn't been seen before gets
-  // the full-screen intro; everything else renders normally, same as today.
-  useEffect(() => {
-    if (!introEligible || introAlreadySeen()) return
-    markIntroSeen()
-    setShowIntro(true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mount-only
-  }, [])
+  // Splits the full-screen intro apart (top half up, bottom half down, like
+  // a visor opening) before actually ending it, instead of popping straight
+  // to the normal layout the instant the video finishes.
+  const [shrinking, setShrinking] = useState(false)
 
   function handleIntroEnd() {
-    setIntroShrinking(true)
+    setShrinking(true)
     setTimeout(() => {
-      setShowIntro(false)
+      setShrinking(false)
+      onIntroEnded?.()
       // The docked pfp/banner have been autoplaying behind the overlay the
       // whole time and are likely already frozen on their last frame —
       // replay them so the reveal looks like they're starting fresh.
@@ -71,14 +63,13 @@ function ProfileHeader({
     }, INTRO_TRANSITION_MS)
   }
 
-  // Only the main pfp (not the landing hero) auto-replays — it plays once
-  // on mount like any other slot, then re-triggers itself on a timer so a
-  // gif/clip pfp isn't frozen after the first play.
+  // The docked pfp auto-replays on a timer so a gif/clip pfp isn't frozen
+  // after the first play.
   useEffect(() => {
-    if (showingLandingHero || !isVideo(heroMime)) return
+    if (!isVideo(profile.pfpMime)) return
     const id = setInterval(() => pfpVideoRef.current?.replay(), PFP_REPLAY_INTERVAL_MS)
     return () => clearInterval(id)
-  }, [showingLandingHero, heroMime])
+  }, [profile.pfpMime])
 
   return (
     <header className="relative">
@@ -115,16 +106,12 @@ function ProfileHeader({
           className="shrink-0 overflow-hidden rounded-full border-4 border-background bg-muted transition-[width,height] duration-500 ease-out"
           style={{ width: dockedPfpSize, height: dockedPfpSize }}
         >
-          {heroUrl && (
-            isVideo(heroMime) ? (
-              <PlayOnceVideo
-                ref={pfpVideoRef}
-                src={heroUrl}
-                className="size-full object-cover"
-              />
+          {profile.pfpUrl && (
+            isVideo(profile.pfpMime) ? (
+              <PlayOnceVideo ref={pfpVideoRef} src={profile.pfpUrl} className="size-full object-cover" />
             ) : (
               // eslint-disable-next-line @next/next/no-img-element -- served from our own service, not a next/image remote host
-              <img src={heroUrl} alt="" className="size-full object-cover" />
+              <img src={profile.pfpUrl} alt="" className="size-full object-cover" />
             )
           )}
         </div>
@@ -150,27 +137,38 @@ function ProfileHeader({
         </div>
       </div>
 
-      {showIntro && heroUrl && (
+      {introPlaying && profile.landingPfpUrl && (
         <>
           {/* One real video, decoded once — two independently-playing
-              copies of the same clip drift out of sync within seconds,
-              which is exactly the glitch this replaced. It sits centered
-              and completely still the whole time; the two black panels
-              above it each have a circular hole (CSS mask) punched where
-              the video already is, so at rest they fully hide everything
-              except that one continuous, centered circle. Splitting them
-              apart just reveals more of the (unmoving) video underneath —
-              the visor opens, the video never jumps. */}
+              copies of the same clip drift out of sync within seconds. It
+              sits centered and completely still; the two black panels each
+              have a circular hole (CSS mask) punched where the video
+              already is, so at rest they fully hide everything except that
+              one continuous, centered circle. Splitting them apart just
+              reveals more of the (unmoving) video underneath. */}
           <div
-            className="fixed left-1/2 top-1/2 z-40 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full"
-            style={{ width: INTRO_PFP_SIZE, height: INTRO_PFP_SIZE }}
+            className="fixed left-1/2 top-1/2 z-40 overflow-hidden rounded-full transition-transform ease-[cubic-bezier(.65,0,.35,1)]"
+            style={{
+              width: INTRO_PFP_SIZE,
+              height: INTRO_PFP_SIZE,
+              transitionDuration: `${INTRO_TRANSITION_MS}ms`,
+              // Rides down with the bottom panel instead of sitting still
+              // in the middle of the screen once the panels have parted —
+              // a full viewport height clears it off-screen regardless of
+              // how big the circle itself is.
+              transform: shrinking ? "translate(-50%, calc(-50% + 100vh))" : "translate(-50%, -50%)",
+            }}
           >
-            <PlayOnceVideo src={heroUrl} className="size-full object-cover" onEnded={handleIntroEnd} />
+            <PlayOnceVideo
+              src={profile.landingPfpUrl}
+              className="size-full object-cover"
+              onEnded={handleIntroEnd}
+            />
           </div>
           <div
             className={cn(
               "fixed inset-x-0 top-0 z-50 h-1/2 bg-black transition-transform ease-[cubic-bezier(.65,0,.35,1)]",
-              introShrinking && "-translate-y-full"
+              shrinking && "-translate-y-full"
             )}
             style={{
               transitionDuration: `${INTRO_TRANSITION_MS}ms`,
@@ -181,7 +179,7 @@ function ProfileHeader({
           <div
             className={cn(
               "fixed inset-x-0 bottom-0 z-50 h-1/2 bg-black transition-transform ease-[cubic-bezier(.65,0,.35,1)]",
-              introShrinking && "translate-y-full"
+              shrinking && "translate-y-full"
             )}
             style={{
               transitionDuration: `${INTRO_TRANSITION_MS}ms`,
@@ -192,7 +190,7 @@ function ProfileHeader({
         </>
       )}
 
-      {expanded && (
+      {expanded && !introPlaying && (
         <button
           type="button"
           onClick={onCollapse}

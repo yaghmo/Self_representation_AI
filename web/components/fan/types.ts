@@ -7,6 +7,7 @@ export type FanProfile = {
   bannerUrl?: string | null
   bannerMime?: string | null
   chatIconUrl?: string | null
+  chatIconMime?: string | null
   landingPfpUrl?: string | null
   landingPfpMime?: string | null
 }

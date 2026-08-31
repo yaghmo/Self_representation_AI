@@ -91,6 +91,9 @@ export interface SnapshotEntry {
 
 export interface VoiceStatus {
   status: string | null;
+  synthStatus?: "clone" | "design" | "none";
+  cloneSource?: "recorded" | "generated" | null;
+  enabled?: boolean;
 }
 
 export interface VoicePhrases {

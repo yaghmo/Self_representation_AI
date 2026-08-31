@@ -209,8 +209,8 @@ export async function postVoiceSample(wav: Blob, language: string): Promise<Voic
   return (await response.json()) as VoiceStatus;
 }
 
-export async function postVoiceClone(language: string): Promise<Blob> {
-  const response = await fetch(`${SERVICE_URL}/admin/voice/clone`, {
+export async function postVoiceHear(language: string): Promise<Blob> {
+  const response = await fetch(`${SERVICE_URL}/admin/voice/hear`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ language }),
@@ -225,6 +225,21 @@ export async function postVoiceClone(language: string): Promise<Blob> {
     throw new ApiError(response.status, detail);
   }
   return response.blob();
+}
+
+export function postVoiceDesign(): Promise<VoiceStatus> {
+  return request("/admin/voice/design", { method: "POST" });
+}
+
+export function postVoiceEnabled(enabled: boolean): Promise<VoiceStatus> {
+  return request("/admin/voice/enabled", {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function deleteVoiceSample(): Promise<VoiceStatus> {
+  return request("/admin/voice/sample", { method: "DELETE" });
 }
 
 export function postSummarize(messages: Message[], maxTokens = 256): Promise<{ content: string }> {

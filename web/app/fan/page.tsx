@@ -15,6 +15,7 @@ import {
   publicLandingPfpUrl,
   publicPfpUrl,
 } from "@/lib/socialApi"
+import { introAlreadySeen, isVideo, markIntroSeen } from "@/lib/introSplash"
 import type { FanProfile, Post } from "@/components/fan/types"
 
 export default function FanPage() {
@@ -22,6 +23,9 @@ export default function FanPage() {
   const [profile, setProfile] = useState<FanProfile>(mockProfile)
   const [posts, setPosts] = useState<Post[]>(mockPosts)
   const [searchQuery, setSearchQuery] = useState("")
+  // Only ever flips true for a video pfp — an image pfp has nothing to
+  // play, so the intro is skipped from the start (see the profile effect).
+  const [introPlaying, setIntroPlaying] = useState(false)
 
   const filteredPosts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -51,10 +55,16 @@ export default function FanPage() {
         bannerUrl: res.bannerVersion != null ? publicBannerUrl(res.bannerVersion) : null,
         bannerMime: res.bannerMime,
         chatIconUrl: res.chatIconVersion != null ? publicChatIconUrl(res.chatIconVersion) : null,
+        chatIconMime: res.chatIconMime,
         landingPfpUrl:
           res.landingPfpVersion != null ? publicLandingPfpUrl(res.landingPfpVersion) : null,
         landingPfpMime: res.landingPfpMime,
       })
+      const introVideo = isVideo(res.landingPfpMime ?? res.pfpMime)
+      if (introVideo && !introAlreadySeen()) {
+        markIntroSeen()
+        setIntroPlaying(true)
+      }
     })
     getPublicPosts().then(setPosts)
   }, [])
@@ -70,20 +80,32 @@ export default function FanPage() {
 
   return (
     <div className="min-h-[calc(100vh-2.5rem)] pb-24">
-      <SearchBar
-        expanded={expanded}
-        posts={posts}
-        value={searchQuery}
-        onChange={setSearchQuery}
-      />
+      {!introPlaying && (
+        <SearchBar
+          expanded={expanded}
+          posts={posts}
+          value={searchQuery}
+          onChange={setSearchQuery}
+        />
+      )}
       <ProfileHeader
         profile={profile}
         expanded={expanded}
+        introPlaying={introPlaying}
+        onIntroEnded={() => setIntroPlaying(false)}
         onCollapse={() => setExpanded(false)}
       />
-      <PostGrid posts={filteredPosts} expanded={expanded} />
-      <BottomBar />
-      <ChatWidget botName={mockProfile.name} chatIconUrl={profile.chatIconUrl} />
+      {!introPlaying && (
+        <>
+          <PostGrid posts={filteredPosts} expanded={expanded} />
+          <BottomBar />
+          <ChatWidget
+            botName={mockProfile.name}
+            chatIconUrl={profile.chatIconUrl}
+            chatIconMime={profile.chatIconMime}
+          />
+        </>
+      )}
     </div>
   )
 }

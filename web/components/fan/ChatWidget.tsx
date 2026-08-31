@@ -8,8 +8,13 @@ import { cn } from "@/lib/utils"
 import { ChatApiError, postChat } from "@/lib/chatApi"
 import { MarkdownMessage } from "@/components/chat/Markdown"
 import { SpeakButton } from "@/components/chat/SpeakButton"
+import { PlayOnceVideo, type PlayOnceVideoHandle } from "@/components/media/PlayOnceVideo"
 import { warm } from "@/lib/voice/store"
 import type { ChatMessage } from "./types"
+
+function isVideo(mime: string | null | undefined) {
+  return !!mime?.startsWith("video/")
+}
 
 // The model already tends to write in blank-line-separated thoughts (see
 // character.md §6: several short messages rather than one long one) — split
@@ -40,9 +45,11 @@ const MIN_HEIGHT = 320 // 20rem
 function ChatWidget({
   botName,
   chatIconUrl,
+  chatIconMime,
 }: {
   botName: string
   chatIconUrl?: string | null
+  chatIconMime?: string | null
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -51,9 +58,11 @@ function ChatWidget({
   const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
   // Creator can drop a custom chat icon; falls back to the default lucide
   // icon when nothing has been saved for that slot (or it fails to load).
-  const iconSrc = chatIconUrl ?? "/chat-icon-fan-unset.png"
+  const iconSrc = chatIconUrl ?? "/chat-icon.png"
+  const iconIsVideo = isVideo(chatIconMime)
   const [customIconFailed, setCustomIconFailed] = useState(false)
   const iconRef = useRef<HTMLImageElement>(null)
+  const videoIconRef = useRef<PlayOnceVideoHandle>(null)
   // While dragging the resize handle, the icon's `bottom` offset is
   // recomputed every pointermove tick to keep tracking the panel's top
   // edge — animating that would lag a full transition behind the cursor,
@@ -106,15 +115,17 @@ function ChatWidget({
   // SSR renders this <img> before hydration attaches onError — a fast 404
   // (hard refresh) can fire and get missed. `complete` is true either way;
   // `naturalWidth` stays 0 only on failure, so this catches it post-mount.
+  // Video icons hit their own onError instead — nothing to check here for them.
   useEffect(() => {
-    if (iconRef.current?.complete && iconRef.current.naturalWidth === 0) {
+    if (!iconIsVideo && iconRef.current?.complete && iconRef.current.naturalWidth === 0) {
       setCustomIconFailed(true)
     }
-  }, [])
+  }, [iconIsVideo])
 
   async function sendMessage() {
     const text = draft.trim()
     if (!text || isTyping) return
+    videoIconRef.current?.replay()
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -167,7 +178,10 @@ function ChatWidget({
       {!hideToggle && (
         <button
           type="button"
-          onClick={() => setIsOpen((open) => !open)}
+          onClick={() => {
+            setIsOpen((open) => !open)
+            videoIconRef.current?.replay()
+          }}
           aria-label={isOpen ? "Close chat" : "Open chat"}
           style={stuckOnTop ? { bottom: panelTop } : undefined}
           className={cn(
@@ -180,6 +194,14 @@ function ChatWidget({
         >
           {customIconFailed ? (
             <MessageCircle className="size-6" />
+          ) : iconIsVideo ? (
+            <PlayOnceVideo
+              ref={videoIconRef}
+              src={iconSrc}
+              autoPlay={false}
+              className="size-full object-contain drop-shadow-lg"
+              onError={() => setCustomIconFailed(true)}
+            />
           ) : (
             // eslint-disable-next-line @next/next/no-img-element -- local static asset, not a next/image remote host
             <img

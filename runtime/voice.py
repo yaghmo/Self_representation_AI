@@ -1,16 +1,28 @@
 """Voice synthesis — clone or design, cached, driven by an on-demand
 qwentts.cpp tts-server rather than a resident in-process model.
 
-    clone.json      {ref_text, seed} — the reference clip's transcript and
-                    the seed pinned for reproducibility. Stored once at
-                    build_clone() time.
+    clone.json      {ref_text, seed, source} — the reference clip's
+                    transcript, the seed pinned for reproducibility, and
+                    whether the clip was "recorded" (a mic sample) or
+                    "generated" (a VoiceDesign clip chained through
+                    build_clone() for a consistent voice — see
+                    synth_design_once()). Stored once at build_clone() time.
     clone_ref.wav   The reference clip itself, copied verbatim. qwentts.cpp's
                     tts-server extracts the voice embedding server-side from
                     this on every registration — see _register_clone().
     design.json     {instruct, seed, language} — VoiceDesign parameters.
+                    Only ever the bootstrap default now that generation
+                    chains into clone.json — see _ensure_voice_configured().
+    disabled        Bare marker file. Presence = the fan-facing voice
+                    feature is turned off; absence (the default) = on. Only
+                    gates /voice/speak and the chat pre-warm — admin testing
+                    stays available either way.
 
 If both clone.json and design.json exist, clone wins. Only one loads per
-synth batch, decided by voice_status().
+synth batch, decided by voice_status(). voice_status() == "none" only ever
+happens before the very first synth attempt — _ensure_voice_configured()
+lazily builds a design.json default at that point, so nothing downstream
+has to handle "none" as a real case.
 
 cache/<sha256>.wav  Generated clips, keyed by (checkpoint kind, checkpoint
                     mtime, language, text) — a repeat of the same line skips
@@ -43,7 +55,7 @@ from cookbook.schema import load_catalogue
 from service.logging_config import get_logger
 
 from . import qwentts
-from .bible import PROFILE_PATH
+from .bible import PROFILE_PATH, voice_design_instruct
 from .tools import snapshot
 
 logger = get_logger("runtime.voice")
@@ -52,6 +64,7 @@ VOICE_DIR = PROFILE_PATH.parent / "voice"
 CLONE_META_PATH = VOICE_DIR / "clone.json"
 CLONE_REF_PATH = VOICE_DIR / "clone_ref.wav"
 DESIGN_PATH = VOICE_DIR / "design.json"
+DISABLED_PATH = VOICE_DIR / "disabled"
 CACHE_DIR = VOICE_DIR / "cache"
 CACHE_MAX_FILES = 300
 
@@ -91,16 +104,34 @@ def _clean_for_tts(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
-class NoVoiceConfigured(RuntimeError):
-    pass
-
-
 def voice_status() -> Literal["clone", "design", "none"]:
     if CLONE_META_PATH.exists():
         return "clone"
     if DESIGN_PATH.exists():
         return "design"
     return "none"
+
+
+def clone_source() -> Literal["recorded", "generated"] | None:
+    """None when there's no clone at all. Older clone.json files predate the
+    "source" field — treated as "recorded" since that's the only way a clone
+    could have been built before generation started chaining into one."""
+    if not CLONE_META_PATH.exists():
+        return None
+    cached = json.loads(CLONE_META_PATH.read_text(encoding="utf-8"))
+    return cached.get("source", "recorded")
+
+
+def voice_enabled() -> bool:
+    return not DISABLED_PATH.exists()
+
+
+def set_voice_enabled(enabled: bool) -> None:
+    VOICE_DIR.mkdir(parents=True, exist_ok=True)
+    if enabled:
+        DISABLED_PATH.unlink(missing_ok=True)
+    else:
+        DISABLED_PATH.touch()
 
 
 def _talker_and_codec_paths(kind: Literal["clone", "design"]) -> tuple[Path, Path]:
@@ -112,15 +143,17 @@ def _talker_and_codec_paths(kind: Literal["clone", "design"]) -> tuple[Path, Pat
     return talker, codec
 
 
-def build_clone(ref_audio: Path, ref_text: str, seed: int = 0) -> None:
+def build_clone(
+    ref_audio: Path, ref_text: str, seed: int = 0, source: Literal["recorded", "generated"] = "recorded"
+) -> None:
     VOICE_DIR.mkdir(parents=True, exist_ok=True)
     if CLONE_META_PATH.exists():
         snapshot(CLONE_META_PATH)
     shutil.copyfile(ref_audio, CLONE_REF_PATH)
     CLONE_META_PATH.write_text(
-        json.dumps({"ref_text": ref_text, "seed": seed}), encoding="utf-8"
+        json.dumps({"ref_text": ref_text, "seed": seed, "source": source}), encoding="utf-8"
     )
-    logger.info("built voice clone reference from %s, seed=%d", ref_audio, seed)
+    logger.info("built voice clone reference (%s) from %s, seed=%d", source, ref_audio, seed)
 
 
 def build_design(instruct: str, seed: int, language: str = "Auto") -> None:
@@ -132,6 +165,37 @@ def build_design(instruct: str, seed: int, language: str = "Auto") -> None:
         encoding="utf-8",
     )
     logger.info("built voice design, seed=%d language=%s", seed, language)
+
+
+def _ensure_voice_configured() -> Literal["clone", "design"]:
+    """voice_status() can only ever be "none" before the very first synth
+    attempt — lazily build the design.json bootstrap default right then, so
+    every caller past this point can treat "clone" and "design" as the only
+    two real states. Cheap: just a JSON write, no tts-server involved."""
+    status = voice_status()
+    if status == "none":
+        build_design(voice_design_instruct(), seed=0, language="Auto")
+        return "design"
+    return status
+
+
+def synth_design_once(text: str, language: str = "Auto") -> bytes:
+    """One-off VoiceDesign synth, ignoring voice_status() — used right after
+    build_design() to generate a reference clip for build_clone() to lock
+    in. VoiceDesign's raw output isn't guaranteed identical call to call the
+    way a fixed clone embedding is; chaining through build_clone() makes the
+    voice actually consistent, and this is what generates that one clip."""
+    text = _clean_for_tts(text)
+    if language.lower() not in QWEN_SUPPORTED_LANGUAGES:
+        language = "Auto"
+    talker, codec = _talker_and_codec_paths("design")
+    with qwentts.LOCK:
+        server = qwentts.TTSServer(talker_path=talker, codec_path=codec)
+        server.start()
+        try:
+            return _synth_via_server(server, text, language, "design")
+        finally:
+            server.stop()
 
 
 def _chunk(data: bytes, size: int = 32_768) -> Iterator[bytes]:
@@ -192,9 +256,7 @@ def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
     (service/main.py's /chat) and /voice/speak's cache-miss fallback — the
     only difference between those two callers is how many texts they pass.
     """
-    status = voice_status()
-    if status == "none":
-        return
+    status = _ensure_voice_configured()
     if language.lower() not in QWEN_SUPPORTED_LANGUAGES:
         language = "Auto"
 
@@ -234,10 +296,7 @@ def synth(text: str, language: str = "Auto") -> Iterator[bytes]:
     text = _clean_for_tts(text)
     if language.lower() not in QWEN_SUPPORTED_LANGUAGES:
         language = "Auto"
-    status = voice_status()
-    if status == "none":
-        logger.warning("synth called with no voice configured")
-        raise NoVoiceConfigured("no clone or design voice is configured yet")
+    status = _ensure_voice_configured()
 
     cache_path = _cache_path(text, language, status)
     if cache_path.exists():

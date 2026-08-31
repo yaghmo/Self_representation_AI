@@ -1,10 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getVoicePhrases, getVoiceStatus, postVoiceClone, postVoiceSample } from "@/lib/chat/api";
+import {
+  deleteVoiceSample,
+  getVoicePhrases,
+  getVoiceStatus,
+  postVoiceDesign,
+  postVoiceEnabled,
+  postVoiceHear,
+  postVoiceSample,
+} from "@/lib/chat/api";
 import { blobToWav } from "@/lib/wav";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Dialog,
@@ -83,36 +92,61 @@ function RecordingWaveform({ stream }: { stream: MediaStream }) {
   );
 }
 
+// Which voice is actually active right now, in plain terms — "clone" and
+// "designed" both live in the same clone.json/clone_ref.wav (see
+// runtime/voice.py's build_clone "source" field), only "default" means
+// nothing has ever been recorded or generated.
+function voiceTier(
+  synthStatus: string | undefined,
+  cloneSource: "recorded" | "generated" | null | undefined
+): "clone" | "designed" | "default" {
+  if (synthStatus === "clone" && cloneSource === "generated") return "designed";
+  if (synthStatus === "clone") return "clone";
+  return "default";
+}
+
 export function VoiceRecorder() {
   const [open, setOpen] = useState(false);
+  const [designOpen, setDesignOpen] = useState(false);
   const [languages, setLanguages] = useState<[string, string][]>([]);
   const [phrases, setPhrases] = useState<Record<string, string>>({});
   const [language, setLanguage] = useState("en");
   const [status, setStatus] = useState<string | null>(null);
+  const [synthStatus, setSynthStatus] = useState<string | undefined>(undefined);
+  const [cloneSource, setCloneSource] = useState<"recorded" | "generated" | null | undefined>(undefined);
+  const [voiceEnabled, setVoiceEnabledState] = useState(true);
+  const [togglingEnabled, setTogglingEnabled] = useState(false);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [designing, setDesigning] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [hearing, setHearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Nothing reaches the server until Save — this is the reviewable clip.
   const [clip, setClip] = useState<{ blob: Blob; url: string } | null>(null);
   // State, not a ref: the live waveform reads it during render, and a ref's
   // `.current` is off-limits there.
   const [liveStream, setLiveStream] = useState<MediaStream | null>(null);
-  const [testing, setTesting] = useState(false);
-  // Clone-and-synth playback of a phrase never in the recording script —
-  // proves the clone generalizes rather than echoing the training line.
   const [testClip, setTestClip] = useState<{ url: string } | null>(null);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
+  const tier = voiceTier(synthStatus, cloneSource);
+
   useEffect(() => {
     getVoiceStatus()
-      .then((s) => setStatus(s.status))
+      .then((s) => {
+        setStatus(s.status);
+        setSynthStatus(s.synthStatus);
+        setCloneSource(s.cloneSource);
+        if (s.enabled !== undefined) setVoiceEnabledState(s.enabled);
+      })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
   // Loaded once at mount — the language picker now lives in the card itself
-  // (shared by Record and Hear yourself), not gated behind opening the dialog.
+  // (shared by Record and Hear your voice), not gated behind opening a dialog.
   useEffect(() => {
     getVoicePhrases()
       .then((p) => {
@@ -123,11 +157,24 @@ export function VoiceRecorder() {
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
-  async function handleTest() {
-    setTesting(true);
+  async function handleToggleEnabled(next: boolean) {
+    setTogglingEnabled(true);
     setError(null);
     try {
-      const blob = await postVoiceClone(language);
+      const result = await postVoiceEnabled(next);
+      setVoiceEnabledState(result.enabled ?? next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTogglingEnabled(false);
+    }
+  }
+
+  async function handleHear() {
+    setHearing(true);
+    setError(null);
+    try {
+      const blob = await postVoiceHear(language);
       setTestClip((prev) => {
         if (prev) URL.revokeObjectURL(prev.url);
         return { url: URL.createObjectURL(blob) };
@@ -135,7 +182,45 @@ export function VoiceRecorder() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setTesting(false);
+      setHearing(false);
+    }
+  }
+
+  async function handleGenerateProceed() {
+    setDesigning(true);
+    setError(null);
+    try {
+      const result = await postVoiceDesign();
+      setSynthStatus(result.synthStatus);
+      setCloneSource(result.cloneSource);
+      setDesignOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDesigning(false);
+    }
+  }
+
+  function handleGenerateCancel() {
+    setDesignOpen(false);
+  }
+
+  async function handleRemoveSample() {
+    setRemoving(true);
+    setError(null);
+    try {
+      const result = await deleteVoiceSample();
+      setStatus(result.status);
+      setSynthStatus(result.synthStatus);
+      setCloneSource(result.cloneSource);
+      setTestClip((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return null;
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRemoving(false);
     }
   }
 
@@ -184,6 +269,8 @@ export function VoiceRecorder() {
       const wav = await blobToWav(clip.blob);
       const result = await postVoiceSample(wav, language);
       setStatus(result.status);
+      setSynthStatus("clone");
+      setCloneSource("recorded");
       discardClip();
       setOpen(false);
     } catch (e) {
@@ -202,16 +289,31 @@ export function VoiceRecorder() {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">Voice sample</CardTitle>
+        <CardTitle className="text-sm">Voice</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {error && !open && (
+        {error && !open && !designOpen && (
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
+
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Voice replies</span>
+          <Switch
+            checked={voiceEnabled}
+            onCheckedChange={handleToggleEnabled}
+            disabled={togglingEnabled}
+            aria-label="Toggle voice replies"
+          />
+        </div>
+
         <p className="text-xs text-muted-foreground">
           {status ? status : "Not recorded yet"} — one reference clip, read aloud once.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Active voice: <span className="font-medium">{tier}</span>
+          {tier === "default" && " (no sample recorded or voice generated yet)"}
         </p>
 
         {languages.length > 0 && (
@@ -233,16 +335,33 @@ export function VoiceRecorder() {
           <Button variant="outline" size="sm" className="flex-1" onClick={() => setOpen(true)}>
             Record
           </Button>
+          <Button variant="outline" size="sm" className="flex-1" onClick={() => setDesignOpen(true)}>
+            Generate
+          </Button>
+        </div>
+
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          disabled={hearing || designing}
+          onClick={handleHear}
+        >
+          {hearing ? "Synthesizing…" : `Hear your ${tier} voice`}
+        </Button>
+
+        {tier !== "default" && (
           <Button
             variant="outline"
             size="sm"
-            className="flex-1"
-            disabled={!status || testing}
-            onClick={handleTest}
+            className="w-full"
+            disabled={removing}
+            onClick={handleRemoveSample}
           >
-            {testing ? "Synthesizing…" : "Hear yourself"}
+            {removing ? "Removing…" : `Remove ${tier} voice`}
           </Button>
-        </div>
+        )}
+
         {testClip && <audio controls autoPlay src={testClip.url} className="w-full" />}
       </CardContent>
 
@@ -283,6 +402,34 @@ export function VoiceRecorder() {
             </Button>
             <Button onClick={handleSave} disabled={!clip || busy}>
               {busy ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={designOpen} onOpenChange={(next) => (next ? setDesignOpen(true) : handleGenerateCancel())}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Generate a voice from the description</DialogTitle>
+            <DialogDescription>
+              This builds a voice from the TTS description in character.md (or a generic
+              default if that section is empty) — no recording needed. Once it's done,
+              &ldquo;Hear your voice&rdquo; below plays it back.
+            </DialogDescription>
+          </DialogHeader>
+
+          {error && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={handleGenerateCancel} disabled={designing}>
+              Cancel
+            </Button>
+            <Button onClick={handleGenerateProceed} disabled={designing}>
+              {designing ? "Generating…" : "Proceed"}
             </Button>
           </DialogFooter>
         </DialogContent>
