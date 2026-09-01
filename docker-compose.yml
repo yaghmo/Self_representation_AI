@@ -16,6 +16,22 @@
 # download for it. GPU passthrough needs nvidia-container-toolkit on the host.
 
 services:
+  # Backs runtime/handle_resolve.py's nickname->real-handle search (used
+  # when a bio @-mentions a display name that isn't the account's actual
+  # handle). Self-hosted metasearch instead of driving a headless browser
+  # at one search engine's HTML — no browser-launch latency, and one
+  # upstream engine (DuckDuckGo, Google, ...) getting itself rate-limited
+  # doesn't take the whole lookup down with it. Internal-only: nothing
+  # publishes this past the compose network except the host port below,
+  # which exists for manual debugging (curl localhost:8081), not for any
+  # service to depend on.
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./docker/searxng:/etc/searxng:rw
+
   cookbook:
     build:
       context: .

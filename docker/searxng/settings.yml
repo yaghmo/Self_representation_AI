@@ -1,0 +1,21 @@
+# Minimal override merged over SearXNG's own defaults (use_default_settings
+# below pulls in every engine/UI default; this file only changes what this
+# project actually needs). Internal-only instance — nothing but this
+# project's own containers ever talks to it (see docker-compose.yml), so
+# the json format and a disabled public-instance limiter are safe here in
+# a way they would not be on an internet-facing SearXNG.
+use_default_settings: true
+
+general:
+  instance_name: "self-presentation-ai internal search"
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  # A fixed key is fine — this instance is never reachable from outside
+  # the compose network, so there's no CSRF-relevant surface to protect.
+  secret_key: "self-presentation-ai-internal-searxng"
+  limiter: false

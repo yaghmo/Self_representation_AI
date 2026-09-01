@@ -3,25 +3,35 @@ whose bio can @-mention a display nickname that isn't the account's real
 handle (e.g. TikTok's "@sam" for the account "@thesamshow").
 
 Search-engine results title a profile page "name (@handle) | Platform", so
-searching the nickname usually surfaces the real handle. Uses DuckDuckGo's
-plain HTML results endpoint through Scrapling's `StealthyFetcher`, not a
-plain httpx request — a non-browser client gets rate-limited noticeably
-fast (confirmed live: a 202 "please wait" shell instead of real results,
-after this resolver's own moderate call volume during dev), same class of
-bot-gate Instagram's og-tag scrape has (see og_scrape.py) that a real,
-even automated, browser gets through.
+searching the nickname usually surfaces the real handle. Queries the
+project's own SearXNG instance (docker-compose.yml's `searxng` service, a
+self-hosted metasearch aggregator) over plain httpx rather than driving a
+browser at one search engine's HTML directly — no browser-launch latency,
+and one upstream engine (DuckDuckGo, Google, ...) rate-limiting itself
+doesn't take the whole lookup down since SearXNG merges several.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from difflib import SequenceMatcher
-from urllib.parse import urlencode
 
+import httpx
+
+from cookbook.probe import _detect_container
 from service.logging_config import get_logger
 
 logger = get_logger("runtime.handle_resolve")
+
+# Mirrors runtime/qwentts.py's DEFAULT_HOST pattern — the compose network's
+# service-name DNS only resolves from inside a sibling container; a bare
+# `uv run` on the host instead reaches the port docker-compose.yml publishes.
+SEARXNG_URL = os.environ.get(
+    "SEARXNG_URL",
+    "http://searxng:8080" if _detect_container() else "http://localhost:8081",
+)
 
 _SEARCH_RESULT_RE = re.compile(r'([^<>(){}\n]{1,40})\(@([A-Za-z0-9_.]{1,24})\)')
 
@@ -29,43 +39,63 @@ _SEARCH_RESULT_RE = re.compile(r'([^<>(){}\n]{1,40})\(@([A-Za-z0-9_.]{1,24})\)')
 # tagged as a friend than the real account behind a displayed nickname.
 _HANDLE_MATCH_THRESHOLD = 0.5
 
-# A miss isn't good evidence the account can't be found — DuckDuckGo's own
-# bot-gate (see module docstring) clears itself after a few seconds, not
-# after a fraction of one, so the backoff has to actually give it that long.
-# (1.0, 3.0) reliably needed a manual second click in practice — the gate
-# was still up at the ~4s mark this totalled. Extended rather than shortened:
-# a slower preview beats one that silently drops a real mention.
-_RETRY_DELAYS_SECONDS = (1.0, 3.0, 5.0, 8.0)
+# A plain JSON API call to our own instance, not a browser fighting a bot
+# gate — these are just a couple of retries for an ordinary transient
+# network hiccup, not the many-second backoff a search engine's own
+# rate-limiting used to need.
+_RETRY_DELAYS_SECONDS = (0.5, 1.5)
+
+
+# A result's title doesn't reliably read "Name (@handle) | Platform" any
+# more (TikTok's own SERP titles often carry no handle at all) — the
+# profile URL usually does, so it's checked too, not just the title.
+_PROFILE_URL_PATTERNS = {
+    "tiktok": re.compile(r"tiktok\.com/@([A-Za-z0-9_.]{1,24})"),
+    "instagram": re.compile(
+        r"instagram\.com/(?!p/|reel/|reels/|explore/|accounts/|stories/)"
+        r"([A-Za-z0-9_.]{1,30})"
+    ),
+}
 
 
 def _search(display_text: str, platform_hint: str) -> str | None:
-    query = urlencode({"q": f"{display_text} {platform_hint}"})
-    url = f"https://html.duckduckgo.com/html/?{query}"
+    query = f"{display_text} {platform_hint}"
     try:
-        from scrapling.fetchers import StealthyFetcher
-
-        page = StealthyFetcher.fetch(url, headless=True, network_idle=True)
-        if page.status != 200:
-            logger.warning("handle search non-200: %s -> HTTP %d", url, page.status)
-            return None
-        titles = [str(t) for t in page.css("a.result__a::text")]
+        response = httpx.get(
+            f"{SEARXNG_URL}/search",
+            params={"q": query, "format": "json"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        results = response.json().get("results") or []
     except Exception:
-        logger.exception("handle search failed: %s", url)
+        logger.exception("handle search failed: %s", query)
         return None
-    if not titles:
-        logger.warning("handle search returned no result titles: %s", url)
+    if not results:
+        logger.warning("handle search returned no results: %s", query)
         return None
+
+    needle = display_text.strip().lower()
+    url_pattern = _PROFILE_URL_PATTERNS.get(platform_hint)
     best_handle, best_ratio = None, 0.0
-    for title in titles:
-        match = _SEARCH_RESULT_RE.search(title)
-        if not match:
-            continue
-        name, handle = match.groups()
-        ratio = SequenceMatcher(None, display_text.strip().lower(), name.strip().lower()).ratio()
-        if ratio > best_ratio:
-            best_ratio, best_handle = ratio, handle
+
+    for result in results:
+        title_match = _SEARCH_RESULT_RE.search(result.get("title") or "")
+        if title_match:
+            name, handle = title_match.groups()
+            ratio = SequenceMatcher(None, needle, name.strip().lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio, best_handle = ratio, handle
+        if url_pattern:
+            url_match = url_pattern.search(result.get("url") or "")
+            if url_match:
+                handle = url_match.group(1)
+                ratio = SequenceMatcher(None, needle, handle.lower()).ratio()
+                if ratio > best_ratio:
+                    best_ratio, best_handle = ratio, handle
+
     if best_handle is None:
-        logger.info("handle search: no title matched %r for %r", display_text, platform_hint)
+        logger.info("handle search: no match for %r on %r", display_text, platform_hint)
     else:
         logger.info(
             "handle search: %r -> %r (ratio %.2f)", display_text, best_handle, best_ratio
@@ -77,8 +107,7 @@ def resolve_handle(display_text: str, platform_hint: str) -> str | None:
     """Only accepted if the matched display name is at least half similar to
     what was tagged, so an unrelated account someone mentioned as a friend
     (not an alt) doesn't get resolved and linked as if it were one. Retries
-    on an empty result — see _RETRY_DELAYS_SECONDS for why the backoff is
-    seconds, not fractions of one."""
+    a couple of times on an empty result — see _RETRY_DELAYS_SECONDS."""
     handle = _search(display_text, platform_hint)
     if handle:
         return handle
