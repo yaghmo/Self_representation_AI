@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { introAlreadySeen, isVideo, markIntroSeen } from "./introSplash"
 
 function fakeLocalStorage() {
@@ -24,12 +24,28 @@ describe("isVideo", () => {
 describe("intro-seen tracking", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", fakeLocalStorage())
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"))
   })
 
-  it("is unseen until marked, then stays seen", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("is unseen until marked, then stays seen within the hour", () => {
     expect(introAlreadySeen()).toBe(false)
     markIntroSeen()
     expect(introAlreadySeen()).toBe(true)
+
+    vi.setSystemTime(new Date("2026-01-01T00:59:59Z"))
+    expect(introAlreadySeen()).toBe(true)
+  })
+
+  it("replays again once an hour has passed", () => {
+    markIntroSeen()
+
+    vi.setSystemTime(new Date("2026-01-01T01:00:01Z"))
+    expect(introAlreadySeen()).toBe(false)
   })
 
   it("never crashes when localStorage throws (private browsing)", () => {
