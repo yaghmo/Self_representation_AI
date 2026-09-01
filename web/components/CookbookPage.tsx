@@ -37,6 +37,7 @@ import {
   postConfig,
   postDownloadStart,
   postManualFit,
+  postProviderTest,
 } from "@/lib/api"
 import {
   CONTEXT_CANDIDATES,
@@ -199,7 +200,9 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   const [openDetail, setOpenDetail] = useState<Record<string, boolean>>({})
 
   // ----------------------------------------------------------------- controls
-  const [agent, setAgent] = useState(false)
+  // Agent mode is always on — the same stack serves both surfaces (see
+  // CLAUDE.md's "two surfaces" rule), so there is nothing left to toggle.
+  const agent = true
   const [useEmbedding, setUseEmbedding] = useState(true)
   const [useTts, setUseTts] = useState(true)
   const [requireCloning, setRequireCloning] = useState(true)
@@ -225,6 +228,10 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   // Set instead of a local llm placement — an API-backed LLM has no model/
   // device to pick, no download, no local footprint at all.
   const [llmProvider, setLlmProvider] = useState<string | null>(null)
+  const [apiKeyInput, setApiKeyInput] = useState("")
+  const [keyTest, setKeyTest] = useState<
+    { state: "idle" } | { state: "testing" } | { state: "ok"; detail: string } | { state: "error"; detail: string }
+  >({ state: "idle" })
 
   // --------------------------------------------------------------------- config
   const [currentConfig, setCurrentConfig] = useState<Record<string, unknown> | null>(null)
@@ -259,6 +266,10 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
     if (useTts) r.push("tts")
     return r
   }, [useEmbedding, useTts])
+
+  // Only OpenRouter is wired up for the in-cookbook key test right now —
+  // other providers still work by hand-editing .env, just without the test.
+  const openrouterProvider = catalogue?.providers.find((p) => p.id === "openrouter") ?? null
 
   const wholeBudget = useMemo(
     () => (probe ? computeBudget(probe, "whole-machine") : null),
@@ -691,26 +702,6 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
               </Card>
             )}
 
-            <Card>
-              <CardContent className="flex items-start gap-3 pt-6">
-                <Checkbox
-                  id="agent"
-                  checked={agent}
-                  onCheckedChange={(c) => setAgent(c === true)}
-                />
-                <div>
-                  <Label htmlFor="agent" className="cursor-pointer font-medium">
-                    Agent mode — tools enabled
-                  </Label>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Off is the fan bot: persona, one model call, no tools. On is you
-                    editing the bible through an agent loop. Same stack either way — the
-                    flag flips without re-fitting, so every LLM in the list emits native
-                    tool calls.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
           </div>
         )
 
@@ -967,56 +958,85 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                             — {info.blurb}
                           </span>
                         </div>
-                        {isLlm && catalogue.providers.length > 0 && (
+                        {isLlm && openrouterProvider && (
                           <div className="flex items-center gap-2 pb-1">
                             <Checkbox
                               id="llm-provider-toggle"
                               checked={llmProvider !== null}
-                              onCheckedChange={(c) =>
-                                setLlmProvider(
-                                  c === true ? catalogue.providers[0].id : null
-                                )
-                              }
+                              onCheckedChange={(c) => {
+                                setLlmProvider(c === true ? openrouterProvider.id : null)
+                                setKeyTest({ state: "idle" })
+                              }}
                             />
                             <Label
                               htmlFor="llm-provider-toggle"
                               className="cursor-pointer text-xs text-muted-foreground"
                             >
-                              Use an API key instead of downloading a model
+                              Use an API key instead of downloading a model — OpenRouter
+                              only, for now
                             </Label>
                           </div>
                         )}
                         <div className="flex flex-wrap items-center gap-4">
-                          {isLlm && llmProvider !== null ? (
-                            <>
-                              <Select value={llmProvider} onValueChange={setLlmProvider}>
-                                <SelectTrigger className="min-w-56">
-                                  <SelectValue placeholder="provider" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {catalogue.providers.map((p) => (
-                                    <SelectItem key={p.id} value={p.id}>
-                                      {p.label}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                              {(() => {
-                                const provider = catalogue.providers.find(
-                                  (p) => p.id === llmProvider
-                                )
-                                if (!provider) return null
-                                return (
-                                  <p className="text-xs text-muted-foreground">
-                                    {provider.default_model} · reads{" "}
-                                    <code className="rounded bg-muted px-1 py-0.5">
-                                      {provider.api_key_env}
-                                    </code>{" "}
-                                    from .env — no local download for this role.
-                                  </p>
-                                )
-                              })()}
-                            </>
+                          {isLlm && llmProvider !== null && openrouterProvider ? (
+                            <div className="flex w-full flex-col gap-2">
+                              <p className="text-xs text-muted-foreground">
+                                {openrouterProvider.label} ·{" "}
+                                {openrouterProvider.default_model}
+                              </p>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="password"
+                                  autoComplete="off"
+                                  value={apiKeyInput}
+                                  onChange={(e) => {
+                                    setApiKeyInput(e.target.value)
+                                    setKeyTest({ state: "idle" })
+                                  }}
+                                  placeholder={`${openrouterProvider.api_key_env}…`}
+                                  className="h-9 flex-1 rounded-md border bg-background px-3 text-sm"
+                                />
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!apiKeyInput || keyTest.state === "testing"}
+                                  onClick={async () => {
+                                    setKeyTest({ state: "testing" })
+                                    try {
+                                      const res = await postProviderTest(
+                                        openrouterProvider.id,
+                                        apiKeyInput
+                                      )
+                                      setKeyTest(
+                                        res.ok
+                                          ? { state: "ok", detail: res.detail }
+                                          : { state: "error", detail: res.detail }
+                                      )
+                                    } catch (e) {
+                                      setKeyTest({ state: "error", detail: errorText(e) })
+                                    }
+                                  }}
+                                >
+                                  {keyTest.state === "testing" ? (
+                                    <Loader2 className="size-4 animate-spin" />
+                                  ) : (
+                                    "Test"
+                                  )}
+                                </Button>
+                              </div>
+                              {keyTest.state === "ok" && (
+                                <p className="flex items-center gap-1.5 text-xs text-green-700">
+                                  <Check className="size-3.5" /> Key works ({keyTest.detail})
+                                  — saved to .env, no local download for this role.
+                                </p>
+                              )}
+                              {keyTest.state === "error" && (
+                                <p className="text-xs text-destructive">
+                                  Failed: {keyTest.detail}
+                                </p>
+                              )}
+                            </div>
                           ) : (
                             <>
                               <Select

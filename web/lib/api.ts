@@ -106,3 +106,18 @@ export function postDownloadStart(): Promise<DownloadStatus> {
 export function getDownloadStatus(): Promise<DownloadStatus> {
   return request("/api/download/status");
 }
+
+export interface ProviderTestResult {
+  ok: boolean;
+  detail: string;
+}
+
+export function postProviderTest(
+  provider_id: string,
+  api_key: string
+): Promise<ProviderTestResult> {
+  return request("/api/provider/test", {
+    method: "POST",
+    body: JSON.stringify({ provider_id, api_key }),
+  });
+}

@@ -100,6 +100,22 @@ class TTSServer:
         except Exception:
             return False
 
+    def _ensure_image_pulled(self, timeout_seconds: int = 1800) -> None:
+        # `docker run` would pull a missing image itself, but inline with
+        # the health-check wait below — a multi-GB CUDA image's first pull
+        # takes far longer than a container's boot ever should, so a short
+        # wait_seconds there always timed out on a machine that had never
+        # run this image before. Pull it here first, on its own generous
+        # budget, so the health-check loop only ever waits on the fast part.
+        inspect = subprocess.run(
+            ["docker", "image", "inspect", IMAGE],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if inspect.returncode == 0:
+            return
+        logger.info("pulling %s (first use, may take a while)", IMAGE)
+        subprocess.run(["docker", "pull", IMAGE], check=True, timeout=timeout_seconds)
+
     def start(self, wait_seconds: int = 60) -> "TTSServer":
         if self.already_running():
             self.reused = True
@@ -107,6 +123,8 @@ class TTSServer:
                 "port %d already serving tts-server — attaching to it", self.port
             )
             return self
+
+        self._ensure_image_pulled()
 
         # A crash on a previous run can leave a stopped container holding
         # this name, and `docker run --name` refuses to start over it.

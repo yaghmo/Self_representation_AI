@@ -48,6 +48,11 @@ WORKDIR /app
 
 ARG INSTALL_ADMIN=false
 
+# compose builds cookbook/service-admin/web in parallel, sharing this cache
+# mount — concurrent `uv sync` procs lock the same downloaded-wheel entry
+# (e.g. nvidia-cudnn-cu12) and uv's default 300s wait can lose that race.
+ENV UV_LOCK_TIMEOUT=1200
+
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "$INSTALL_ADMIN" = "true" ]; then \

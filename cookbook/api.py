@@ -12,10 +12,12 @@ Run:  uv run uvicorn cookbook.api:app --port 8001
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -316,6 +318,62 @@ def api_download_start() -> dict:
         )
         _download_thread.start()
     return api_download_status()
+
+
+class ProviderTestIn(BaseModel):
+    provider_id: str
+    api_key: str
+
+
+def _write_env_key(env_var: str, value: str) -> None:
+    """Upsert one KEY=value line into the repo-root .env, creating it from
+    .env.example if it doesn't exist yet. .env is gitignored — this never
+    touches a tracked file."""
+    env_path = Path(".env")
+    example_path = Path(".env.example")
+    lines = (
+        env_path.read_text(encoding="utf-8").splitlines()
+        if env_path.exists()
+        else example_path.read_text(encoding="utf-8").splitlines()
+        if example_path.exists()
+        else []
+    )
+    pattern = re.compile(rf"^{re.escape(env_var)}=")
+    for i, line in enumerate(lines):
+        if pattern.match(line):
+            lines[i] = f"{env_var}={value}"
+            break
+    else:
+        lines.append(f"{env_var}={value}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@app.post("/api/provider/test")
+def api_provider_test(body: ProviderTestIn) -> dict:
+    """Verifies a key against the provider's own API before it's saved —
+    the cookbook must never write a key to .env that doesn't actually work."""
+    catalogue = load_catalogue()
+    try:
+        provider = catalogue.provider(body.provider_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if provider.adapter != "openai":
+        raise HTTPException(
+            status_code=400,
+            detail=f"no test support for the {provider.adapter!r} adapter yet",
+        )
+    try:
+        resp = httpx.get(
+            f"{(provider.base_url or '').rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {body.api_key}"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "detail": str(exc)}
+    if resp.status_code >= 400:
+        return {"ok": False, "detail": f"HTTP {resp.status_code}"}
+    _write_env_key(provider.api_key_env, body.api_key)
+    return {"ok": True, "detail": f"HTTP {resp.status_code}"}
 
 
 @app.get("/api/download/status")
