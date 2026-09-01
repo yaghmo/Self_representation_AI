@@ -1,18 +1,22 @@
 """Talking to a served model.
 
-Local only, on purpose. Hosted-provider adapters (Anthropic, NVIDIA, any
-OpenAI-compatible endpoint) were removed for now and will come back as a second
-implementation of this same interface — that is why the shape stays generic
-rather than hardcoding llama.cpp everywhere.
+Two implementations of the same `Backend` protocol: `LocalBackend` for
+llama.cpp's own server, `ApiBackend` for any hosted endpoint that speaks the
+OpenAI chat-completions schema (OpenRouter, NVIDIA NIM, Groq, ... — see
+cookbook/providers.json's "openai" adapter; every one of those providers is
+config data riding this one class, not a class of its own). An Anthropic
+adapter is not implemented — `from_role_config` raises for that adapter id
+rather than pretending to speak a schema this file does not.
 
 The protocol spoken here is the OpenAI chat schema, because that is what
-llama.cpp's server speaks. When the hosted paths return, they slot in without
-touching the caller.
+llama.cpp's server speaks too — a hosted backend slots in without the caller
+(runtime/model.py, the agent loop) needing to know which one it has.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Iterator, Protocol
@@ -265,12 +269,159 @@ class LocalBackend:
         return len(response.json().get("tokens", []))
 
 
+@dataclass
+class ApiBackend:
+    """A hosted OpenAI-compatible chat-completions endpoint.
+
+    No llama.cpp-only extensions here — no repeat_penalty/seed/
+    chat_template_kwargs, no /tokenize (Model.count_tokens() already falls
+    back to bible.estimate_tokens() when a backend has no count_tokens of
+    its own, so this class simply doesn't define one). tools/tool_choice
+    stays, since that part of the schema is the real OpenAI standard, not a
+    llama.cpp addition.
+    """
+
+    base_url: str
+    model: str
+    api_key_env: str
+    name: str = "api"
+    temperature: float = 0.7
+    max_tokens: int = 512
+    last_usage: Usage = field(default_factory=Usage)
+    last_reasoning: str = ""
+    last_tool_calls: list[dict] = field(default_factory=list)
+
+    def _auth_headers(self) -> dict:
+        key = os.environ.get(self.api_key_env)
+        if not key:
+            raise RuntimeError(
+                f"{self.api_key_env} is not set — put it in .env (see "
+                f".env.example) and restart the container before using {self.name}"
+            )
+        return {"Authorization": f"Bearer {key}"}
+
+    def _payload(self, messages: list[Message], stream: bool, **kwargs) -> dict:
+        payload: dict = {
+            "model": self.model,
+            "messages": [m.as_dict() for m in messages],
+            "temperature": kwargs.get("temperature", self.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "stream": stream,
+        }
+        for key in ("top_p", "top_k", "stop"):
+            if key in kwargs:
+                payload[key] = kwargs[key]
+        if kwargs.get("tools"):
+            payload["tools"] = kwargs["tools"]
+            payload["tool_choice"] = kwargs.get("tool_choice", "auto")
+        return payload
+
+    def complete(self, messages: list[Message], **kwargs) -> str:
+        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        started = time.monotonic()
+        payload = self._payload(messages, False, **kwargs)
+        log_payload(logger, f"POST {url} <<", payload)
+
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
+            response = client.post(url, json=payload, headers=self._auth_headers())
+            if response.is_error:
+                logger.error("%s %d: %s", self.name, response.status_code, response.text[:2000])
+            response.raise_for_status()
+            data = response.json()
+
+        log_payload(logger, f"POST {url} >>", data)
+        self._record_usage(data.get("usage"))
+        message = data["choices"][0]["message"]
+        self.last_reasoning = message.get("reasoning_content") or ""
+        self.last_tool_calls = message.get("tool_calls") or []
+        content = message.get("content") or ""
+        elapsed = time.monotonic() - started
+        logger.info(
+            "completion: %d tokens in %.2fs (%.1f tok/s), prompt %d",
+            self.last_usage.completion_tokens,
+            elapsed,
+            self.last_usage.completion_tokens / elapsed if elapsed else 0.0,
+            self.last_usage.prompt_tokens,
+        )
+        return content
+
+    def stream(self, messages: list[Message], **kwargs) -> Iterator[str]:
+        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        self.last_reasoning = ""
+        self.last_tool_calls = []
+        started = time.monotonic()
+        chunks = 0
+        stream_payload = self._payload(messages, True, **kwargs)
+        log_payload(logger, f"POST {url} << (stream)", stream_payload)
+
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
+            with client.stream(
+                "POST", url, json=stream_payload, headers=self._auth_headers()
+            ) as response:
+                if response.is_error:
+                    response.read()
+                    logger.error("%s %d: %s", self.name, response.status_code, response.text[:2000])
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    body = line[len("data:") :].strip()
+                    if body == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(body)
+                    except json.JSONDecodeError:
+                        continue
+                    if chunk.get("usage"):
+                        self._record_usage(chunk["usage"])
+                    for choice in chunk.get("choices", []):
+                        delta = choice.get("delta") or {}
+                        if delta.get("reasoning_content"):
+                            self.last_reasoning += delta["reasoning_content"]
+                        piece = delta.get("content")
+                        if piece:
+                            chunks += 1
+                            yield piece
+
+        elapsed = time.monotonic() - started
+        logger.info("stream finished: %d chunks in %.2fs", chunks, elapsed)
+
+    def _record_usage(self, usage: dict | None) -> None:
+        if not usage:
+            return
+        self.last_usage = Usage(
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+        )
+
+    def health(self) -> tuple[bool, str]:
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(
+                    f"{self.base_url.rstrip('/')}/models", headers=self._auth_headers()
+                )
+            if response.status_code < 400:
+                return True, "reachable"
+            return False, f"HTTP {response.status_code}"
+        except Exception as exc:
+            return False, str(exc)
+
+
 def from_role_config(role: dict) -> Backend:
     """Build a backend from the `roles.llm` block of a stack config."""
     if role.get("source") == "api":
-        raise NotImplementedError(
-            "hosted API backends were removed for now — reconfigure this stack "
-            "with a local model, or restore the provider adapters"
+        adapter = role.get("adapter")
+        if adapter != "openai":
+            raise NotImplementedError(
+                f"no {adapter!r} adapter — only 'openai' (any OpenAI-compatible "
+                "endpoint: OpenRouter, NVIDIA NIM, Groq, a custom base_url, ...) "
+                "is implemented"
+            )
+        return ApiBackend(
+            base_url=role["base_url"],
+            model=role["model"],
+            api_key_env=role["api_key_env"],
+            name=role.get("provider", "api"),
         )
     return LocalBackend(
         base_url=role.get("base_url", "http://127.0.0.1:8080/v1"),

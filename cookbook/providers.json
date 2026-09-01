@@ -32,6 +32,17 @@
       "notes": "OpenAI-compatible, so it costs no extra adapter. Verify the credit figure on NVIDIA's own pricing page before depending on it."
     },
     {
+      "id": "openrouter",
+      "label": "OpenRouter",
+      "adapter": "openai",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "base_url": "https://openrouter.ai/api/v1",
+      "default_model": "minimax/minimax-m3:free",
+      "context_tokens": 128000,
+      "free_tier": "the :free model suffix routes to a rate-limited free pool — check openrouter.ai/minimax/minimax-m3 for current limits",
+      "notes": "context_tokens is the schema default, not a measured figure for this specific model — check the model's own OpenRouter page and correct it here if it differs. Single endpoint fronting many providers/models; change default_model to point at a different one."
+    },
+    {
       "id": "custom",
       "label": "Custom OpenAI-compatible endpoint",
       "adapter": "openai",

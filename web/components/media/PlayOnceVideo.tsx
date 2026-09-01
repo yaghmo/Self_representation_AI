@@ -7,8 +7,8 @@ export type PlayOnceVideoHandle = {
 }
 
 // Muted+inline autoplay, freezes on its own last frame (pause on `ended`)
-// instead of looping — shared by the fan/yuumii pfp, banner, and chat-icon
-// slots so that logic lives in exactly one place. `replay()` is for callers
+// instead of looping — shared by the fan pfp, banner, and chat-icon slots
+// so that logic lives in exactly one place. `replay()` is for callers
 // that re-trigger playback (the chat icon on open/send) rather than firing
 // once on mount.
 const PlayOnceVideo = forwardRef<PlayOnceVideoHandle, {

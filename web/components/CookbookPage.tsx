@@ -222,6 +222,9 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   const [manualFit, setManualFit] = useState<ManualFit | null>(null)
   const [manualError, setManualError] = useState<string | null>(null)
   const [manualLoading, setManualLoading] = useState(false)
+  // Set instead of a local llm placement — an API-backed LLM has no model/
+  // device to pick, no download, no local footprint at all.
+  const [llmProvider, setLlmProvider] = useState<string | null>(null)
 
   // --------------------------------------------------------------------- config
   const [currentConfig, setCurrentConfig] = useState<Record<string, unknown> | null>(null)
@@ -335,11 +338,12 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   const manualSelection = useMemo<Selection>(() => {
     const placements: Selection["placements"] = {}
     for (const role of roles) {
+      if (role === "llm" && llmProvider) continue
       const p = manualPlacements[role]
       if (p) placements[role] = { model: p.model, device: p.device }
     }
-    return { context_tokens: contextTokens, placements }
-  }, [manualPlacements, contextTokens, roles])
+    return { context_tokens: contextTokens, placements, llm_provider: llmProvider }
+  }, [manualPlacements, contextTokens, roles, llmProvider])
 
   // Manual fit only evaluates while on the Fit step.
   useEffect(() => {
@@ -404,6 +408,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
         selection: {
           context_tokens: chosenFit.context_tokens,
           placements,
+          llm_provider: mode === "manual" ? llmProvider : null,
         },
         basis,
         whole_bible_bonus: wholeBibleBonus,
@@ -952,6 +957,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                     if (!pick) return null
                     const model = options.find((m) => m.id === pick.model)
                     const info = ROLE_INFO[role]
+                    const isLlm = role === "llm"
                     return (
                       <div key={role} className="space-y-2 rounded-xl border p-4">
                         <div className="flex items-center gap-2 text-sm font-medium capitalize">
@@ -961,64 +967,117 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                             — {info.blurb}
                           </span>
                         </div>
-                        <div className="flex flex-wrap items-center gap-4">
-                          <Select
-                            value={pick.model}
-                            onValueChange={(v) =>
-                              setManualPlacements((prev) => {
-                                const m = options.find((o) => o.id === v)
-                                return {
-                                  ...prev,
-                                  [role]: {
-                                    model: v,
-                                    device: m
-                                      ? (m.devices[0] as Device)
-                                      : (model?.devices[0] as Device),
-                                  },
-                                }
-                              })
-                            }
-                          >
-                            <SelectTrigger className="min-w-48">
-                              <SelectValue placeholder="model" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {options.map((m) => (
-                                <SelectItem key={m.id} value={m.id}>
-                                  {m.id}
-                                  {installed.has(m.id) && (
-                                    <span
-                                      className="inline-block w-2 h-2 rounded-full bg-green-500 ml-1.5 align-middle"
-                                      title="Model already installed"
-                                    />
-                                  )}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          {model && (
-                            <RadioGroup
-                              value={pick.device}
-                              onValueChange={(v) =>
-                                setManualPlacements((prev) => ({
-                                  ...prev,
-                                  [role]: {
-                                    model: pick.model,
-                                    device: v as Device,
-                                  },
-                                }))
+                        {isLlm && catalogue.providers.length > 0 && (
+                          <div className="flex items-center gap-2 pb-1">
+                            <Checkbox
+                              id="llm-provider-toggle"
+                              checked={llmProvider !== null}
+                              onCheckedChange={(c) =>
+                                setLlmProvider(
+                                  c === true ? catalogue.providers[0].id : null
+                                )
                               }
-                              className="flex flex-row items-center gap-3"
+                            />
+                            <Label
+                              htmlFor="llm-provider-toggle"
+                              className="cursor-pointer text-xs text-muted-foreground"
                             >
-                              {model.devices.map((d) => (
-                                <div key={d} className="flex items-center gap-1.5">
-                                  <RadioGroupItem value={d} />
-                                  <Label className="cursor-pointer text-sm capitalize">
-                                    {d}
-                                  </Label>
-                                </div>
-                              ))}
-                            </RadioGroup>
+                              Use an API key instead of downloading a model
+                            </Label>
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-center gap-4">
+                          {isLlm && llmProvider !== null ? (
+                            <>
+                              <Select value={llmProvider} onValueChange={setLlmProvider}>
+                                <SelectTrigger className="min-w-56">
+                                  <SelectValue placeholder="provider" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {catalogue.providers.map((p) => (
+                                    <SelectItem key={p.id} value={p.id}>
+                                      {p.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              {(() => {
+                                const provider = catalogue.providers.find(
+                                  (p) => p.id === llmProvider
+                                )
+                                if (!provider) return null
+                                return (
+                                  <p className="text-xs text-muted-foreground">
+                                    {provider.default_model} · reads{" "}
+                                    <code className="rounded bg-muted px-1 py-0.5">
+                                      {provider.api_key_env}
+                                    </code>{" "}
+                                    from .env — no local download for this role.
+                                  </p>
+                                )
+                              })()}
+                            </>
+                          ) : (
+                            <>
+                              <Select
+                                value={pick.model}
+                                onValueChange={(v) =>
+                                  setManualPlacements((prev) => {
+                                    const m = options.find((o) => o.id === v)
+                                    return {
+                                      ...prev,
+                                      [role]: {
+                                        model: v,
+                                        device: m
+                                          ? (m.devices[0] as Device)
+                                          : (model?.devices[0] as Device),
+                                      },
+                                    }
+                                  })
+                                }
+                              >
+                                <SelectTrigger className="min-w-48">
+                                  <SelectValue placeholder="model" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {options.map((m) => (
+                                    <SelectItem key={m.id} value={m.id}>
+                                      {m.id}
+                                      {installed.has(m.id) && (
+                                        <span
+                                          className="inline-block w-2 h-2 rounded-full bg-green-500 ml-1.5 align-middle"
+                                          title="Model already installed"
+                                        />
+                                      )}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              {model && (
+                                <RadioGroup
+                                  value={pick.device}
+                                  onValueChange={(v) =>
+                                    setManualPlacements((prev) => ({
+                                      ...prev,
+                                      [role]: {
+                                        model: pick.model,
+                                        device: v as Device,
+                                      },
+                                    }))
+                                  }
+                                  className="flex flex-row items-center gap-3"
+                                >
+                                  {model.devices.map((d) => (
+                                    <div key={d} className="flex items-center gap-1.5">
+                                      <RadioGroupItem value={d} />
+                                      <Label className="cursor-pointer text-sm capitalize">
+                                        {d}
+                                      </Label>
+                                    </div>
+                                  ))}
+                                </RadioGroup>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>

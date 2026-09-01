@@ -94,6 +94,3 @@ character.md
 # even though .claude/** is allowed above.
 .claude/worktrees/
 
-# Yuumii — isolated /fan restyling copy, kept local-only for now.
-web/app/yuumii/
-web/components/yuumii/

@@ -58,6 +58,14 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       ADMIN_UI_ORIGIN: ${ADMIN_UI_ORIGIN:-http://localhost:3000}
+      # Only reached if config/stack.json's roles.llm picks an API provider
+      # (cookbook/providers.json) — a local-only stack never touches these.
+      # The values themselves live in a gitignored .env, never here or in
+      # stack.json (see providers.json's own comment on that).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
     deploy:
       resources:
         reservations:
@@ -89,6 +97,14 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       ADMIN_UI_ORIGIN: ${ADMIN_UI_ORIGIN:-http://localhost:3000}
+      # Only reached if config/stack.json's roles.llm picks an API provider
+      # (cookbook/providers.json) — a local-only stack never touches these.
+      # The values themselves live in a gitignored .env, never here or in
+      # stack.json (see providers.json's own comment on that).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
     deploy:
       resources:
         reservations:

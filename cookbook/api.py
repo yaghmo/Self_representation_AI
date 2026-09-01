@@ -191,6 +191,7 @@ def _download_worker(models: list) -> None:
 class SelectionIn(BaseModel):
     context_tokens: int
     placements: dict[str, dict]  # role -> {"model": id, "device": device}
+    llm_provider: str | None = None  # set instead of placements["llm"] for an API-backed LLM
 
 
 class FitIn(BaseModel):
@@ -219,7 +220,7 @@ def _selection_from(s: SelectionIn) -> Selection:
     return Selection(
         context_tokens=s.context_tokens,
         placements=placements,
-        llm_provider=None,  # local-only for now, same as the Streamlit app
+        llm_provider=s.llm_provider,
     )
 
 
