@@ -30,16 +30,18 @@ FROM python:3.10-slim-trixie
 # images — voice synth is on the fan path too, /voice/speak has no agent gate.
 # libgomp1: llama-server's Linux build links against it (OpenMP) — the
 # Windows binary doesn't need an equivalent, it's statically linked in.
-# docker.io: runtime/qwentts.py's TTSServer shells out to `docker run` to
+# docker-cli: runtime/qwentts.py's TTSServer shells out to `docker run` to
 # launch qwentts.cpp's published image — Docker-outside-of-Docker, talking
 # to the *host's* daemon over the socket docker-compose.yml mounts in. Only
-# the client binary is ever used here, dockerd never runs inside this image.
+# the client binary is ever used here, dockerd never runs inside this image
+# — `docker.io` pulls in the daemon too and, on trixie, doesn't even ship
+# the `docker` binary itself (that's `docker-cli`, a separate package).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libsndfile1 \
         libgomp1 \
         ca-certificates \
         curl \
-        docker.io \
+        docker-cli \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
