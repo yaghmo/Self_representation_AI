@@ -550,6 +550,9 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                       <img
                         src={mention.pfpUrl}
                         alt=""
+                        // Google's avatar CDN (yt3.googleusercontent.com)
+                        // 403s a foreign-page Referer on an unproxied fetch.
+                        referrerPolicy="no-referrer"
                         className="size-5 shrink-0 rounded-full object-cover"
                       />
                     ) : (

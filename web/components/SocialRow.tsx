@@ -49,7 +49,15 @@ export function SocialRow({
         <Icon className="size-4 shrink-0 text-muted-foreground" />
         {imgSrc ? (
           // eslint-disable-next-line @next/next/no-img-element -- external, unknown-domain URLs the creator pastes in; next/image would need a wildcard remote pattern for arbitrary hosts
-          <img src={imgSrc} alt="" className="size-8 shrink-0 rounded-full object-cover" />
+          <img
+            src={imgSrc}
+            alt=""
+            // Google's avatar CDN (yt3.googleusercontent.com) 403s a
+            // foreign-page Referer on an unproxied fetch — harmless to send
+            // no-referrer to every other host too.
+            referrerPolicy="no-referrer"
+            className="size-8 shrink-0 rounded-full object-cover"
+          />
         ) : (
           <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
             <User className="size-4 text-muted-foreground" />
