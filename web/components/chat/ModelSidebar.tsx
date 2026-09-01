@@ -47,10 +47,18 @@ export function ModelSidebar({
     const [h, s] = await Promise.all([getHealth(), getModelStatus()]);
     setHealth(h);
     setStatus(s);
-    if (s.agent) {
-      const snap = await getSnapshots();
-      setSnapshots(snap.snapshots);
-      setSelected((prev) => prev || snap.snapshots[0]?.name || "");
+    // Snapshots need a loaded model (409 otherwise) — routine while the
+    // backend's own autoload is still in flight, not a real failure, so it
+    // shouldn't surface as one. Only worth showing once the model is
+    // actually up and this still fails.
+    if (s.agent && h.model_loaded) {
+      try {
+        const snap = await getSnapshots();
+        setSnapshots(snap.snapshots);
+        setSelected((prev) => prev || snap.snapshots[0]?.name || "");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     }
   }, []);
 
@@ -109,6 +117,15 @@ export function ModelSidebar({
       {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {status?.agent && status.data_available === false && (
+        <Alert variant="destructive">
+          <AlertDescription>
+            Character and sources are missing — copy templates/character.template.md
+            and templates/sources.template.md into data/, or run /add to get started.
+          </AlertDescription>
         </Alert>
       )}
 

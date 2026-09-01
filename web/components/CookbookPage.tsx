@@ -829,8 +829,14 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
               )}
               {autoFits !== null && autoFits.length > 0 && (
                 <>
-                  <div className="max-h-80 overflow-y-auto overflow-x-hidden rounded-lg border">
-                    <Table className="text-xs">
+                  {/* A single scroll region on both axes, not Table's own
+                      self-wrapping overflow-x-auto nested inside this one —
+                      two stacked regions put the horizontal scrollbar at
+                      the bottom of the *content* (reachable only after
+                      scrolling all the way down), not at the bottom of
+                      this box's own viewport. Raw <table> here on purpose. */}
+                  <div className="max-h-80 overflow-auto rounded-lg border">
+                    <table className="w-full caption-bottom text-xs">
                       <TableHeader>
                         <TableRow>
                           <TableHead>score</TableHead>
@@ -897,7 +903,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                           </TableRow>
                         ))}
                       </TableBody>
-                    </Table>
+                    </table>
                   </div>
                   {autoChosen && (
                     <p className="text-xs text-muted-foreground">

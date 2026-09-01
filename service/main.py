@@ -81,6 +81,7 @@ from runtime.social import (
     delete_social,
     get_bio,
     get_contact_email,
+    get_display_name,
     landing_pfp_mime,
     landing_pfp_version,
     list_socials,
@@ -96,6 +97,7 @@ from runtime.social import (
     save_pfp,
     set_bio,
     set_contact_email,
+    set_display_name,
     update_social,
 )
 from runtime.story_tools import (
@@ -286,6 +288,51 @@ def _autoload_model() -> None:
         logger.info("autoload: %s ready", model.name)
     except Exception:
         logger.exception("autoload failed — POST /model/load to retry manually")
+        return
+    _warmup_chat(model)
+    _warmup_voice(model)
+
+
+def _warmup_chat(model: Model) -> None:
+    """One throwaway completion right after load, so the first *real* chat
+    isn't the one paying for both cold weights and llama-server's one-time
+    prompt-processing of the persona prefix (thousands of tokens on a whole-
+    bible instance) — that combination is what "first message takes ages"
+    actually is. Best-effort: no character profile yet, or the warmup call
+    itself failing, just means the first real chat pays the cost instead."""
+    try:
+        persona = build_persona()
+    except ProfileMissing:
+        logger.info("warmup: no character profile yet — skipping")
+        return
+    try:
+        messages = assemble(
+            [Message("user", "hi")],
+            context_tokens=model.context_tokens,
+            count=model.count_tokens,
+            reserve_tokens=1,
+            persona=persona,
+        )
+        model.chat(messages, temperature=0.0, max_tokens=1, thinking=False)
+        logger.info("warmup: persona prefix primed")
+    except Exception:
+        logger.exception("warmup chat failed — first real chat will pay the cold cost")
+
+
+def _warmup_voice(model: Model) -> None:
+    """Synthesizes the exact clip /admin/voice/hear plays back for the
+    default language, so spinning up the qwentts.cpp container from cold —
+    which "hear your default voice" used to pay for on its very first click
+    — happens during startup instead. Admin-only: the hear button doesn't
+    exist on a fan-only deployment."""
+    if not model.agent:
+        return
+    try:
+        language, clone_language = LANGUAGES[0]
+        b"".join(voice_synth(TEST_PHRASES[language], language=clone_language))
+        logger.info("warmup: default voice clip primed")
+    except Exception:
+        logger.exception("voice warmup failed — first \"hear your voice\" click will pay the cold cost")
 
 
 @asynccontextmanager
@@ -550,6 +597,14 @@ class SocialPreviewResponse(BaseModel):
     bio: str | None = None
     isAlt: bool
     mentions: list[SocialMention] = []
+
+
+class DisplayNameSaveRequest(BaseModel):
+    displayName: str | None = None
+
+
+class DisplayNameSaveResponse(BaseModel):
+    displayName: str | None
 
 
 class BioGenerateResponse(BaseModel):
@@ -1121,7 +1176,13 @@ def health() -> dict:
 @app.get("/model")
 def model_status() -> dict:
     try:
-        return _get_model().status()
+        status = _get_model().status()
+        # Cheap enough to check on every poll — this is what the sidebar
+        # uses to tell "no character bible set up yet" apart from every
+        # other reason an admin route might 409/424, instead of a human
+        # having to decode which one they hit from a bare status code.
+        status["data_available"] = PROFILE_PATH.exists() and SOURCES_PATH.exists()
+        return status
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -1169,6 +1230,7 @@ def social_list() -> dict:
     A flat file read, nothing to do with the model, so no `_require_loaded()`
     and no agent gate."""
     return {
+        "displayName": get_display_name(),
         "bio": get_bio(),
         "contactEmail": get_contact_email(),
         "socials": list_socials(),
@@ -1897,6 +1959,7 @@ def admin_social_list() -> dict:
     model = _require_loaded()
     _require_agent(model)
     return {
+        "displayName": get_display_name(),
         "bio": get_bio(),
         "contactEmail": get_contact_email(),
         "socials": list_socials(),
@@ -2180,6 +2243,14 @@ def admin_social_bio_save(request: BioSaveRequest) -> BioSaveResponse:
     _require_agent(model)
     set_bio(request.bio)
     return BioSaveResponse(bio=request.bio)
+
+
+@app.post("/admin/social/display_name", response_model=DisplayNameSaveResponse)
+def admin_social_display_name_save(request: DisplayNameSaveRequest) -> DisplayNameSaveResponse:
+    model = _require_loaded()
+    _require_agent(model)
+    set_display_name(request.displayName)
+    return DisplayNameSaveResponse(displayName=request.displayName)
 
 
 @app.post("/admin/social/contact_email", response_model=ContactEmailSaveResponse)
@@ -3106,6 +3177,7 @@ def _self_check() -> None:
             response = client.get("/social/list")
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json() == {
+                "displayName": None,
                 "bio": None,
                 "contactEmail": None,
                 "socials": [],
@@ -3176,6 +3248,7 @@ def _self_check() -> None:
             response = client.get("/admin/social/list")
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json() == {
+                "displayName": None,
                 "bio": None,
                 "contactEmail": None,
                 "socials": [],

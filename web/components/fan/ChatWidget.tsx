@@ -56,11 +56,13 @@ function ChatWidget({
   const [draft, setDraft] = useState("")
   const [isTyping, setIsTyping] = useState(false)
   const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
-  // Creator can drop a custom chat icon; falls back to the default lucide
-  // icon when nothing has been saved for that slot (or it fails to load).
-  const iconSrc = chatIconUrl ?? "/chat-icon.png"
+  // Creator can drop a custom chat icon; falls back to the plain lucide
+  // bubble icon when nothing has been saved for that slot, or it fails to
+  // load — never a bundled placeholder photo standing in for a real one.
+  const iconSrc = chatIconUrl ?? null
   const iconIsVideo = isVideo(chatIconMime)
   const [customIconFailed, setCustomIconFailed] = useState(false)
+  const showFallbackIcon = customIconFailed || !iconSrc
   const iconRef = useRef<HTMLImageElement>(null)
   const videoIconRef = useRef<PlayOnceVideoHandle>(null)
   // While dragging the resize handle, the icon's `bottom` offset is
@@ -165,8 +167,8 @@ function ChatWidget({
   // own header close button is the sole control then. Otherwise, when an
   // image loads, it stays on screen and moves to sit on the panel's top
   // edge instead of disappearing.
-  const hideToggle = isOpen && customIconFailed
-  const stuckOnTop = isOpen && !customIconFailed
+  const hideToggle = isOpen && showFallbackIcon
+  const stuckOnTop = isOpen && !showFallbackIcon
   // Panel is anchored `bottom-16` (64px), flush against the bottom bar, so
   // its top edge sits at 64 + panel height from the viewport bottom. Resting
   // the icon's own bottom edge there sits it entirely above the panel,
@@ -187,26 +189,26 @@ function ChatWidget({
           className={cn(
             "fixed right-8 z-40 flex items-center justify-center text-primary-foreground transition-[transform,bottom] ease-out hover:scale-105 sm:right-10",
             isResizing ? "duration-0" : "duration-300",
-            customIconFailed
+            showFallbackIcon
               ? "h-14 w-24 rounded-t-full bg-primary bottom-16 shadow-lg"
               : cn("size-[120px]", !stuckOnTop && "bottom-16")
           )}
         >
-          {customIconFailed ? (
+          {showFallbackIcon ? (
             <MessageCircle className="size-6" />
           ) : iconIsVideo ? (
             <PlayOnceVideo
               ref={videoIconRef}
-              src={iconSrc}
+              src={iconSrc ?? ""}
               autoPlay={false}
               className="size-full object-contain drop-shadow-lg"
               onError={() => setCustomIconFailed(true)}
             />
           ) : (
-            // eslint-disable-next-line @next/next/no-img-element -- local static asset, not a next/image remote host
+            // eslint-disable-next-line @next/next/no-img-element -- served from the backend, not a next/image remote host
             <img
               ref={iconRef}
-              src={iconSrc}
+              src={iconSrc ?? ""}
               alt=""
               className="size-full object-contain drop-shadow-lg"
               onError={() => setCustomIconFailed(true)}

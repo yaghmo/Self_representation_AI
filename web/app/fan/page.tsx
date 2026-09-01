@@ -47,8 +47,11 @@ export default function FanPage() {
   useEffect(() => {
     getPublicProfile().then((res) => {
       setProfile({
-        name: mockProfile.name,
-        bio: res.bio ?? mockProfile.bio,
+        // Real data always wins, blank when the creator hasn't set one yet
+        // — never falls back to mockData's placeholder name/bio, which
+        // used to show fake content as if it were real.
+        name: res.displayName ?? "",
+        bio: res.bio ?? "",
         contactEmail: res.contactEmail,
         pfpUrl: res.pfpVersion != null ? publicPfpUrl(res.pfpVersion) : null,
         pfpMime: res.pfpMime,
@@ -100,7 +103,7 @@ export default function FanPage() {
           <PostGrid posts={filteredPosts} expanded={expanded} />
           <BottomBar />
           <ChatWidget
-            botName={mockProfile.name}
+            botName={profile.name}
             chatIconUrl={profile.chatIconUrl}
             chatIconMime={profile.chatIconMime}
           />

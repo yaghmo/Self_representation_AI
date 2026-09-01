@@ -23,9 +23,18 @@ from pathlib import Path
 
 import httpx
 
+from cookbook.probe import _detect_container
 from service.logging_config import get_logger
 
 logger = get_logger("runtime.qwentts")
+
+# `docker run -p PORT:8080` publishes the sibling container's port on the
+# *host's* network — reachable as 127.0.0.1 only when this process is also
+# running directly on the host. Inside a container (the normal deployed
+# case — see docker-compose.yml's docker.sock mount), that same publish
+# lands on the host's interface, one hop away from this container's own
+# network namespace, and host.docker.internal is what reaches it.
+DEFAULT_HOST = "host.docker.internal" if _detect_container() else "127.0.0.1"
 
 # Mirrors llamacpp.py's own WeakSet — a crashed request must never leave a
 # tts-server container holding VRAM with nobody owning it.
@@ -55,7 +64,7 @@ class TTSServer:
 
     talker_path: Path
     codec_path: Path
-    host: str = "127.0.0.1"
+    host: str = DEFAULT_HOST
     port: int = 8091
     process: subprocess.Popen | None = None
     reused: bool = False

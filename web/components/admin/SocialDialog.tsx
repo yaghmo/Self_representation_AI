@@ -32,6 +32,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { BioSection } from "@/components/admin/BioSection";
+import { DisplayNameSection } from "@/components/admin/DisplayNameSection";
 import { ProfileImages } from "@/components/admin/ProfileImages";
 import { SocialRow } from "@/components/SocialRow";
 import { formatCount } from "@/lib/formatCount";
@@ -77,6 +78,7 @@ const EMPTY_FORM: FormState = {
 
 export function SocialDialog({ onClose }: { onClose: () => void }) {
   const [socials, setSocials] = useState<Social[]>([]);
+  const [displayName, setDisplayName] = useState<string | null>(null);
   const [bio, setBio] = useState<string | null>(null);
   const [contactEmail, setContactEmail] = useState<string | null>(null);
   const [pfpVersion, setPfpVersion] = useState<number | null>(null);
@@ -200,6 +202,7 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
     try {
       const res = await getSocials();
       setSocials(res.socials);
+      setDisplayName(res.displayName);
       setBio(res.bio);
       setContactEmail(res.contactEmail);
       setPfpVersion(res.pfpVersion);
@@ -418,6 +421,8 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
         />
 
         <Separator />
+
+        <DisplayNameSection displayName={displayName} onSaved={refresh} />
 
         <BioSection bio={bio} onSaved={refresh} />
 

@@ -32,8 +32,10 @@ _HANDLE_MATCH_THRESHOLD = 0.5
 # A miss isn't good evidence the account can't be found — DuckDuckGo's own
 # bot-gate (see module docstring) clears itself after a few seconds, not
 # after a fraction of one, so the backoff has to actually give it that long.
-# A single 0.5s retry was too short to matter, hence the extra attempt.
-_RETRY_DELAYS_SECONDS = (1.0, 3.0)
+# (1.0, 3.0) reliably needed a manual second click in practice — the gate
+# was still up at the ~4s mark this totalled. Extended rather than shortened:
+# a slower preview beats one that silently drops a real mention.
+_RETRY_DELAYS_SECONDS = (1.0, 3.0, 5.0, 8.0)
 
 
 def _search(display_text: str, platform_hint: str) -> str | None:

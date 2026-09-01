@@ -252,20 +252,29 @@ class SocialAlreadyExists(Exception):
 
 def _load() -> dict:
     if not PROFILE_JSON_PATH.exists():
-        return {"bio": None, "contactEmail": None, "socials": []}
+        return {"displayName": None, "bio": None, "contactEmail": None, "socials": []}
     data = json.loads(PROFILE_JSON_PATH.read_text(encoding="utf-8"))
     return {
+        "displayName": data.get("displayName"),
         "bio": data.get("bio"),
         "contactEmail": data.get("contactEmail"),
         "socials": data.get("socials", []),
     }
 
 
-def _save(bio: str | None, contact_email: str | None, socials: list[dict]) -> None:
+def _save(
+    display_name: str | None, bio: str | None, contact_email: str | None, socials: list[dict]
+) -> None:
     PROFILE_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
     PROFILE_JSON_PATH.write_text(
         json.dumps(
-            {"version": 1, "bio": bio, "contactEmail": contact_email, "socials": socials},
+            {
+                "version": 1,
+                "displayName": display_name,
+                "bio": bio,
+                "contactEmail": contact_email,
+                "socials": socials,
+            },
             indent=2,
         ),
         encoding="utf-8",
@@ -308,6 +317,16 @@ def list_socials() -> list[dict]:
     return _load()["socials"]
 
 
+def get_display_name() -> str | None:
+    return _load()["displayName"]
+
+
+def set_display_name(name: str | None) -> None:
+    with _LOCK:
+        data = _load()
+        _save(name, data["bio"], data["contactEmail"], data["socials"])
+
+
 def get_bio() -> str | None:
     return _load()["bio"]
 
@@ -315,7 +334,7 @@ def get_bio() -> str | None:
 def set_bio(text: str) -> None:
     with _LOCK:
         data = _load()
-        _save(text, data["contactEmail"], data["socials"])
+        _save(data["displayName"], text, data["contactEmail"], data["socials"])
 
 
 def get_contact_email() -> str | None:
@@ -325,7 +344,7 @@ def get_contact_email() -> str | None:
 def set_contact_email(email: str | None) -> None:
     with _LOCK:
         data = _load()
-        _save(data["bio"], email, data["socials"])
+        _save(data["displayName"], data["bio"], email, data["socials"])
 
 
 def _is_cleaner_username(candidate: str, incumbent: str, known_handles: set[str]) -> bool:
@@ -372,7 +391,7 @@ def add_social(fields: dict) -> dict:
                 if _is_cleaner_username(fields["username"], existing["username"], known_handles):
                     existing["username"] = fields["username"]
                     existing["url"] = fields["url"]
-                    _save(data["bio"], data["contactEmail"], socials)
+                    _save(data["displayName"], data["bio"], data["contactEmail"], socials)
                     return existing
                 raise SocialAlreadyExists(f"{fields['platform']}:{fields['username']}")
         entry = {
@@ -386,7 +405,7 @@ def add_social(fields: dict) -> dict:
             "isAlt": fields.get("isAlt", False),
         }
         socials.append(entry)
-        _save(data["bio"], data["contactEmail"], socials)
+        _save(data["displayName"], data["bio"], data["contactEmail"], socials)
         return entry
 
 
@@ -400,7 +419,7 @@ def update_social(id: str, fields: dict) -> dict:
         for entry in socials:
             if entry["id"] == id:
                 entry.update(fields)
-                _save(data["bio"], data["contactEmail"], socials)
+                _save(data["displayName"], data["bio"], data["contactEmail"], socials)
                 return entry
         raise SocialNotFound(id)
 
@@ -412,4 +431,4 @@ def delete_social(id: str) -> None:
         remaining = [e for e in socials if e["id"] != id]
         if len(remaining) == len(socials):
             raise SocialNotFound(id)
-        _save(data["bio"], data["contactEmail"], remaining)
+        _save(data["displayName"], data["bio"], data["contactEmail"], remaining)

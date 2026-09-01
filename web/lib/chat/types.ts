@@ -60,6 +60,7 @@ export interface ModelStatus {
   vram_needed?: string;
   vram_available?: string;
   placement_error?: string;
+  data_available?: boolean;
 }
 
 export interface ChatResponse {

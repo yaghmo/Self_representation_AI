@@ -39,6 +39,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export interface SocialListResult {
+  displayName: string | null
   bio: string | null
   contactEmail: string | null
   socials: Social[]
@@ -177,6 +178,13 @@ export function previewSocial(
     method: "POST",
     body: JSON.stringify(params),
     signal,
+  })
+}
+
+export function saveDisplayName(displayName: string | null): Promise<{ displayName: string | null }> {
+  return request("/admin/social/display_name", {
+    method: "POST",
+    body: JSON.stringify({ displayName }),
   })
 }
 

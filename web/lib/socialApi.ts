@@ -12,6 +12,7 @@ export interface PublicSocial {
 const SERVICE_URL = process.env.NEXT_PUBLIC_SERVICE_URL ?? "http://127.0.0.1:8000"
 
 export interface PublicProfile {
+  displayName: string | null
   bio: string | null
   contactEmail: string | null
   socials: PublicSocial[]
@@ -26,6 +27,7 @@ export interface PublicProfile {
 }
 
 const EMPTY_PROFILE: PublicProfile = {
+  displayName: null,
   bio: null,
   contactEmail: null,
   socials: [],

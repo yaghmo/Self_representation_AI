@@ -47,6 +47,15 @@ services:
       - ./data:/app/data
       - ./config:/app/config
       - ./models:/app/models
+      # Docker-outside-of-Docker: runtime/qwentts.py's TTSServer shells out
+      # to `docker run` to launch qwentts.cpp's own image alongside this
+      # one, on the *host's* daemon (there's no dockerd inside this image).
+      # A container spawned that way publishes its port on the host, not on
+      # this container's own network namespace — host.docker.internal below
+      # is what lets this container reach back out to it.
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       ADMIN_UI_ORIGIN: ${ADMIN_UI_ORIGIN:-http://localhost:3000}
     deploy:
@@ -69,6 +78,15 @@ services:
       - ./data:/app/data
       - ./config:/app/config
       - ./models:/app/models
+      # Docker-outside-of-Docker: runtime/qwentts.py's TTSServer shells out
+      # to `docker run` to launch qwentts.cpp's own image alongside this
+      # one, on the *host's* daemon (there's no dockerd inside this image).
+      # A container spawned that way publishes its port on the host, not on
+      # this container's own network namespace — host.docker.internal below
+      # is what lets this container reach back out to it.
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       ADMIN_UI_ORIGIN: ${ADMIN_UI_ORIGIN:-http://localhost:3000}
     deploy:
