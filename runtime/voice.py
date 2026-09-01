@@ -49,6 +49,7 @@ from typing import Any, Iterator, Literal
 
 import httpx
 
+from cookbook.config import read_config
 from cookbook.download import target_dir
 from cookbook.schema import load_catalogue
 
@@ -288,6 +289,26 @@ def _synth_via_server(server: "qwentts.TTSServer", text: str, language: str, sta
         return resp.content
 
 
+# Kept alive across warm_bubbles() calls only when _keep_tts_resident() says
+# so — a strong module-level reference, not just the local `server` variable,
+# both so it survives between calls and so qwentts._running (a WeakSet) still
+# has something keeping it alive for atexit's crash-cleanup to find.
+_resident_server: "qwentts.TTSServer | None" = None
+_resident_status: Literal["clone", "design"] | None = None
+
+
+def _keep_tts_resident() -> bool:
+    """True when nothing local competes with TTS for this GPU's VRAM.
+
+    An API-backed LLM has no local footprint at all (see cookbook/fit.py's
+    "source": "api" roles), so this GPU only ever exists for TTS — paying a
+    full tts-server container boot on every single message just to tear it
+    down again is pure waste. A local LLM needs that VRAM back the moment
+    TTS isn't using it, so start/stop-per-batch stays the rule there."""
+    config = read_config() or {}
+    return config.get("roles", {}).get("llm", {}).get("source") == "api"
+
+
 def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
     """Synthesize every cache-miss in `texts` under one tts-server load.
 
@@ -295,6 +316,7 @@ def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
     (service/main.py's /chat) and /voice/speak's cache-miss fallback — the
     only difference between those two callers is how many texts they pass.
     """
+    global _resident_server, _resident_status
     status = _ensure_voice_configured()
     if language.lower() not in QWEN_SUPPORTED_LANGUAGES:
         language = "Auto"
@@ -311,8 +333,19 @@ def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
         if not misses:
             return
 
-        talker, codec = _talker_and_codec_paths(status)
-        server = qwentts.TTSServer(talker_path=talker, codec_path=codec)
+        keep_resident = _keep_tts_resident()
+        if keep_resident and _resident_server is not None and _resident_status == status:
+            server = _resident_server
+        else:
+            # A resident server for the *other* status (clone vs design) was
+            # baked with the wrong talker/codec at container-start time —
+            # can't just keep talking to it, has to be torn down first.
+            if _resident_server is not None:
+                _resident_server.stop()
+                _resident_server = None
+                _resident_status = None
+            talker, codec = _talker_and_codec_paths(status)
+            server = qwentts.TTSServer(talker_path=talker, codec_path=codec)
         server.start()
         try:
             if status == "clone":
@@ -328,7 +361,12 @@ def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
                 cache_path.write_bytes(audio)
                 _evict_oldest(CACHE_DIR, CACHE_MAX_FILES)
         finally:
-            server.stop()
+            if keep_resident:
+                _resident_server, _resident_status = server, status
+            else:
+                server.stop()
+                if _resident_server is server:
+                    _resident_server, _resident_status = None, None
 
 
 def synth(text: str, language: str = "Auto") -> Iterator[bytes]:

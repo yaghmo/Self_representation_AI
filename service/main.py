@@ -27,6 +27,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,7 +44,7 @@ from pydantic import BaseModel, Field
 # even for a checkout with no .env at all.
 load_dotenv()
 
-from cookbook.config import read_config
+from cookbook.config import config_path, read_config
 from runtime.backend import Message
 from runtime.bible import (
     MessageTooLarge,
@@ -293,6 +294,56 @@ def _autoload_model() -> None:
     _warmup_voice(model)
 
 
+_CONFIG_POLL_SECONDS = 5.0
+
+
+def _reload_model_from_config() -> None:
+    """Builds a fresh Model from the current config/stack.json and swaps it
+    in for the global _model, unloading whatever was running before. Used
+    by _watch_config_for_changes below — the cookbook has no docker.sock
+    (deliberately least-privilege) so it can't restart this container
+    itself; this container instead notices the file changed on its own."""
+    global _model
+    config = read_config() or {}
+    if not config:
+        return
+    try:
+        new_model = Model.from_config(port=8080)
+        new_model.load(wait_seconds=300)
+    except Exception:
+        logger.exception("config-triggered reload failed — keeping the previous model")
+        return
+    old_model, _model = _model, new_model
+    logger.info("reloaded model from config: %s", new_model.name)
+    _warmup_chat(new_model)
+    _warmup_voice(new_model)
+    if old_model is not None:
+        old_model.unload()
+
+
+def _watch_config_for_changes() -> None:
+    """Polls config/stack.json's mtime and hot-reloads the model on change,
+    so writing a new config from the cookbook (e.g. switching to an API
+    provider) takes effect without a manual container restart. Starts from
+    whatever mtime is on disk right now — only reloads on a *change* after
+    that, never redundantly on top of _autoload_model's own initial load."""
+    path = config_path()
+    try:
+        last_mtime = path.stat().st_mtime
+    except OSError:
+        last_mtime = None
+    while True:
+        time.sleep(_CONFIG_POLL_SECONDS)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime != last_mtime:
+            last_mtime = mtime
+            logger.info("config/stack.json changed — reloading model")
+            _reload_model_from_config()
+
+
 def _warmup_chat(model: Model) -> None:
     """One throwaway completion right after load, so the first *real* chat
     isn't the one paying for both cold weights and llama-server's one-time
@@ -341,6 +392,7 @@ async def lifespan(app: FastAPI):
     logger.info("service starting (agent=%s)", config.get("agent", False))
     if config:
         threading.Thread(target=_autoload_model, daemon=True).start()
+    threading.Thread(target=_watch_config_for_changes, daemon=True).start()
     yield
     global _model
     if _model is not None:
