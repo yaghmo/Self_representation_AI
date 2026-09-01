@@ -14,12 +14,14 @@ with the spawned process being `docker run` instead of a bare binary.
 from __future__ import annotations
 
 import atexit
+import os
 import subprocess
 import threading
 import time
 import weakref
 from dataclasses import dataclass
-from pathlib import Path
+from functools import lru_cache
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import httpx
 
@@ -27,6 +29,56 @@ from cookbook.probe import _detect_container
 from service.logging_config import get_logger
 
 logger = get_logger("runtime.qwentts")
+
+# The volume mount docker-compose.yml gives this container for model
+# weights (see cookbook/download.py's MODELS_DIR — REPO_ROOT resolves to
+# /app under the image's WORKDIR).
+MODELS_MOUNT = Path("/app/models")
+
+
+@lru_cache(maxsize=1)
+def _host_models_root() -> str | None:
+    """The models/ bind mount's real path on the Docker *host*.
+
+    `docker run -v` below is a client command sent over the DooD socket —
+    the *host* daemon resolves that -v source, not this container. Handing
+    it a container-internal path like /app/models/<id> means nothing to
+    the host, and it silently bind-mounts a fresh empty directory instead
+    of erroring, so tts-server starts fine and then can't find its weights.
+    Self-introspect our own container's mounts (Docker sets $HOSTNAME to
+    the container id) to get the real host-side path, the same trick
+    Docker-outside-of-Docker runners use generally."""
+    if not _detect_container():
+        return None
+    container_id = os.environ.get("HOSTNAME")
+    if not container_id:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "docker", "inspect", "--format",
+                '{{range .Mounts}}{{if eq .Destination "/app/models"}}'
+                '{{.Source}}{{end}}{{end}}',
+                container_id,
+            ],
+            capture_output=True, text=True, timeout=10, check=True,
+        )
+    except Exception:
+        logger.exception("could not resolve /app/models' host-side path")
+        return None
+    return result.stdout.strip() or None
+
+
+def _host_path_for(container_path: Path) -> str:
+    """Translate a path under MODELS_MOUNT into its host-visible form."""
+    root = _host_models_root()
+    if root is None:
+        # Not containerized (e.g. `uv run` straight on the host) — the
+        # path we were given is already a real, host-visible path.
+        return container_path.as_posix()
+    rel_parts = container_path.relative_to(MODELS_MOUNT).parts
+    cls = PureWindowsPath if "\\" in root else PurePosixPath
+    return str(cls(root, *rel_parts))
 
 # `docker run -p PORT:8080` publishes the sibling container's port on the
 # *host's* network — reachable as 127.0.0.1 only when this process is also
@@ -87,7 +139,7 @@ class TTSServer:
             "--name", self.container_name,
             "--gpus", "all",
             "-p", f"{self.port}:8080",
-            "-v", f"{model_dir.as_posix()}:/models:ro",
+            "-v", f"{_host_path_for(model_dir)}:/models:ro",
             "-e", f"MODEL_PATH=/models/{self.talker_path.name}",
             "-e", f"CODEC_PATH=/models/{self.codec_path.name}",
             IMAGE,
