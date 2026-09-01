@@ -8,6 +8,19 @@ that never had a scraper in the first place.
 
 from __future__ import annotations
 
+# A guessed handle from an LLM-extracted mention 404s as often as it hits —
+# yt-dlp's own defaults retry a failed fetch several times with backoff,
+# which is the right call for a real download but turns "confirm this
+# profile doesn't exist" into a multi-second stall for no benefit: a single
+# fast failure is exactly as informative. No retries, short timeout.
+_YDL_OPTS = {
+    "quiet": True,
+    "skip_download": True,
+    "retries": 0,
+    "extractor_retries": 0,
+    "socket_timeout": 5,
+}
+
 
 def scrape_channel(url: str) -> dict | None:
     try:
@@ -15,9 +28,7 @@ def scrape_channel(url: str) -> dict | None:
     except ImportError:
         return None
     try:
-        with yt_dlp.YoutubeDL(
-            {"quiet": True, "skip_download": True, "playlist_items": "0"}
-        ) as ydl:
+        with yt_dlp.YoutubeDL(_YDL_OPTS | {"playlist_items": "0"}) as ydl:
             info = ydl.extract_info(url, download=False)
         if not info:
             return None
@@ -51,7 +62,7 @@ def list_videos(url: str, limit: int = 6) -> list[dict]:
             break
         try:
             with yt_dlp.YoutubeDL(
-                {"quiet": True, "skip_download": True, "extract_flat": True, "playlistend": limit}
+                _YDL_OPTS | {"extract_flat": True, "playlistend": limit}
             ) as ydl:
                 info = ydl.extract_info(f"{url.rstrip('/')}/{tab}", download=False)
         except Exception:
