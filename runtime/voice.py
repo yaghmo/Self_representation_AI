@@ -96,10 +96,39 @@ _PUNCT_TRANSLATION = str.maketrans(
     {"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."}
 )
 
+# Chat abbreviations Qwen3-TTS sounds out letter-by-letter ("idk" -> "eye dee
+# kay") instead of reading as words — spelled out before every synth call.
+# Deliberately small: only the ones that actually mis-pronounce, not every
+# bit of chat shorthand (e.g. "gonna"/"wanna" already read fine as-is).
+_ABBREVIATIONS = {
+    "idk": "i don't know",
+    "btw": "by the way",
+    "omg": "oh my god",
+    "tbh": "to be honest",
+    "imo": "in my opinion",
+    "imho": "in my honest opinion",
+    "ngl": "not gonna lie",
+    "irl": "in real life",
+    "afaik": "as far as i know",
+    "lol": "laughing out loud",
+    "lmao": "laughing my ass off",
+    "brb": "be right back",
+    "fyi": "for your information",
+}
+_ABBREVIATION_RE = re.compile(
+    r"\b(" + "|".join(re.escape(a) for a in _ABBREVIATIONS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _expand_abbreviations(text: str) -> str:
+    return _ABBREVIATION_RE.sub(lambda m: _ABBREVIATIONS[m.group(0).lower()], text)
+
 
 def _clean_for_tts(text: str) -> str:
     text = text.translate(_PUNCT_TRANSLATION)
     text = _EMOJI_RE.sub("", text)
+    text = _expand_abbreviations(text)
     text = re.sub(r"([!?.,])\1+", r"\1", text)
     return re.sub(r"\s{2,}", " ", text).strip()
 
