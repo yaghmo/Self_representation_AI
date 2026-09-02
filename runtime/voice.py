@@ -55,8 +55,8 @@ from cookbook.schema import load_catalogue
 
 from service.logging_config import get_logger
 
-from . import qwentts
-from .bible import PROFILE_PATH, voice_design_instruct
+from . import qwentts, voice_api
+from .bible import EMOTION_TAGS, PROFILE_PATH, voice_design_instruct, voice_gender
 from .tools import snapshot
 
 logger = get_logger("runtime.voice")
@@ -64,6 +64,17 @@ logger = get_logger("runtime.voice")
 def _tts_device() -> str:
     config = read_config() or {}
     return config.get("roles", {}).get("tts", {}).get("device", "transient-gpu")
+
+
+def _tts_source() -> Literal["local", "api"]:
+    config = read_config() or {}
+    return config.get("roles", {}).get("tts", {}).get("source", "local")
+
+
+def _tts_voice_gender_override() -> Literal["male", "female"] | None:
+    config = read_config() or {}
+    value = config.get("roles", {}).get("tts", {}).get("voice_gender")
+    return value if value in ("male", "female") else None
 
 
 VOICE_DIR = PROFILE_PATH.parent / "voice"
@@ -129,6 +140,22 @@ _ABBREVIATION_RE = re.compile(
 
 def _expand_abbreviations(text: str) -> str:
     return _ABBREVIATION_RE.sub(lambda m: _ABBREVIATIONS[m.group(0).lower()], text)
+
+
+# api tts (Fish Audio) understands these bracket tags natively — see
+# bible.EMOTION_TAGS_ADDENDUM, which is the only thing that ever teaches the
+# model to emit them, and only when source=="api". qwentts has no such
+# vocabulary and would read a tag aloud as literal words, so the local path
+# strips it defensively; the same strip also cleans the copy of a reply that
+# a client renders on screen (see web/lib for the client-side mirror of this
+# list) — only the copy sent to api_synth keeps the tags intact.
+_EMOTION_TAG_RE = re.compile(
+    r"\[(?:" + "|".join(re.escape(tag) for tag in EMOTION_TAGS) + r")\]", re.IGNORECASE
+)
+
+
+def strip_emotion_tags(text: str) -> str:
+    return re.sub(r"\s{2,}", " ", _EMOTION_TAG_RE.sub("", text)).strip()
 
 
 def _clean_for_tts(text: str) -> str:
@@ -248,7 +275,7 @@ def synth_design_once(text: str, language: str = "Auto") -> bytes:
     in. VoiceDesign's raw output isn't guaranteed identical call to call the
     way a fixed clone embedding is; chaining through build_clone() makes the
     voice actually consistent, and this is what generates that one clip."""
-    text = _clean_for_tts(text)
+    text = _clean_for_tts(strip_emotion_tags(text))
     if language.lower() not in QWEN_SUPPORTED_LANGUAGES:
         language = "Auto"
     talker, codec = _talker_and_codec_paths("design")
@@ -272,11 +299,14 @@ def _evict_oldest(cache_dir: Path, keep: int) -> None:
         clip.unlink()
 
 
-def _cache_path(text: str, language: str, status: str) -> Path:
-    checkpoint = CLONE_META_PATH if status == "clone" else DESIGN_PATH
-    fingerprint = checkpoint.stat().st_mtime_ns if checkpoint.exists() else 0
+def _cache_path(text: str, language: str, status: str, fingerprint: int = 0) -> Path:
     key = hashlib.sha256(f"{status}|{fingerprint}|{language}|{text}".encode()).hexdigest()
     return CACHE_DIR / f"{key}.wav"
+
+
+def _local_fingerprint(status: str) -> int:
+    checkpoint = CLONE_META_PATH if status == "clone" else DESIGN_PATH
+    return checkpoint.stat().st_mtime_ns if checkpoint.exists() else 0
 
 
 def _register_clone(server: "qwentts.TTSServer") -> None:
@@ -332,6 +362,62 @@ def _keep_tts_resident() -> bool:
     return config.get("roles", {}).get("llm", {}).get("source") == "api"
 
 
+def _resolve_api_voice() -> tuple[str | None, Literal["clone", "male", "female", "default"]]:
+    """Precedence: an explicit clone reference beats an explicit gender pick,
+    which beats character.md's own `gender:` field, which beats the
+    provider's default voice. Same clone-wins rule as the local qwentts
+    path — build_clone()'s clone.json/clone_ref.wav are engine-agnostic, so
+    a sample recorded once works for either engine."""
+    if CLONE_META_PATH.exists():
+        return None, "clone"
+    gender = _tts_voice_gender_override() or voice_gender(PROFILE_PATH)
+    if gender == "male":
+        return voice_api.VOICE_MALE, "male"
+    if gender == "female":
+        return voice_api.VOICE_FEMALE, "female"
+    return None, "default"
+
+
+def _synth_via_api(text: str) -> bytes:
+    voice_id, status = _resolve_api_voice()
+    if status == "clone":
+        cached = json.loads(CLONE_META_PATH.read_text(encoding="utf-8"))
+        return voice_api.api_synth(
+            text, ref_audio=CLONE_REF_PATH.read_bytes(), ref_text=cached["ref_text"]
+        )
+    return voice_api.api_synth(text, voice=voice_id)
+
+
+def _warm_bubbles_api(texts: list[str]) -> None:
+    """api tts's counterpart to the local warm_bubbles() above — no
+    tts-server to boot or keep resident, so this is just "synth and cache
+    every miss". `"api-"` prefixes every cache status so an api clip can
+    never be served from (or collide with) a local one keyed under the same
+    clone.json fingerprint — the two engines render the same reference audio
+    differently.
+    """
+    _, engine_status = _resolve_api_voice()
+    status = f"api-{engine_status}"
+    fingerprint = (
+        CLONE_META_PATH.stat().st_mtime_ns
+        if engine_status == "clone" and CLONE_META_PATH.exists()
+        else 0
+    )
+    for text in texts:
+        cleaned = _clean_for_tts(text)  # tags left intact — see strip_emotion_tags
+        cache_path = _cache_path(cleaned, "Auto", status, fingerprint)
+        if cache_path.exists():
+            continue
+        try:
+            audio = _synth_via_api(cleaned)
+        except Exception:
+            logger.exception("api tts synth failed mid-batch, stopping this batch")
+            break
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(audio)
+        _evict_oldest(CACHE_DIR, CACHE_MAX_FILES)
+
+
 def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
     """Synthesize every cache-miss in `texts` under one tts-server load.
 
@@ -340,19 +426,23 @@ def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
     only difference between those two callers is how many texts they pass.
     """
     global _resident_server, _resident_status
+    if _tts_source() == "api":
+        _warm_bubbles_api(texts)
+        return
     status = _ensure_voice_configured()
     if language.lower() not in QWEN_SUPPORTED_LANGUAGES:
         language = "Auto"
 
-    cleaned = [_clean_for_tts(t) for t in texts]
-    misses = [t for t in cleaned if not _cache_path(t, language, status).exists()]
+    fingerprint = _local_fingerprint(status)
+    cleaned = [_clean_for_tts(strip_emotion_tags(t)) for t in texts]
+    misses = [t for t in cleaned if not _cache_path(t, language, status, fingerprint).exists()]
     if not misses:
         return
 
     with qwentts.LOCK:
         # A caller ahead of us in line may have already synthesized some or
         # all of these while we were waiting on the lock.
-        misses = [t for t in misses if not _cache_path(t, language, status).exists()]
+        misses = [t for t in misses if not _cache_path(t, language, status, fingerprint).exists()]
         if not misses:
             return
 
@@ -379,7 +469,7 @@ def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
                 except Exception:
                     logger.exception("tts-server synth failed mid-batch, stopping this batch")
                     break
-                cache_path = _cache_path(text, language, status)
+                cache_path = _cache_path(text, language, status, fingerprint)
                 CACHE_DIR.mkdir(parents=True, exist_ok=True)
                 cache_path.write_bytes(audio)
                 _evict_oldest(CACHE_DIR, CACHE_MAX_FILES)
@@ -392,13 +482,40 @@ def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
                     _resident_server, _resident_status = None, None
 
 
+def _synth_api(text: str) -> Iterator[bytes]:
+    cleaned = _clean_for_tts(text)  # tags left intact — see strip_emotion_tags
+    _, engine_status = _resolve_api_voice()
+    status = f"api-{engine_status}"
+    fingerprint = (
+        CLONE_META_PATH.stat().st_mtime_ns
+        if engine_status == "clone" and CLONE_META_PATH.exists()
+        else 0
+    )
+    cache_path = _cache_path(cleaned, "Auto", status, fingerprint)
+    if cache_path.exists():
+        logger.info("synth: kind=%s (cache hit)", status)
+        yield from _chunk(cache_path.read_bytes())
+        return
+
+    t0 = time.monotonic()
+    _warm_bubbles_api([text])
+    if not cache_path.exists():
+        raise RuntimeError("api tts failed to produce audio for this text")
+    logger.info("synth done: kind=%s elapsed=%.2fs", status, time.monotonic() - t0)
+    yield from _chunk(cache_path.read_bytes())
+
+
 def synth(text: str, language: str = "Auto") -> Iterator[bytes]:
-    text = _clean_for_tts(text)
+    if _tts_source() == "api":
+        yield from _synth_api(text)
+        return
+    text = _clean_for_tts(strip_emotion_tags(text))
     if language.lower() not in QWEN_SUPPORTED_LANGUAGES:
         language = "Auto"
     status = _ensure_voice_configured()
+    fingerprint = _local_fingerprint(status)
 
-    cache_path = _cache_path(text, language, status)
+    cache_path = _cache_path(text, language, status, fingerprint)
     if cache_path.exists():
         logger.info("synth: kind=%s language=%s chars=%d (cache hit)", status, language, len(text))
         yield from _chunk(cache_path.read_bytes())

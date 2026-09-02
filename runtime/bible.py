@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from .backend import Message, tokenize_url
 from .index import Chunk
@@ -121,6 +121,24 @@ class MessageTooLarge(RuntimeError):
 # Framing only. The behavioural rules are the creator's and live in the profile
 # itself (§10 Interaction Rules, and Hard constraints). The honesty line is
 # CLAUDE.md's fixed bot rule, not something invented here.
+# Fish Audio's bracket-tag vocabulary (api tts only — qwentts has no such
+# thing and would read a tag aloud as literal words). Shared with
+# runtime/voice.py, which strips these back out on the local-tts path and
+# out of the copy of a reply that ever reaches display.
+EMOTION_TAGS = (
+    "angry", "sad", "embarrassed", "emphasis", "whispering", "soft", "breathy",
+    "excited", "laughing", "chuckling", "moaning", "clear throat", "sobbing",
+    "crying loudly", "sighing", "panting", "groaning", "crowd laughing",
+    "background laughter", "audience laughing", "pause", "long pause",
+)
+
+EMOTION_TAGS_ADDENDUM = (
+    "You may drop one of these bracket tags into your reply, wherever a real "
+    "chuckle, sigh, or pause would naturally land: "
+    + ", ".join(f"[{tag}]" for tag in EMOTION_TAGS)
+    + ". Use them sparingly, only where they fit — not on every line.\n\n"
+)
+
 FRAMING = (
     "You are the person described in the profile below. Answer as them, in "
     "their voice, using their phrasing.\n"
@@ -147,8 +165,9 @@ FRAMING = (
 )
 
 
-def build_persona(path: Path | None = None) -> str:
-    return FRAMING + strip_cites(slice_profile(load_profile(path)))
+def build_persona(path: Path | None = None, *, emotion_tags: bool = False) -> str:
+    framing = FRAMING + EMOTION_TAGS_ADDENDUM if emotion_tags else FRAMING
+    return framing + strip_cites(slice_profile(load_profile(path)))
 
 
 # The compact persona — always in the prompt, never a retrieval miss away
@@ -195,7 +214,7 @@ def _split_sections(body: str) -> dict[str, str]:
     return {heading: "\n".join(lines).strip() + "\n" for heading, lines in sections.items()}
 
 
-def build_compact_persona_from(text: str) -> str:
+def build_compact_persona_from(text: str, *, emotion_tags: bool = False) -> str:
     """Pure function of profile text, so the self-check can run it against a
     fixture — build_compact_persona() is the path-based wrapper below."""
     body = slice_profile(text)
@@ -209,11 +228,12 @@ def build_compact_persona_from(text: str) -> str:
             "bible.COMPACT_SECTIONS."
         )
     compact = "\n\n".join(sections[heading] for heading in COMPACT_SECTIONS)
-    return FRAMING + strip_cites(compact)
+    framing = FRAMING + EMOTION_TAGS_ADDENDUM if emotion_tags else FRAMING
+    return framing + strip_cites(compact)
 
 
-def build_compact_persona(path: Path | None = None) -> str:
-    return build_compact_persona_from(load_profile(path))
+def build_compact_persona(path: Path | None = None, *, emotion_tags: bool = False) -> str:
+    return build_compact_persona_from(load_profile(path), emotion_tags=emotion_tags)
 
 
 VOICE_DESIGN_HEADING = "### TTS voice design"
@@ -255,6 +275,35 @@ def voice_design_instruct_from(text: str) -> str:
 
 def voice_design_instruct(path: Path | None = None) -> str:
     return voice_design_instruct_from(load_profile(path))
+
+
+def voice_gender_from(text: str) -> Literal["male", "female"] | None:
+    """The same §6 TTS-design block's `gender:` field, read for api tts's
+    two-preset voice pick rather than qwentts's freeform instruct string.
+
+    None for "unspecified", a value that names neither, or a missing block —
+    api tts falls back to the provider default in all of those cases, same
+    as voice_design_instruct_from falls back to DEFAULT_VOICE_INSTRUCT.
+    """
+    start = text.find(VOICE_DESIGN_HEADING)
+    if start == -1:
+        return None
+    end = text.find("\n##", start + len(VOICE_DESIGN_HEADING))
+    block = text[start : end if end != -1 else None]
+    for key, value in _VOICE_DESIGN_FIELD.findall(block):
+        if key != "gender":
+            continue
+        value = value.strip().lower()
+        if "female" in value:
+            return "female"
+        if "male" in value:
+            return "male"
+        return None
+    return None
+
+
+def voice_gender(path: Path | None = None) -> Literal["male", "female"] | None:
+    return voice_gender_from(load_profile(path))
 
 
 def profile_section_chunks_from(text: str) -> list[Chunk]:

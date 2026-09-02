@@ -39,6 +39,8 @@ def build_config(fit: Fit, catalogue: Catalogue, probe: Probe, agent: bool) -> d
     for role, placement in selection.placements.items():
         if role == "llm" and selection.llm_provider:
             continue
+        if role == "tts" and selection.tts_provider:
+            continue
         model = catalogue.model(placement.model_id)
         roles[role] = {
             "source": "local",
@@ -64,6 +66,16 @@ def build_config(fit: Fit, catalogue: Catalogue, probe: Probe, agent: bool) -> d
             "context_tokens": provider.context_tokens,
             "tool_calling": "native" if provider.tool_calling else "none",
         }
+
+    if selection.tts_provider:
+        provider = catalogue.provider(selection.tts_provider)
+        roles["tts"] = {
+            "source": "api",
+            "provider": provider.id,
+            "api_key_env": provider.api_key_env,
+        }
+        if selection.tts_voice_gender:
+            roles["tts"]["voice_gender"] = selection.tts_voice_gender
 
     return {
         "version": CONFIG_VERSION,

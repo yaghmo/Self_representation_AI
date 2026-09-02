@@ -134,6 +134,12 @@ def _selection_dict(selection: Selection, catalogue: Catalogue) -> dict:
                 "device": None,
                 "provider": catalogue.provider(selection.llm_provider).label,
             }
+        elif role == "tts" and selection.tts_provider:
+            out[role] = {
+                "model": None,
+                "device": None,
+                "provider": catalogue.provider(selection.tts_provider).label,
+            }
         elif placement:
             out[role] = {"model": placement.model_id, "device": placement.device}
     return out
@@ -194,6 +200,8 @@ class SelectionIn(BaseModel):
     context_tokens: int
     placements: dict[str, dict]  # role -> {"model": id, "device": device}
     llm_provider: str | None = None  # set instead of placements["llm"] for an API-backed LLM
+    tts_provider: str | None = None  # set instead of placements["tts"] for an API-backed TTS
+    tts_voice_gender: str | None = None  # "male" | "female", api tts only
 
 
 class FitIn(BaseModel):
@@ -223,6 +231,8 @@ def _selection_from(s: SelectionIn) -> Selection:
         context_tokens=s.context_tokens,
         placements=placements,
         llm_provider=s.llm_provider,
+        tts_provider=s.tts_provider,
+        tts_voice_gender=s.tts_voice_gender,
     )
 
 

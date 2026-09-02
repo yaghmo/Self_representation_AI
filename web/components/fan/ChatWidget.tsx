@@ -10,6 +10,7 @@ import { MarkdownMessage } from "@/components/chat/Markdown"
 import { SpeakButton } from "@/components/chat/SpeakButton"
 import { PlayOnceVideo, type PlayOnceVideoHandle } from "@/components/media/PlayOnceVideo"
 import { warm } from "@/lib/voice/store"
+import { stripEmotionTags } from "@/lib/voice/emotionTags"
 import type { ChatMessage } from "./types"
 
 function isVideo(mime: string | null | undefined) {
@@ -267,7 +268,9 @@ function ChatWidget({
                       : "bg-muted text-foreground"
                   )}
                 >
-                  <MarkdownMessage text={message.text} />
+                  <MarkdownMessage
+                    text={message.role === "bot" ? stripEmotionTags(message.text) : message.text}
+                  />
                 </div>
                 {message.role === "bot" && <SpeakButton id={message.id} />}
               </div>

@@ -105,6 +105,8 @@ export interface Selection {
   context_tokens: number;
   placements: Partial<Record<Role, { model: string; device: Device }>>;
   llm_provider?: string | null;
+  tts_provider?: string | null;
+  tts_voice_gender?: "male" | "female" | null;
 }
 
 export interface DownloadModelStatus {

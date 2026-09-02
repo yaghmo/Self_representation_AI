@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pydantic import BaseModel, ValidationError
+
 from .bible import PROFILE_END, PROFILE_PATH, PROFILE_START
 from .stories import STORIES_DIR
 
@@ -851,15 +853,62 @@ TOOL_PROPERTIES = {
 }
 
 
+class SearchSourcesArgs(BaseModel):
+    query: str
+
+
+class ReadProfileSectionArgs(BaseModel):
+    heading: str
+
+
+class AppendSourceArgs(BaseModel):
+    answer: str
+    question: str
+    entry_type: str
+    tags: list[str]
+    date: str
+    feeds: list[str]
+
+
+class AddProfileLineArgs(BaseModel):
+    heading: str
+    line: str
+
+
+class ReplaceProfileLineArgs(BaseModel):
+    heading: str
+    find: str
+    line: str
+
+
+# One model per TOOL_SCHEMAS entry, same field names and required-ness — the
+# schema tells the model what's legal, this actually checks it. Without this,
+# a wrong type on a present field (e.g. `tags` sent as a string instead of a
+# list) reached the handler as-is: `", ".join(t for t in tags)` on a string
+# silently iterates its characters instead of failing loudly.
+TOOL_ARG_MODELS: dict[str, type[BaseModel]] = {
+    "search_sources": SearchSourcesArgs,
+    "read_profile_section": ReadProfileSectionArgs,
+    "append_source": AppendSourceArgs,
+    "add_profile_line": AddProfileLineArgs,
+    "replace_profile_line": ReplaceProfileLineArgs,
+}
+
+
 def run_tool(name: str, arguments: dict) -> str | Proposal:
     """Dispatch by name.
 
     Arguments are filtered to the tool's declared schema before the handler
     ever sees them: `path` is intentionally undeclared everywhere, so a model
     that emits `{"path": "C:\\Windows\\win.ini"}` gets it silently dropped
-    rather than routed to `Path.read_text`. Unknown names, bad arguments, and
-    any handler exception all come back as text — a handler must never kill
-    the loop.
+    rather than routed to `Path.read_text`. What's left is then validated
+    against that tool's pydantic model — a required field missing or the
+    wrong type (a string where the schema says array, say) is refused here
+    with a message the model can read and correct, rather than reaching the
+    handler and either TypeError-ing on the more obvious shapes or silently
+    misbehaving on the subtler ones. Unknown names, bad arguments, and any
+    handler exception all come back as text — a handler must never kill the
+    loop.
     """
     handler = READ_TOOLS.get(name) or WRITE_TOOLS.get(name)
     if handler is None:
@@ -867,6 +916,12 @@ def run_tool(name: str, arguments: dict) -> str | Proposal:
     allowed = TOOL_PROPERTIES.get(name, set())
     dropped = sorted(k for k in arguments if k not in allowed)
     filtered = {k: v for k, v in arguments.items() if k in allowed}
+    model = TOOL_ARG_MODELS.get(name)
+    if model is not None:
+        try:
+            filtered = model.model_validate(filtered).model_dump()
+        except ValidationError as exc:
+            return f"bad arguments for {name}: {exc}"
     try:
         result = handler(**filtered)
     except TypeError as exc:

@@ -228,6 +228,11 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   // Set instead of a local llm placement — an API-backed LLM has no model/
   // device to pick, no download, no local footprint at all.
   const [llmProvider, setLlmProvider] = useState<string | null>(null)
+  // Same shape for tts — fish-audio via OpenRouter has no local model/device
+  // to pick either. Reuses llmProvider's api key box below: same env var,
+  // same OpenRouter key, tested once covers both roles.
+  const [ttsProvider, setTtsProvider] = useState<string | null>(null)
+  const [ttsVoiceGender, setTtsVoiceGender] = useState<"male" | "female" | null>(null)
   const [apiKeyInput, setApiKeyInput] = useState("")
   const [keyTest, setKeyTest] = useState<
     { state: "idle" } | { state: "testing" } | { state: "ok"; detail: string } | { state: "error"; detail: string }
@@ -350,11 +355,18 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
     const placements: Selection["placements"] = {}
     for (const role of roles) {
       if (role === "llm" && llmProvider) continue
+      if (role === "tts" && ttsProvider) continue
       const p = manualPlacements[role]
       if (p) placements[role] = { model: p.model, device: p.device }
     }
-    return { context_tokens: contextTokens, placements, llm_provider: llmProvider }
-  }, [manualPlacements, contextTokens, roles, llmProvider])
+    return {
+      context_tokens: contextTokens,
+      placements,
+      llm_provider: llmProvider,
+      tts_provider: ttsProvider,
+      tts_voice_gender: ttsVoiceGender,
+    }
+  }, [manualPlacements, contextTokens, roles, llmProvider, ttsProvider, ttsVoiceGender])
 
   // Manual fit only evaluates while on the Fit step.
   useEffect(() => {
@@ -420,6 +432,8 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
           context_tokens: chosenFit.context_tokens,
           placements,
           llm_provider: mode === "manual" ? llmProvider : null,
+          tts_provider: mode === "manual" ? ttsProvider : null,
+          tts_voice_gender: mode === "manual" ? ttsVoiceGender : null,
         },
         basis,
         whole_bible_bonus: wholeBibleBonus,
@@ -949,6 +963,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                     const model = options.find((m) => m.id === pick.model)
                     const info = ROLE_INFO[role]
                     const isLlm = role === "llm"
+                    const isTts = role === "tts"
                     return (
                       <div key={role} className="space-y-2 rounded-xl border p-4">
                         <div className="flex items-center gap-2 text-sm font-medium capitalize">
@@ -977,12 +992,58 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                             </Label>
                           </div>
                         )}
+                        {isTts && openrouterProvider && (
+                          <div className="flex items-center gap-2 pb-1">
+                            <Checkbox
+                              id="tts-provider-toggle"
+                              checked={ttsProvider !== null}
+                              onCheckedChange={(c) => {
+                                setTtsProvider(c === true ? openrouterProvider.id : null)
+                                setKeyTest({ state: "idle" })
+                              }}
+                            />
+                            <Label
+                              htmlFor="tts-provider-toggle"
+                              className="cursor-pointer text-xs text-muted-foreground"
+                            >
+                              Use an API key instead of downloading a model — Fish Audio
+                              via OpenRouter, no text-instruction voice design, cloning
+                              still works
+                            </Label>
+                          </div>
+                        )}
+                        {isTts && ttsProvider !== null && (
+                          <div className="flex items-center gap-3 pb-1">
+                            <span className="text-xs text-muted-foreground">Voice:</span>
+                            <RadioGroup
+                              value={ttsVoiceGender ?? "auto"}
+                              onValueChange={(v) =>
+                                setTtsVoiceGender(v === "auto" ? null : (v as "male" | "female"))
+                              }
+                              className="flex flex-row items-center gap-3"
+                            >
+                              {(["auto", "male", "female"] as const).map((g) => (
+                                <div key={g} className="flex items-center gap-1.5">
+                                  <RadioGroupItem value={g} id={`tts-gender-${g}`} />
+                                  <Label
+                                    htmlFor={`tts-gender-${g}`}
+                                    className="cursor-pointer text-xs capitalize"
+                                  >
+                                    {g === "auto" ? "From character.md" : g}
+                                  </Label>
+                                </div>
+                              ))}
+                            </RadioGroup>
+                          </div>
+                        )}
                         <div className="flex flex-wrap items-center gap-4">
-                          {isLlm && llmProvider !== null && openrouterProvider ? (
+                          {(isLlm && llmProvider !== null && openrouterProvider) ||
+                          (isTts && ttsProvider !== null && openrouterProvider) ? (
                             <div className="flex w-full flex-col gap-2">
                               <p className="text-xs text-muted-foreground">
-                                {openrouterProvider.label} ·{" "}
-                                {openrouterProvider.default_model}
+                                {isTts
+                                  ? "Fish Audio (via OpenRouter)"
+                                  : `${openrouterProvider.label} · ${openrouterProvider.default_model}`}
                               </p>
                               <div className="flex items-center gap-2">
                                 <input

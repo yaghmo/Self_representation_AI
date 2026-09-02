@@ -135,6 +135,7 @@ from runtime.tools import (
 import runtime.voice_sample as voice_sample_module
 import runtime.voice as voice_module
 from runtime.voice import (
+    _tts_source,
     build_clone,
     build_design,
     clone_source,
@@ -1187,10 +1188,11 @@ def _prompt_for(model: Model, request: ChatRequest, use_compact: bool = False) -
             # can hit the same loaded model at once, and only the admin agent
             # loop sends tool schemas every turn — `_reject_tools` above
             # already guarantees `request.tools` can't be truthy otherwise.
+            emotion_tags = _tts_source() == "api"
             persona = (
                 build_procedure() if request.tools
-                else build_compact_persona() if use_compact
-                else build_persona()
+                else build_compact_persona(emotion_tags=emotion_tags) if use_compact
+                else build_persona(emotion_tags=emotion_tags)
             )
         return assemble(
             history,
@@ -1890,6 +1892,7 @@ def admin_voice_status() -> dict:
     return {
         "status": sample_status(),
         "synthStatus": voice_status(),
+        "synthSource": _tts_source(),
         "cloneSource": clone_source(),
         "designSource": design_source(),
         "enabled": voice_enabled(),
@@ -1974,6 +1977,14 @@ def admin_voice_design() -> dict:
     afterward, not as part of this response."""
     model = _require_loaded()
     _require_agent(model)
+    if _tts_source() == "api":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "voice design is qwentts-only — api tts has no text-instruction "
+                "synthesis, only a default voice and reference-audio cloning"
+            ),
+        )
     try:
         instruct = voice_design_instruct()
         build_design(instruct, seed=0, language="Auto")

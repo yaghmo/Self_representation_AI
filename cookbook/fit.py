@@ -147,6 +147,8 @@ class Selection:
     context_tokens: int
     placements: dict[Role, Placement] = field(default_factory=dict)
     llm_provider: str | None = None
+    tts_provider: str | None = None
+    tts_voice_gender: str | None = None
 
 
 @dataclass
@@ -200,9 +202,12 @@ def evaluate(
     weight_total = 0.0
 
     api_backed = selection.llm_provider is not None
+    tts_api_backed = selection.tts_provider is not None
 
     for role, placement in selection.placements.items():
         if role == "llm" and api_backed:
+            continue
+        if role == "tts" and tts_api_backed:
             continue
         model = catalogue.model(placement.model_id)
         context = selection.context_tokens if model.kv else 0
@@ -240,6 +245,15 @@ def evaluate(
             f"LLM served by {provider.label} — no local footprint, "
             f"{provider.context_tokens:,} token context"
         )
+
+    if tts_api_backed:
+        tts_provider = catalogue.provider(selection.tts_provider or "")
+        weight = ROLE_WEIGHT["tts"]
+        # Same reasoning as the LLM api_backed branch: a hosted TTS model is
+        # the ceiling here too, not a compromise against a local one.
+        quality += 95.0 * weight
+        weight_total += weight
+        reasons.append(f"TTS served by {tts_provider.label} — no local footprint")
 
     if not budget.has_gpu and any(
         p.device in ("gpu", "transient-gpu") for p in selection.placements.values()
