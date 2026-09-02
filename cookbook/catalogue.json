@@ -357,7 +357,8 @@
       "weights_bytes": 2370598880,
       "runtime_overhead_bytes": 1065374956,
       "devices": [
-        "transient-gpu"
+        "transient-gpu",
+        "cpu"
       ],
       "cloning": true,
       "quality": 88,
@@ -380,7 +381,8 @@
       "weights_bytes": 2333984448,
       "runtime_overhead_bytes": 1101989388,
       "devices": [
-        "transient-gpu"
+        "transient-gpu",
+        "cpu"
       ],
       "cloning": false,
       "quality": 88,

@@ -61,6 +61,11 @@ from .tools import snapshot
 
 logger = get_logger("runtime.voice")
 
+def _tts_device() -> str:
+    config = read_config() or {}
+    return config.get("roles", {}).get("tts", {}).get("device", "transient-gpu")
+
+
 VOICE_DIR = PROFILE_PATH.parent / "voice"
 CLONE_META_PATH = VOICE_DIR / "clone.json"
 CLONE_REF_PATH = VOICE_DIR / "clone_ref.wav"
@@ -248,7 +253,7 @@ def synth_design_once(text: str, language: str = "Auto") -> bytes:
         language = "Auto"
     talker, codec = _talker_and_codec_paths("design")
     with qwentts.LOCK:
-        server = qwentts.TTSServer(talker_path=talker, codec_path=codec)
+        server = qwentts.TTSServer(talker_path=talker, codec_path=codec, device=_tts_device())
         server.start()
         try:
             return _synth_via_server(server, text, language, "design")
@@ -363,7 +368,7 @@ def warm_bubbles(texts: list[str], language: str = "Auto") -> None:
                 _resident_server = None
                 _resident_status = None
             talker, codec = _talker_and_codec_paths(status)
-            server = qwentts.TTSServer(talker_path=talker, codec_path=codec)
+            server = qwentts.TTSServer(talker_path=talker, codec_path=codec, device=_tts_device())
         server.start()
         try:
             if status == "clone":

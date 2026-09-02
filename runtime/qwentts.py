@@ -103,6 +103,7 @@ def _stop_all_servers() -> None:
 
 
 IMAGE = "ghcr.io/serveurpersocom/qwentts.cpp:cuda12"
+CPU_IMAGE = "ghcr.io/serveurpersocom/qwentts.cpp:cpu"
 
 # Single-tenant, one GPU: tts-server and llama-server are the only two VRAM
 # consumers, and there is never a case where two tts-server instances should
@@ -118,6 +119,7 @@ class TTSServer:
     codec_path: Path
     host: str = DEFAULT_HOST
     port: int = 8091
+    device: str = "gpu"
     process: subprocess.Popen | None = None
     reused: bool = False
 
@@ -129,21 +131,31 @@ class TTSServer:
     def container_name(self) -> str:
         return f"qwentts-{self.port}"
 
+    @property
+    def image(self) -> str:
+        # Catalogue/config spell the GPU case "transient-gpu" (see
+        # cookbook/fit.py), not "gpu" — only "cpu" picks the CPU image.
+        return CPU_IMAGE if self.device == "cpu" else IMAGE
+
     def command(self) -> list[str]:
         # talker and codec always sit in the same catalogue-entry directory
         # (see runtime/voice.py's _talker_and_codec_paths) — mount that
         # whole directory once rather than the two files separately.
         model_dir = self.talker_path.parent
-        return [
+        command = [
             "docker", "run", "--rm",
             "--name", self.container_name,
-            "--gpus", "all",
+        ]
+        if self.device != "cpu":
+            command += ["--gpus", "all"]
+        command += [
             "-p", f"{self.port}:8080",
             "-v", f"{_host_path_for(model_dir)}:/models:ro",
             "-e", f"MODEL_PATH=/models/{self.talker_path.name}",
             "-e", f"CODEC_PATH=/models/{self.codec_path.name}",
-            IMAGE,
+            self.image,
         ]
+        return command
 
     def already_running(self) -> bool:
         try:
@@ -160,13 +172,13 @@ class TTSServer:
         # run this image before. Pull it here first, on its own generous
         # budget, so the health-check loop only ever waits on the fast part.
         inspect = subprocess.run(
-            ["docker", "image", "inspect", IMAGE],
+            ["docker", "image", "inspect", self.image],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         if inspect.returncode == 0:
             return
-        logger.info("pulling %s (first use, may take a while)", IMAGE)
-        subprocess.run(["docker", "pull", IMAGE], check=True, timeout=timeout_seconds)
+        logger.info("pulling %s (first use, may take a while)", self.image)
+        subprocess.run(["docker", "pull", self.image], check=True, timeout=timeout_seconds)
 
     def start(self, wait_seconds: int = 60) -> "TTSServer":
         if self.already_running():

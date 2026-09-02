@@ -10,9 +10,6 @@ uv run uvicorn cookbook.api:app --port 8001     # backend
 cd web && npm install && npm run dev   # web UI — http://localhost:3000
 ```
 
-`cookbook/app.py` is the legacy Streamlit front end, kept until the web UI is
-proven out. To run it instead: `uv run streamlit run cookbook/app.py`.
-
 Python is pinned to 3.10 and torch comes from PyTorch's cu126 index — the PyPI
 wheel for Windows is CPU-only, which would make every GPU placement the fitter
 recommends a lie.
@@ -159,7 +156,6 @@ list stays curated. Run it when you feel like it, not automatically.
 | `config.py` | Writes `config/stack.json` |
 | `download.py` | Fetches weights into `models/` |
 | `refresh.py` | Corrects catalogue figures against the hub |
-| `app.py` | Legacy Streamlit front end (replaced by `web/`) |
 | `api.py` | FastAPI backend the web UI calls |
 
 ## Known limitation — read this before trusting a fit
