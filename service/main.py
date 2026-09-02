@@ -138,6 +138,7 @@ from runtime.voice import (
     build_clone,
     build_design,
     clone_source,
+    design_source,
     set_voice_enabled,
     synth as voice_synth,
     synth_design_once,
@@ -1890,6 +1891,7 @@ def admin_voice_status() -> dict:
         "status": sample_status(),
         "synthStatus": voice_status(),
         "cloneSource": clone_source(),
+        "designSource": design_source(),
         "enabled": voice_enabled(),
     }
 
@@ -1989,7 +1991,12 @@ def admin_voice_design() -> dict:
     except Exception as exc:
         logger.exception("voice design failed")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"status": sample_status(), "synthStatus": voice_status(), "cloneSource": clone_source()}
+    return {
+        "status": sample_status(),
+        "synthStatus": voice_status(),
+        "cloneSource": clone_source(),
+        "designSource": design_source(),
+    }
 
 
 @app.delete("/admin/voice/sample")
@@ -2003,7 +2010,12 @@ def admin_voice_sample_delete() -> dict:
     voice_sample_module.SAMPLE_PATH.unlink(missing_ok=True)
     voice_module.CLONE_META_PATH.unlink(missing_ok=True)
     voice_module.CLONE_REF_PATH.unlink(missing_ok=True)
-    return {"status": sample_status(), "synthStatus": voice_status(), "cloneSource": clone_source()}
+    return {
+        "status": sample_status(),
+        "synthStatus": voice_status(),
+        "cloneSource": clone_source(),
+        "designSource": design_source(),
+    }
 
 
 @app.get("/admin/social/list")

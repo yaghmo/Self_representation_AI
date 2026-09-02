@@ -196,15 +196,33 @@ def build_clone(
     logger.info("built voice clone reference (%s) from %s, seed=%d", source, ref_audio, seed)
 
 
-def build_design(instruct: str, seed: int, language: str = "Auto") -> None:
+def build_design(
+    instruct: str,
+    seed: int,
+    language: str = "Auto",
+    source: Literal["bootstrap", "explicit"] = "explicit",
+) -> None:
+    """`source="bootstrap"` marks a design.json _ensure_voice_configured()
+    lazily wrote on the very first synth call, nobody having deliberately
+    reviewed or generated it — see design_source()."""
     VOICE_DIR.mkdir(parents=True, exist_ok=True)
     if DESIGN_PATH.exists():
         snapshot(DESIGN_PATH)
     DESIGN_PATH.write_text(
-        json.dumps({"instruct": instruct, "seed": seed, "language": language}),
+        json.dumps({"instruct": instruct, "seed": seed, "language": language, "source": source}),
         encoding="utf-8",
     )
-    logger.info("built voice design, seed=%d language=%s", seed, language)
+    logger.info("built voice design (%s), seed=%d language=%s", source, seed, language)
+
+
+def design_source() -> Literal["bootstrap", "explicit"] | None:
+    """None when there's no design at all. Older design.json files predate
+    this tag — treated as "bootstrap" since that's the conservative read:
+    nothing confirms a human ever deliberately generated/reviewed it."""
+    if not DESIGN_PATH.exists():
+        return None
+    cached = json.loads(DESIGN_PATH.read_text(encoding="utf-8"))
+    return cached.get("source", "bootstrap")
 
 
 def _ensure_voice_configured() -> Literal["clone", "design"]:
@@ -214,7 +232,7 @@ def _ensure_voice_configured() -> Literal["clone", "design"]:
     two real states. Cheap: just a JSON write, no tts-server involved."""
     status = voice_status()
     if status == "none":
-        build_design(voice_design_instruct(), seed=0, language="Auto")
+        build_design(voice_design_instruct(), seed=0, language="Auto", source="bootstrap")
         return "design"
     return status
 
