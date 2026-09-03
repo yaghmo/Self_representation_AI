@@ -65,6 +65,17 @@
       "notes": "Set base_url and default_model when selecting this. Covers OpenRouter, Groq, DeepSeek, Together, or a llama.cpp server on another machine."
     },
     {
+      "id": "google",
+      "label": "Google (Gemini embeddings)",
+      "adapter": "openai",
+      "api_key_env": "GOOGLE_API_KEY",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "default_model": "gemini-embedding-2",
+      "context_tokens": 0,
+      "free_tier": "1,000 requests/day, 100 RPM, 30K TPM per model (gemini-embedding-001 and gemini-embedding-2 each get a separate 1,000/day pool) — confirmed against a real account's usage dashboard, not just docs",
+      "notes": "Embedding only — runtime/embed_api.py talks to it directly (batchEmbedContents, not the OpenAI chat schema), so `adapter` and `context_tokens` are unused placeholders here, same reason fish-audio's entry has them."
+    },
+    {
       "id": "fish-audio",
       "label": "Fish Audio (direct)",
       "adapter": "openai",

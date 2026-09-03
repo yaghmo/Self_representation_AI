@@ -84,6 +84,7 @@ services:
       XKIRO_API_KEY: ${XKIRO_API_KEY:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       FISH_API_KEY: ${FISH_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
     deploy:
       resources:
         reservations:
@@ -125,6 +126,7 @@ services:
       XKIRO_API_KEY: ${XKIRO_API_KEY:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       FISH_API_KEY: ${FISH_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
     deploy:
       resources:
         reservations:

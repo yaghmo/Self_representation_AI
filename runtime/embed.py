@@ -37,6 +37,32 @@ class EmbeddingNotConfigured(RuntimeError):
     """No embedding model in the stack config, or its weights are absent."""
 
 
+def embedder_from_config(stack_path: Path | None = None):
+    """Return an `Embedder` for whichever role is actually configured —
+    `bge_embedder()` (local) or Gemini's api one (runtime/embed_api.py),
+    picked the same way runtime/voice.py picks between qwentts and
+    voice_api.py: by `roles.embedding.source` in config/stack.json.
+    """
+    stack_path = stack_path or STACK_PATH
+    if not stack_path.exists():
+        raise EmbeddingNotConfigured(
+            f"{stack_path} is missing — run the cookbook to fit a stack first."
+        )
+    config = json.loads(stack_path.read_text(encoding="utf-8"))
+    role = config.get("roles", {}).get("embedding")
+    if not role:
+        raise EmbeddingNotConfigured(
+            "no embedding role in the stack config — run the cookbook and pick "
+            "an embedding model before indexing stories."
+        )
+    if role.get("source") == "api":
+        from . import embed_api
+
+        model = role.get("model", embed_api.DEFAULT_MODEL)
+        return lambda texts: embed_api.embed(texts, model=model)
+    return bge_embedder(stack_path)
+
+
 def bge_embedder(stack_path: Path | None = None):
     """Return an `Embedder`: texts in, L2-normalised float32 vectors out."""
     stack_path = stack_path or STACK_PATH

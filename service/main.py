@@ -60,7 +60,7 @@ from runtime.bible import (
     profile_section_chunks,
     voice_design_instruct,
 )
-from runtime.embed import EmbeddingNotConfigured, bge_embedder
+from runtime.embed import EmbeddingNotConfigured, embedder_from_config
 from runtime.index import Embedder, Index, all_chunks, build as build_index, load_index
 from runtime.model import Model, ModelNotDownloaded
 from runtime.posts import list_posts, refresh_posts
@@ -176,7 +176,7 @@ def _get_recall() -> tuple[Index, Index, Embedder] | None:
         return None
     if _story_index is None or _profile_index is None or _story_embed is None:
         try:
-            _story_embed = bge_embedder()
+            _story_embed = embedder_from_config()
             _story_index = load_index()
             _profile_index = build_index(profile_section_chunks(), _story_embed)
         except EmbeddingNotConfigured as exc:

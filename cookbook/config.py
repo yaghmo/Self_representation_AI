@@ -41,6 +41,8 @@ def build_config(fit: Fit, catalogue: Catalogue, probe: Probe, agent: bool) -> d
             continue
         if role == "tts" and selection.tts_provider:
             continue
+        if role == "embedding" and selection.embedding_provider:
+            continue
         model = catalogue.model(placement.model_id)
         roles[role] = {
             "source": "local",
@@ -76,6 +78,15 @@ def build_config(fit: Fit, catalogue: Catalogue, probe: Probe, agent: bool) -> d
         }
         if selection.tts_voice_gender:
             roles["tts"]["voice_gender"] = selection.tts_voice_gender
+
+    if selection.embedding_provider:
+        provider = catalogue.provider(selection.embedding_provider)
+        roles["embedding"] = {
+            "source": "api",
+            "provider": provider.id,
+            "api_key_env": provider.api_key_env,
+            "model": provider.default_model,
+        }
 
     return {
         "version": CONFIG_VERSION,

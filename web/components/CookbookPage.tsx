@@ -233,6 +233,9 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   // same OpenRouter key, tested once covers both roles.
   const [ttsProvider, setTtsProvider] = useState<string | null>(null)
   const [ttsVoiceGender, setTtsVoiceGender] = useState<"male" | "female" | null>(null)
+  // Same shape again for embedding — Gemini's embedding models have no
+  // local model/device to pick either.
+  const [embeddingProvider, setEmbeddingProvider] = useState<string | null>(null)
   const [apiKeyInput, setApiKeyInput] = useState("")
   const [keyTest, setKeyTest] = useState<
     { state: "idle" } | { state: "testing" } | { state: "ok"; detail: string } | { state: "error"; detail: string }
@@ -276,6 +279,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   // other providers still work by hand-editing .env, just without the test.
   const llmApiProvider = catalogue?.providers.find((p) => p.id === "xkiro") ?? null
   const ttsApiProvider = catalogue?.providers.find((p) => p.id === "fish-audio") ?? null
+  const embeddingApiProvider = catalogue?.providers.find((p) => p.id === "google") ?? null
 
   const wholeBudget = useMemo(
     () => (probe ? computeBudget(probe, "whole-machine") : null),
@@ -357,6 +361,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
     for (const role of roles) {
       if (role === "llm" && llmProvider) continue
       if (role === "tts" && ttsProvider) continue
+      if (role === "embedding" && embeddingProvider) continue
       const p = manualPlacements[role]
       if (p) placements[role] = { model: p.model, device: p.device }
     }
@@ -366,8 +371,17 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
       llm_provider: llmProvider,
       tts_provider: ttsProvider,
       tts_voice_gender: ttsVoiceGender,
+      embedding_provider: embeddingProvider,
     }
-  }, [manualPlacements, contextTokens, roles, llmProvider, ttsProvider, ttsVoiceGender])
+  }, [
+    manualPlacements,
+    contextTokens,
+    roles,
+    llmProvider,
+    ttsProvider,
+    ttsVoiceGender,
+    embeddingProvider,
+  ])
 
   // Manual fit only evaluates while on the Fit step.
   useEffect(() => {
@@ -435,6 +449,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
           llm_provider: mode === "manual" ? llmProvider : null,
           tts_provider: mode === "manual" ? ttsProvider : null,
           tts_voice_gender: mode === "manual" ? ttsVoiceGender : null,
+          embedding_provider: mode === "manual" ? embeddingProvider : null,
         },
         basis,
         whole_bible_bonus: wholeBibleBonus,
@@ -965,8 +980,21 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                     const info = ROLE_INFO[role]
                     const isLlm = role === "llm"
                     const isTts = role === "tts"
-                    const activeProvider = isTts ? ttsApiProvider : isLlm ? llmApiProvider : null
-                    const activeSelected = isTts ? ttsProvider : isLlm ? llmProvider : null
+                    const isEmbedding = role === "embedding"
+                    const activeProvider = isTts
+                      ? ttsApiProvider
+                      : isLlm
+                        ? llmApiProvider
+                        : isEmbedding
+                          ? embeddingApiProvider
+                          : null
+                    const activeSelected = isTts
+                      ? ttsProvider
+                      : isLlm
+                        ? llmProvider
+                        : isEmbedding
+                          ? embeddingProvider
+                          : null
                     return (
                       <div key={role} className="space-y-2 rounded-xl border p-4">
                         <div className="flex items-center gap-2 text-sm font-medium capitalize">
@@ -1011,6 +1039,25 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                             >
                               Use an API key instead of downloading a model — Fish Audio
                               direct, no text-instruction voice design, cloning still works
+                            </Label>
+                          </div>
+                        )}
+                        {isEmbedding && embeddingApiProvider && (
+                          <div className="flex items-center gap-2 pb-1">
+                            <Checkbox
+                              id="embedding-provider-toggle"
+                              checked={embeddingProvider !== null}
+                              onCheckedChange={(c) => {
+                                setEmbeddingProvider(c === true ? embeddingApiProvider.id : null)
+                                setKeyTest({ state: "idle" })
+                              }}
+                            />
+                            <Label
+                              htmlFor="embedding-provider-toggle"
+                              className="cursor-pointer text-xs text-muted-foreground"
+                            >
+                              Use an API key instead of downloading a model — Gemini
+                              embeddings, 1,000 requests/day free
                             </Label>
                           </div>
                         )}

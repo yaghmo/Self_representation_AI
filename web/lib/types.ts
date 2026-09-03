@@ -107,6 +107,7 @@ export interface Selection {
   llm_provider?: string | null;
   tts_provider?: string | null;
   tts_voice_gender?: "male" | "female" | null;
+  embedding_provider?: string | null;
 }
 
 export interface DownloadModelStatus {

@@ -149,6 +149,7 @@ class Selection:
     llm_provider: str | None = None
     tts_provider: str | None = None
     tts_voice_gender: str | None = None
+    embedding_provider: str | None = None
 
 
 @dataclass
@@ -203,11 +204,14 @@ def evaluate(
 
     api_backed = selection.llm_provider is not None
     tts_api_backed = selection.tts_provider is not None
+    embedding_api_backed = selection.embedding_provider is not None
 
     for role, placement in selection.placements.items():
         if role == "llm" and api_backed:
             continue
         if role == "tts" and tts_api_backed:
+            continue
+        if role == "embedding" and embedding_api_backed:
             continue
         model = catalogue.model(placement.model_id)
         context = selection.context_tokens if model.kv else 0
@@ -254,6 +258,14 @@ def evaluate(
         quality += 95.0 * weight
         weight_total += weight
         reasons.append(f"TTS served by {tts_provider.label} — no local footprint")
+
+    if embedding_api_backed:
+        embedding_provider = catalogue.provider(selection.embedding_provider or "")
+        weight = ROLE_WEIGHT["embedding"]
+        # Same reasoning as the other api_backed branches.
+        quality += 95.0 * weight
+        weight_total += weight
+        reasons.append(f"Embedding served by {embedding_provider.label} — no local footprint")
 
     if not budget.has_gpu and any(
         p.device in ("gpu", "transient-gpu") for p in selection.placements.values()

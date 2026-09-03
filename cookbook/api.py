@@ -140,6 +140,12 @@ def _selection_dict(selection: Selection, catalogue: Catalogue) -> dict:
                 "device": None,
                 "provider": catalogue.provider(selection.tts_provider).label,
             }
+        elif role == "embedding" and selection.embedding_provider:
+            out[role] = {
+                "model": None,
+                "device": None,
+                "provider": catalogue.provider(selection.embedding_provider).label,
+            }
         elif placement:
             out[role] = {"model": placement.model_id, "device": placement.device}
     return out
@@ -202,6 +208,7 @@ class SelectionIn(BaseModel):
     llm_provider: str | None = None  # set instead of placements["llm"] for an API-backed LLM
     tts_provider: str | None = None  # set instead of placements["tts"] for an API-backed TTS
     tts_voice_gender: str | None = None  # "male" | "female", api tts only
+    embedding_provider: str | None = None  # set instead of placements["embedding"] for an API-backed embedder
 
 
 class FitIn(BaseModel):
@@ -233,6 +240,7 @@ def _selection_from(s: SelectionIn) -> Selection:
         llm_provider=s.llm_provider,
         tts_provider=s.tts_provider,
         tts_voice_gender=s.tts_voice_gender,
+        embedding_provider=s.embedding_provider,
     )
 
 
@@ -367,24 +375,34 @@ def api_provider_test(body: ProviderTestIn) -> dict:
         provider = catalogue.provider(body.provider_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    # fish-audio speaks its own TTS API, not the OpenAI chat schema its
-    # `adapter: "openai"` value nominally claims (that field only matters to
-    # runtime/backend.py's LLM adapters, which the TTS role never reaches) —
-    # so it needs its own lightweight probe rather than the generic
-    # /models check every real OpenAI-compatible LLM provider gets.
+    # fish-audio and google speak their own APIs, not the OpenAI chat schema
+    # their `adapter: "openai"` value nominally claims (that field only
+    # matters to runtime/backend.py's LLM adapters, which the TTS/embedding
+    # roles never reach) — each needs its own lightweight probe rather than
+    # the generic /models check every real OpenAI-compatible LLM provider
+    # gets. google in particular auths via a `?key=` query param, not a
+    # Bearer header, so the generic path would send a valid key the wrong
+    # way and always report it as bad.
+    base_url = (provider.base_url or "").rstrip("/")
     if provider.id == "fish-audio":
-        test_url = f"{(provider.base_url or '').rstrip('/')}/wallet/self/api-credit"
+        test_url = f"{base_url}/wallet/self/api-credit"
+        params, headers = {}, {"Authorization": f"Bearer {body.api_key}"}
+    elif provider.id == "google":
+        test_url = f"{base_url}/models"
+        params, headers = {"key": body.api_key}, {}
     elif provider.adapter != "openai":
         raise HTTPException(
             status_code=400,
             detail=f"no test support for the {provider.adapter!r} adapter yet",
         )
     else:
-        test_url = f"{(provider.base_url or '').rstrip('/')}/models"
+        test_url = f"{base_url}/models"
+        params, headers = {}, {"Authorization": f"Bearer {body.api_key}"}
     try:
         resp = httpx.get(
             test_url,
-            headers={"Authorization": f"Bearer {body.api_key}"},
+            params=params,
+            headers=headers,
             timeout=10.0,
         )
     except httpx.HTTPError as exc:
