@@ -272,9 +272,10 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
     return r
   }, [useEmbedding, useTts])
 
-  // Only OpenRouter is wired up for the in-cookbook key test right now —
+  // Only these two are wired up for the in-cookbook key test right now —
   // other providers still work by hand-editing .env, just without the test.
-  const openrouterProvider = catalogue?.providers.find((p) => p.id === "openrouter") ?? null
+  const llmApiProvider = catalogue?.providers.find((p) => p.id === "xkiro") ?? null
+  const ttsApiProvider = catalogue?.providers.find((p) => p.id === "fish-audio") ?? null
 
   const wholeBudget = useMemo(
     () => (probe ? computeBudget(probe, "whole-machine") : null),
@@ -964,6 +965,8 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                     const info = ROLE_INFO[role]
                     const isLlm = role === "llm"
                     const isTts = role === "tts"
+                    const activeProvider = isTts ? ttsApiProvider : llmApiProvider
+                    const activeSelected = isTts ? ttsProvider : llmProvider
                     return (
                       <div key={role} className="space-y-2 rounded-xl border p-4">
                         <div className="flex items-center gap-2 text-sm font-medium capitalize">
@@ -973,13 +976,13 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                             — {info.blurb}
                           </span>
                         </div>
-                        {isLlm && openrouterProvider && (
+                        {isLlm && llmApiProvider && (
                           <div className="flex items-center gap-2 pb-1">
                             <Checkbox
                               id="llm-provider-toggle"
                               checked={llmProvider !== null}
                               onCheckedChange={(c) => {
-                                setLlmProvider(c === true ? openrouterProvider.id : null)
+                                setLlmProvider(c === true ? llmApiProvider.id : null)
                                 setKeyTest({ state: "idle" })
                               }}
                             />
@@ -987,18 +990,18 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                               htmlFor="llm-provider-toggle"
                               className="cursor-pointer text-xs text-muted-foreground"
                             >
-                              Use an API key instead of downloading a model — OpenRouter
+                              Use an API key instead of downloading a model — xKiro
                               only, for now
                             </Label>
                           </div>
                         )}
-                        {isTts && openrouterProvider && (
+                        {isTts && ttsApiProvider && (
                           <div className="flex items-center gap-2 pb-1">
                             <Checkbox
                               id="tts-provider-toggle"
                               checked={ttsProvider !== null}
                               onCheckedChange={(c) => {
-                                setTtsProvider(c === true ? openrouterProvider.id : null)
+                                setTtsProvider(c === true ? ttsApiProvider.id : null)
                                 setKeyTest({ state: "idle" })
                               }}
                             />
@@ -1007,8 +1010,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                               className="cursor-pointer text-xs text-muted-foreground"
                             >
                               Use an API key instead of downloading a model — Fish Audio
-                              via OpenRouter, no text-instruction voice design, cloning
-                              still works
+                              direct, no text-instruction voice design, cloning still works
                             </Label>
                           </div>
                         )}
@@ -1037,13 +1039,10 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                           </div>
                         )}
                         <div className="flex flex-wrap items-center gap-4">
-                          {(isLlm && llmProvider !== null && openrouterProvider) ||
-                          (isTts && ttsProvider !== null && openrouterProvider) ? (
+                          {activeProvider && activeSelected !== null ? (
                             <div className="flex w-full flex-col gap-2">
                               <p className="text-xs text-muted-foreground">
-                                {isTts
-                                  ? "Fish Audio (via OpenRouter)"
-                                  : `${openrouterProvider.label} · ${openrouterProvider.default_model}`}
+                                {activeProvider.label} · {activeProvider.default_model}
                               </p>
                               <div className="flex items-center gap-2">
                                 <input
@@ -1054,7 +1053,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                                     setApiKeyInput(e.target.value)
                                     setKeyTest({ state: "idle" })
                                   }}
-                                  placeholder={`${openrouterProvider.api_key_env}…`}
+                                  placeholder={`${activeProvider.api_key_env}…`}
                                   className="h-9 flex-1 rounded-md border bg-background px-3 text-sm"
                                 />
                                 <Button
@@ -1066,7 +1065,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                                     setKeyTest({ state: "testing" })
                                     try {
                                       const res = await postProviderTest(
-                                        openrouterProvider.id,
+                                        activeProvider.id,
                                         apiKeyInput
                                       )
                                       setKeyTest(

@@ -367,14 +367,23 @@ def api_provider_test(body: ProviderTestIn) -> dict:
         provider = catalogue.provider(body.provider_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if provider.adapter != "openai":
+    # fish-audio speaks its own TTS API, not the OpenAI chat schema its
+    # `adapter: "openai"` value nominally claims (that field only matters to
+    # runtime/backend.py's LLM adapters, which the TTS role never reaches) —
+    # so it needs its own lightweight probe rather than the generic
+    # /models check every real OpenAI-compatible LLM provider gets.
+    if provider.id == "fish-audio":
+        test_url = f"{(provider.base_url or '').rstrip('/')}/wallet/self/api-credit"
+    elif provider.adapter != "openai":
         raise HTTPException(
             status_code=400,
             detail=f"no test support for the {provider.adapter!r} adapter yet",
         )
+    else:
+        test_url = f"{(provider.base_url or '').rstrip('/')}/models"
     try:
         resp = httpx.get(
-            f"{(provider.base_url or '').rstrip('/')}/models",
+            test_url,
             headers={"Authorization": f"Bearer {body.api_key}"},
             timeout=10.0,
         )
