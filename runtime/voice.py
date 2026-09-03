@@ -131,6 +131,11 @@ _ABBREVIATIONS = {
     "lmao": "laughing my ass off",
     "brb": "be right back",
     "fyi": "for your information",
+    "ppl": "people",
+    "rn": "right now",
+    "wbu": "what about you",
+    "sm": "so much",
+    "rly": "really",
 }
 _ABBREVIATION_RE = re.compile(
     r"\b(" + "|".join(re.escape(a) for a in _ABBREVIATIONS) + r")\b",

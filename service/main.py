@@ -36,7 +36,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 # Loads repo-root .env (TWITCH_CLIENT_ID/SECRET, etc) into os.environ before
@@ -65,11 +65,6 @@ from runtime.index import Embedder, Index, all_chunks, build as build_index, loa
 from runtime.model import Model, ModelNotDownloaded
 from runtime.posts import list_posts, refresh_posts
 from runtime.recall import recall, recall_schema
-from runtime.tiktok_oauth import InvalidState
-from runtime.tiktok_oauth import authorize_url as tiktok_authorize_url
-from runtime.tiktok_oauth import connection_status as tiktok_connection_status
-from runtime.tiktok_oauth import disconnect as tiktok_disconnect
-from runtime.tiktok_oauth import handle_callback as tiktok_handle_callback
 from runtime.social import (
     SocialAlreadyExists,
     SocialNotFound,
@@ -166,11 +161,6 @@ _story_embed = None
 _story_unavailable: str = ""
 
 MAX_RECALL_ITERATIONS = 3
-
-# Where the browser lands after a TikTok OAuth callback — the frontend's
-# admin page, not this backend (the callback itself is served here, on
-# whatever tunnel TIKTOK_REDIRECT_URI points at, but the UI lives on Next).
-ADMIN_URL = os.environ.get("ADMIN_URL", "http://localhost:3000/admin")
 
 
 def _get_recall() -> tuple[Index, Index, Embedder] | None:
@@ -2102,54 +2092,6 @@ def admin_social_posts_refresh() -> dict:
     model = _require_loaded()
     _require_agent(model)
     return {"posts": refresh_posts()}
-
-
-@app.get("/admin/tiktok/status")
-def admin_tiktok_status() -> dict:
-    model = _require_loaded()
-    _require_agent(model)
-    return tiktok_connection_status()
-
-
-@app.get("/admin/tiktok/login")
-def admin_tiktok_login() -> dict:
-    """Returns the URL for the admin page to redirect the browser to —
-    can't do the redirect itself, since TIKTOK_CLIENT_KEY absence needs to
-    surface as a normal JSON error, not a broken redirect."""
-    model = _require_loaded()
-    _require_agent(model)
-    redirect_uri = os.environ.get("TIKTOK_REDIRECT_URI")
-    if not redirect_uri:
-        raise HTTPException(status_code=500, detail="TIKTOK_REDIRECT_URI not configured")
-    try:
-        return {"authorizeUrl": tiktok_authorize_url(redirect_uri)}
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.get("/admin/tiktok/callback")
-def admin_tiktok_callback(code: str, state: str) -> RedirectResponse:
-    """TikTok redirects the creator's browser here directly after consent —
-    a top-level navigation, not a fetch from our own admin JS, so this
-    can't return JSON on success; it lands back on the admin page instead,
-    with a query param the admin UI reads to show the result."""
-    redirect_uri = os.environ.get("TIKTOK_REDIRECT_URI", "")
-    try:
-        tiktok_handle_callback(code, state, redirect_uri)
-        status = "connected"
-    except InvalidState:
-        status = "invalid_state"
-    except Exception:
-        status = "failed"
-    return RedirectResponse(url=f"{ADMIN_URL}?tiktok={status}")
-
-
-@app.post("/admin/tiktok/disconnect")
-def admin_tiktok_disconnect() -> dict:
-    model = _require_loaded()
-    _require_agent(model)
-    tiktok_disconnect()
-    return {"connected": False}
 
 
 @app.post("/admin/social/add")

@@ -33,6 +33,12 @@ export function isPlaying(id: string): boolean {
   return playingId === id
 }
 
+// api tts resolves the blob so quickly that clicking Play right as the
+// button appears can outrace the browser actually registering the fresh
+// blob URL — first click plays nothing, second click (a beat later) works.
+// This delay is a buffer for that gap, not a fix for a slow request.
+const READY_BUFFER_MS = 400
+
 // Fire-and-forget, called once a bubble's text is final. No voice
 // configured, or the request fails, both land on "error" — the button
 // just never appears, same silent-fail contract the old SpeakButton had.
@@ -43,12 +49,15 @@ export function warm(id: string, text: string): void {
   postVoiceSpeak(text)
     .then((blob) => {
       urls.set(id, URL.createObjectURL(blob))
-      statuses.set(id, "ready")
+      setTimeout(() => {
+        statuses.set(id, "ready")
+        notify()
+      }, READY_BUFFER_MS)
     })
     .catch(() => {
       statuses.set(id, "error")
+      notify()
     })
-    .finally(notify)
 }
 
 function getAudio(id: string, url: string): HTMLAudioElement {

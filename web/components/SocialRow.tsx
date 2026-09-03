@@ -13,8 +13,6 @@ export function SocialRow({
   bio,
   actions,
   proxyPfp = true,
-  connected,
-  onConnect,
   href,
 }: {
   platform: string;
@@ -29,10 +27,6 @@ export function SocialRow({
   // only serves already-saved URLs. The not-yet-saved preview row
   // (SocialDialog) passes false and renders the raw URL instead.
   proxyPfp?: boolean;
-  // undefined = no OAuth concept for this platform (no dot, not "gray").
-  // Pass true/false only for a platform with a real connect/disconnect flow.
-  connected?: boolean;
-  onConnect?: () => void;
   // Set only for the admin's saved-socials list, so the creator can open
   // their own link — the not-yet-saved preview row has nowhere to send it.
   href?: string;
@@ -76,22 +70,6 @@ export function SocialRow({
             {formatCount(followerCount)} followers
           </span>
         )}
-        {connected !== undefined &&
-          (connected ? (
-            <span className="flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-              <span className="size-1.5 rounded-full bg-green-500" />
-              Connected
-            </span>
-          ) : (
-            <button
-              type="button"
-              onClick={onConnect}
-              className="flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <span className="size-1.5 rounded-full bg-muted-foreground" />
-              Connect
-            </button>
-          ))}
         {actions && <div className="ml-auto flex gap-1">{actions}</div>}
       </div>
       {bio && <p className="mt-1 pl-7 text-xs text-muted-foreground">{bio}</p>}

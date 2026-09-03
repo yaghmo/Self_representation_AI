@@ -14,12 +14,19 @@ import { StoryComposer } from "@/components/chat/StoryComposer";
 import { HelpDialog } from "@/components/chat/HelpDialog";
 import { MarkdownMessage } from "@/components/chat/Markdown";
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({ message, chatIconSrc }: { message: Message; chatIconSrc: string | null }) {
   const isUser = message.role === "user";
   return (
     <div className={cn("flex gap-3", isUser && "flex-row-reverse")}>
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
-        {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted">
+        {isUser ? (
+          <User className="h-4 w-4" />
+        ) : chatIconSrc ? (
+          // eslint-disable-next-line @next/next/no-img-element -- proxied, arbitrary-origin image, same as SocialRow's
+          <img src={chatIconSrc} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <Bot className="h-4 w-4" />
+        )}
       </div>
       <div
         className={cn(
@@ -77,6 +84,7 @@ export function ChatPanel({
   onStoryProposal,
   thinking,
   onThinkingChange,
+  chatIconSrc = null,
 }: {
   transcript: Message[];
   steps: Step[];
@@ -86,6 +94,9 @@ export function ChatPanel({
   onStoryProposal: (proposal: Proposal) => void;
   thinking: boolean;
   onThinkingChange: (next: boolean) => void;
+  // Creator's set chat avatar (same slot the fan widget uses) — falls back
+  // to the plain Bot icon when nothing's set, same as the fan side.
+  chatIconSrc?: string | null;
 }) {
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -118,7 +129,7 @@ export function ChatPanel({
             </div>
           )}
           {transcript.map((message, i) => (
-            <MessageBubble key={i} message={message} />
+            <MessageBubble key={i} message={message} chatIconSrc={chatIconSrc} />
           ))}
           {steps
             .filter((step) => step.kind !== "answer" && step.kind !== "stopped")

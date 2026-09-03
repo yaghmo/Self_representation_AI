@@ -209,22 +209,3 @@ export function saveContactEmail(email: string | null): Promise<{ contactEmail: 
 export function refreshPosts(): Promise<{ posts: unknown[] }> {
   return request("/admin/social/posts/refresh", { method: "POST" })
 }
-
-export interface TiktokStatus {
-  connected: boolean
-  openId?: string
-  username?: string | null
-  scope?: string
-}
-
-export function tiktokStatus(): Promise<TiktokStatus> {
-  return request("/admin/tiktok/status")
-}
-
-export function tiktokLoginUrl(): Promise<{ authorizeUrl: string }> {
-  return request("/admin/tiktok/login")
-}
-
-export function tiktokDisconnect(): Promise<{ connected: boolean }> {
-  return request("/admin/tiktok/disconnect", { method: "POST" })
-}

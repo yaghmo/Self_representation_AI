@@ -25,7 +25,14 @@ export function parseSocialUrl(url: string): ParsedSocialUrl | null {
   try {
     parsed = new URL(url)
   } catch {
-    return null
+    // A bare domain pasted without "https://" (e.g. copied from a bio field
+    // that displays links without a scheme) is a real link, not garbage —
+    // only retry once, so genuine non-URL text ("not a url") still fails.
+    try {
+      parsed = new URL(`https://${url}`)
+    } catch {
+      return null
+    }
   }
   const host = parsed.hostname.replace(/^www\./, "")
   const platform = DOMAIN_PLATFORMS[host]

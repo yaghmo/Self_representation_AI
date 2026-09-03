@@ -14,8 +14,6 @@ from itertools import zip_longest
 from .bible import PROFILE_PATH
 from .og_scrape import list_instagram_posts
 from .social import list_socials
-from .tiktok_oauth import is_connected_to as tiktok_oauth_matches
-from .tiktok_oauth import list_videos as list_tiktok_oauth_videos
 from .tiktok_scrape import list_videos as list_tiktok_videos
 from .twitch_scrape import list_vods as list_twitch_vods
 from .x_scrape import list_posts as list_x_posts
@@ -43,22 +41,7 @@ def _scrape_social(social: dict) -> list[dict]:
     elif platform == "twitch":
         raw = list_twitch_vods(social["username"], POSTS_PER_PLATFORM)
     elif platform == "tiktok":
-        # The OAuth Display API once the creator has connected their
-        # account — real metadata (title/thumbnail/id), no yt-dlp/oEmbed
-        # fragility. Playback still goes through TikTok's embed widget
-        # either way; this only makes the *listing* reliable.
-        #
-        # "Connected" alone isn't enough to trust it, though — the OAuth
-        # session could be logged into a different account than the one
-        # actually linked here (wrong login, a stale test connection), so
-        # this only uses it when the connected account's own @handle
-        # matches this social's. Any mismatch falls back to the scrape,
-        # same as not being connected at all.
-        raw = (
-            list_tiktok_oauth_videos(POSTS_PER_PLATFORM)
-            if tiktok_oauth_matches(social["username"])
-            else list_tiktok_videos(social["url"], POSTS_PER_PLATFORM)
-        )
+        raw = list_tiktok_videos(social["url"], POSTS_PER_PLATFORM)
     elif platform == "instagram":
         raw = list_instagram_posts(social["url"], POSTS_PER_PLATFORM)
     elif platform == "x":

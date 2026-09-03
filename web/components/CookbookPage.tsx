@@ -965,8 +965,8 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                     const info = ROLE_INFO[role]
                     const isLlm = role === "llm"
                     const isTts = role === "tts"
-                    const activeProvider = isTts ? ttsApiProvider : llmApiProvider
-                    const activeSelected = isTts ? ttsProvider : llmProvider
+                    const activeProvider = isTts ? ttsApiProvider : isLlm ? llmApiProvider : null
+                    const activeSelected = isTts ? ttsProvider : isLlm ? llmProvider : null
                     return (
                       <div key={role} className="space-y-2 rounded-xl border p-4">
                         <div className="flex items-center gap-2 text-sm font-medium capitalize">

@@ -32,6 +32,17 @@ describe("parseSocialUrl", () => {
   it("returns null for a non-URL string", () => {
     expect(parseSocialUrl("not a url")).toBeNull()
   })
+
+  it("parses a bare domain pasted without a scheme", () => {
+    expect(parseSocialUrl("throne.com/handle")).toEqual({
+      platform: "throne",
+      username: "handle",
+    })
+  })
+
+  it("still returns null for an unrecognized bare domain", () => {
+    expect(parseSocialUrl("example.com/handle")).toBeNull()
+  })
 })
 
 describe("buildSocialUrl", () => {

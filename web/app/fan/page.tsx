@@ -26,6 +26,14 @@ export default function FanPage() {
   // Only ever flips true for a video pfp — an image pfp has nothing to
   // play, so the intro is skipped from the start (see the profile effect).
   const [introPlaying, setIntroPlaying] = useState(false)
+  // Whether there's even a video intro to show is profile data — unknown
+  // until getPublicProfile() resolves. Rendering the real page in that gap
+  // means it flashes fully visible, then vanishes the instant introPlaying
+  // flips true. "Already seen this hour" IS known synchronously though
+  // (localStorage), so that — the common case, repeat visits — skips the
+  // wait entirely; only a genuine first-visit-this-hour holds the page back
+  // for the one API call needed to find out.
+  const [introDecided, setIntroDecided] = useState(() => introAlreadySeen())
 
   const filteredPosts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -68,6 +76,7 @@ export default function FanPage() {
         markIntroSeen()
         setIntroPlaying(true)
       }
+      setIntroDecided(true)
     })
     getPublicPosts().then(setPosts)
   }, [])
@@ -83,30 +92,34 @@ export default function FanPage() {
 
   return (
     <div className="min-h-[calc(100vh-2.5rem)] pb-24">
-      {!introPlaying && (
-        <SearchBar
-          expanded={expanded}
-          posts={posts}
-          value={searchQuery}
-          onChange={setSearchQuery}
-        />
-      )}
-      <ProfileHeader
-        profile={profile}
-        expanded={expanded}
-        introPlaying={introPlaying}
-        onIntroEnded={() => setIntroPlaying(false)}
-        onCollapse={() => setExpanded(false)}
-      />
-      {!introPlaying && (
+      {introDecided && (
         <>
-          <PostGrid posts={filteredPosts} expanded={expanded} />
-          <BottomBar />
-          <ChatWidget
-            botName={profile.name}
-            chatIconUrl={profile.chatIconUrl}
-            chatIconMime={profile.chatIconMime}
+          {!introPlaying && (
+            <SearchBar
+              expanded={expanded}
+              posts={posts}
+              value={searchQuery}
+              onChange={setSearchQuery}
+            />
+          )}
+          <ProfileHeader
+            profile={profile}
+            expanded={expanded}
+            introPlaying={introPlaying}
+            onIntroEnded={() => setIntroPlaying(false)}
+            onCollapse={() => setExpanded(false)}
           />
+          {!introPlaying && (
+            <>
+              <PostGrid posts={filteredPosts} expanded={expanded} />
+              <BottomBar />
+              <ChatWidget
+                botName={profile.name}
+                chatIconUrl={profile.chatIconUrl}
+                chatIconMime={profile.chatIconMime}
+              />
+            </>
+          )}
         </>
       )}
     </div>

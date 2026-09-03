@@ -9,13 +9,9 @@ import {
   refreshPosts,
   saveContactEmail,
   SocialApiError,
-  tiktokDisconnect,
-  tiktokLoginUrl,
-  tiktokStatus,
   updateSocial,
   type Social,
   type SocialMention,
-  type TiktokStatus,
 } from "@/lib/admin/socialApi";
 import { buildSocialUrl, parseSocialUrl } from "@/lib/admin/socialUrl";
 import { platformIcon } from "@/lib/platformIcon";
@@ -104,32 +100,6 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
   const [refreshingPosts, setRefreshingPosts] = useState(false);
   const [postsStatus, setPostsStatus] = useState<string | null>(null);
 
-  const [tiktok, setTiktok] = useState<TiktokStatus | null>(null);
-  const [tiktokBusy, setTiktokBusy] = useState(false);
-
-  async function handleTiktokLogin() {
-    setTiktokBusy(true);
-    try {
-      const { authorizeUrl } = await tiktokLoginUrl();
-      window.location.href = authorizeUrl;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setTiktokBusy(false);
-    }
-  }
-
-  async function handleTiktokDisconnect() {
-    setTiktokBusy(true);
-    try {
-      await tiktokDisconnect();
-      setTiktok({ connected: false });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setTiktokBusy(false);
-    }
-  }
-
   async function handleRefreshPosts() {
     setRefreshingPosts(true);
     setPostsStatus(null);
@@ -214,7 +184,6 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
       setChatIconMime(res.chatIconMime);
       setLandingPfpMime(res.landingPfpMime);
       setError(null);
-      tiktokStatus().then(setTiktok).catch(() => setTiktok({ connected: false }));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -657,8 +626,6 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
                 pfpUrl={social.pfpUrl}
                 bio={social.bio}
                 href={social.url}
-                connected={social.platform === "tiktok" ? tiktok?.connected ?? false : undefined}
-                onConnect={handleTiktokLogin}
                 actions={
                   <>
                     <Button
@@ -701,54 +668,6 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
           <p className="text-xs text-muted-foreground">
             {postsStatus ?? "Pulls recent videos/VODs from linked YouTube, Twitch, TikTok"}
           </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {tiktok?.connected ? (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleTiktokDisconnect}
-                disabled={tiktokBusy}
-              >
-                {tiktokBusy && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-                Disconnect TikTok
-              </Button>
-              {(() => {
-                const linkedTiktok = socials.find((s) => s.platform === "tiktok");
-                const linked = linkedTiktok?.username?.replace(/^@/, "");
-                const connected = tiktok.username;
-                const matches =
-                  !!linked && !!connected && linked.toLowerCase() === connected.toLowerCase();
-                return matches ? (
-                  <p className="text-xs text-muted-foreground">
-                    Connected as @{connected} — video listing uses the real TikTok API
-                  </p>
-                ) : (
-                  <p className="text-xs text-amber-600">
-                    Connected as @{connected ?? "unknown"}, but the linked profile is @
-                    {linked ?? "?"} — listing still falls back to scraping until these match
-                  </p>
-                );
-              })()}
-            </>
-          ) : (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleTiktokLogin}
-                disabled={tiktokBusy}
-              >
-                {tiktokBusy && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-                Connect TikTok
-              </Button>
-              <p className="text-xs text-muted-foreground">
-                Optional — makes TikTok post listing reliable instead of scraped
-              </p>
-            </>
-          )}
         </div>
 
         <DialogFooter>

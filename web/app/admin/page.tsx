@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Settings } from "lucide-react";
 import { useAgentLoop, type GenerationParams } from "@/hooks/useAgentLoop";
 import { ChatPanel } from "@/components/chat/ChatPanel";
@@ -9,6 +9,8 @@ import { ModelSidebar } from "@/components/chat/ModelSidebar";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import CookbookPage from "@/components/CookbookPage";
+import { getSocials, chatIconUrl } from "@/lib/admin/socialApi";
+import { isVideo } from "@/lib/introSplash";
 
 export default function AdminPage() {
   const [generation, setGeneration] = useState<GenerationParams>({
@@ -17,7 +19,21 @@ export default function AdminPage() {
     thinking: false,
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [chatIconSrc, setChatIconSrc] = useState<string | null>(null);
   const loop = useAgentLoop(generation);
+
+  // Same chat-avatar slot the fan widget reads — a video icon is the fan
+  // page's cinematic touch, not appropriate for a small per-message avatar
+  // here, so only a static image counts.
+  useEffect(() => {
+    getSocials()
+      .then((res) => {
+        if (res.chatIconVersion != null && !isVideo(res.chatIconMime)) {
+          setChatIconSrc(chatIconUrl(res.chatIconVersion));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   return (
     <div className="flex h-screen">
@@ -49,6 +65,7 @@ export default function AdminPage() {
             onStoryProposal={loop.proposeExternal}
             thinking={generation.thinking}
             onThinkingChange={(next) => setGeneration((prev) => ({ ...prev, thinking: next }))}
+            chatIconSrc={chatIconSrc}
           />
         </div>
       </div>
