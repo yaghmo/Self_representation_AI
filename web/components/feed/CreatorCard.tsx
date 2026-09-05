@@ -4,7 +4,12 @@ import { useRouter } from "next/navigation"
 import { useState } from "react"
 import { platformIcon } from "@/lib/platformIcon"
 import { PostModal } from "@/components/fan/PostModal"
+import { PlayOnceVideo } from "@/components/media/PlayOnceVideo"
 import type { FanProfile, Post } from "@/components/fan/types"
+
+function isVideo(mime: string | null | undefined) {
+  return !!mime?.startsWith("video/")
+}
 
 const MAX_THUMBS = 3
 
@@ -22,8 +27,12 @@ function CreatorCard({ profile, posts }: { profile: FanProfile; posts: Post[] })
         <div className="flex items-center gap-3">
           <div className="size-12 shrink-0 overflow-hidden rounded-full bg-muted">
             {profile.pfpUrl && (
-              // eslint-disable-next-line @next/next/no-img-element -- served from our own service, not a next/image remote host
-              <img src={profile.pfpUrl} alt="" className="size-full object-cover" />
+              isVideo(profile.pfpMime) ? (
+                <PlayOnceVideo src={profile.pfpUrl} className="size-full object-cover" />
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element -- served from our own service, not a next/image remote host
+                <img src={profile.pfpUrl} alt="" className="size-full object-cover" />
+              )
             )}
           </div>
           <div className="min-w-0">

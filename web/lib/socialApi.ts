@@ -77,6 +77,8 @@ export interface PublicPost {
   url: string
   title: string | null
   thumbnailUrl: string | null
+  mediaUrl?: string | null
+  mediaKind?: "video" | "image" | null
 }
 
 export async function getPublicPosts(): Promise<PublicPost[]> {

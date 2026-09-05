@@ -54,6 +54,10 @@ function ChatWidget({
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  // Not persisted, same as `messages` above — a refresh resets the bot's
+  // mood along with the conversation.
+  const [mood, setMood] = useState(0)
+  const [minorDisclosed, setMinorDisclosed] = useState(false)
   const [draft, setDraft] = useState("")
   const [isTyping, setIsTyping] = useState(false)
   const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
@@ -142,7 +146,10 @@ function ChatWidget({
 
     let replyText: string
     try {
-      replyText = await postChat(history)
+      const reply = await postChat(history, mood, minorDisclosed)
+      replyText = reply.content
+      setMood(reply.mood)
+      setMinorDisclosed(reply.minorDisclosed)
     } catch (error) {
       replyText =
         error instanceof ChatApiError
@@ -151,15 +158,20 @@ function ChatWidget({
     }
 
     const bubbles = splitIntoBubbles(replyText)
+    const ids = bubbles.map(() => crypto.randomUUID())
+    // One TTS call for the whole reply, keyed to the last bubble's id — a
+    // separate call per bubble synthesizes each thought in isolation, and
+    // the voice sounds cut off wherever a bubble happened to end.
+    warm(ids[ids.length - 1], replyText)
     for (let i = 0; i < bubbles.length; i++) {
       if (i > 0) await wait(BUBBLE_DELAY_MS)
       const botMessage: ChatMessage = {
-        id: crypto.randomUUID(),
+        id: ids[i],
         role: "bot",
         text: bubbles[i],
+        final: i === bubbles.length - 1,
       }
       setMessages((prev) => [...prev, botMessage])
-      warm(botMessage.id, botMessage.text)
     }
     setIsTyping(false)
   }
@@ -171,10 +183,15 @@ function ChatWidget({
   const hideToggle = isOpen && showFallbackIcon
   const stuckOnTop = isOpen && !showFallbackIcon
   // Panel is anchored `bottom-16` (64px), flush against the bottom bar, so
-  // its top edge sits at 64 + panel height from the viewport bottom. Resting
-  // the icon's own bottom edge there sits it entirely above the panel,
-  // touching but never overlapping into the header.
-  const panelTop = 64 + size.height
+  // its top edge sits at 64 + panel height from the viewport bottom. The
+  // panel's *actual* rendered height isn't just `size.height` though — its
+  // own `max-h-[calc(100dvh-8rem)]` class clamps it shorter on a short
+  // browser window. A plain `64 + size.height` here ignores that clamp and
+  // drifts away from the panel's real top edge once the window gets short
+  // enough to trigger it. Using CSS `min()` for the same clamp, natively,
+  // means this always matches the panel's true rendered height and updates
+  // live on resize — no resize listener needed.
+  const panelTop = `calc(4rem + min(${size.height}px, 100dvh - 8rem))`
 
   return (
     <>
@@ -190,9 +207,13 @@ function ChatWidget({
           className={cn(
             "fixed right-8 z-40 flex items-center justify-center text-primary-foreground transition-[transform,bottom] ease-out hover:scale-105 sm:right-10",
             isResizing ? "duration-0" : "duration-300",
+            // clamp(), not a single sm: breakpoint — a step function only
+            // ever changes at one exact width, so resizing the browser
+            // anywhere else (most of the time) looked like it wasn't
+            // rescaling at all. This scales continuously with viewport width.
             showFallbackIcon
-              ? "h-14 w-24 rounded-t-full bg-primary bottom-16 shadow-lg"
-              : cn("size-[120px]", !stuckOnTop && "bottom-16")
+              ? "h-[clamp(2.5rem,9vw,3.5rem)] w-[clamp(4rem,15vw,6rem)] rounded-t-full bg-primary bottom-16 shadow-lg"
+              : cn("size-[clamp(3.5rem,12vw,7.5rem)]", !stuckOnTop && "bottom-16")
           )}
         >
           {showFallbackIcon ? (
@@ -272,7 +293,7 @@ function ChatWidget({
                     text={message.role === "bot" ? stripEmotionTags(message.text) : message.text}
                   />
                 </div>
-                {message.role === "bot" && <SpeakButton id={message.id} />}
+                {message.role === "bot" && message.final && <SpeakButton id={message.id} />}
               </div>
             ))}
             {isTyping && (

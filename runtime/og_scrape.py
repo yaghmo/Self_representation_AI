@@ -39,6 +39,11 @@ _USER_AGENT = (
 
 _X_FOLLOWER_RE = re.compile(r"^([\d,]+)\s+[Ff]ollowers?\b")
 _INSTAGRAM_FOLLOWER_RE = re.compile(r"^([\d,.]+[KMB]?)\s+Followers?\b")
+# The first "video_versions" entry in a reel page's inline JSON — a signed,
+# directly-fetchable progressive .mp4, confirmed live (curl, no referer
+# needed). `[^}]*?` stops at the entry's own closing brace so this can't
+# run on and grab a "url" from a later, unrelated JSON object.
+_VIDEO_VERSIONS_RE = re.compile(r'"video_versions"\s*:\s*\[\{[^}]*?"url"\s*:\s*"([^"]+)"')
 
 
 def _meta(text: str, prop: str) -> str | None:
@@ -135,6 +140,49 @@ def list_instagram_posts(url: str, limit: int = 6) -> list[dict]:
         if len(results) >= limit:
             break
     return results
+
+
+def scrape_instagram_post_media(url: str) -> dict | None:
+    """The post's own actual media — the CDN file, not the page. This is
+    what lets the fan player render a plain <video>/<img> instead of going
+    through Instagram's embed.js widget, which has needed an app-level
+    oEmbed access token since their Graph API changes and can silently
+    render nothing (a blank white box) without one.
+
+    A reel's og:video meta tag is missing more often than not (checked
+    live), but the page's own inline JSON still carries a signed,
+    directly-fetchable progressive .mp4 under "video_versions" — the exact
+    file the page's own <video> tag would play, just not exposed as a tag
+    a scraper can read declaratively. Tried first; og:video/og:image are the
+    fallback for whatever that regex doesn't match if Instagram reshapes the
+    page.
+
+    Returns {"url": ..., "kind": "video" | "image"} — `kind` here is which
+    source actually resolved, not a guess from the post's /reel/ vs /p/ URL
+    shape: a caller that assumed "reel" always means "got a video" would
+    hand a JPEG to a <video> tag on the (still possible) fallback path.
+
+    Called once per post during the admin-triggered post refresh (see
+    posts.py) — never live on a fan's page load, same contract as every
+    other scrape in this module.
+    """
+    try:
+        from scrapling.fetchers import StealthyFetcher
+
+        page = StealthyFetcher.fetch(url, headless=True, network_idle=True)
+        if page.status != 200:
+            return None
+        html = str(page.html_content)
+        progressive = _VIDEO_VERSIONS_RE.search(html)
+        if progressive:
+            return {"url": progressive.group(1).replace("\\/", "/"), "kind": "video"}
+        video = next(iter(page.css('meta[property="og:video"]::attr(content)')), None)
+        if video:
+            return {"url": str(video), "kind": "video"}
+        image = next(iter(page.css('meta[property="og:image"]::attr(content)')), None)
+        return {"url": str(image), "kind": "image"} if image else None
+    except Exception:
+        return None
 
 
 def scrape_profile(url: str) -> dict | None:

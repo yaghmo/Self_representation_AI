@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useState } from "react"
 import { ProfileHeader } from "@/components/fan/ProfileHeader"
 import { PostGrid } from "@/components/fan/PostGrid"
 import { BottomBar } from "@/components/fan/BottomBar"
@@ -30,10 +30,18 @@ export default function FanPage() {
   // until getPublicProfile() resolves. Rendering the real page in that gap
   // means it flashes fully visible, then vanishes the instant introPlaying
   // flips true. "Already seen this hour" IS known synchronously though
-  // (localStorage), so that — the common case, repeat visits — skips the
-  // wait entirely; only a genuine first-visit-this-hour holds the page back
-  // for the one API call needed to find out.
-  const [introDecided, setIntroDecided] = useState(() => introAlreadySeen())
+  // (localStorage) — but not in the initializer here: that runs during SSR
+  // too, where localStorage doesn't exist, so a repeat visitor within the
+  // hour got `false` from the server and `true` from the client's first
+  // render — a guaranteed hydration mismatch, not a flaky one. Starting
+  // both at `false` keeps server and client's first render identical; the
+  // layout effect below corrects it before the browser paints, so a repeat
+  // visit still skips the wait with no visible flash.
+  const [introDecided, setIntroDecided] = useState(false)
+
+  useLayoutEffect(() => {
+    if (introAlreadySeen()) setIntroDecided(true)
+  }, [])
 
   const filteredPosts = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()

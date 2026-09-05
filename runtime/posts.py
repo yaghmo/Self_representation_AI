@@ -12,7 +12,7 @@ import time
 from itertools import zip_longest
 
 from .bible import PROFILE_PATH
-from .og_scrape import list_instagram_posts
+from .og_scrape import list_instagram_posts, scrape_instagram_post_media
 from .social import list_socials
 from .tiktok_scrape import list_videos as list_tiktok_videos
 from .twitch_scrape import list_vods as list_twitch_vods
@@ -44,6 +44,16 @@ def _scrape_social(social: dict) -> list[dict]:
         raw = list_tiktok_videos(social["url"], POSTS_PER_PLATFORM)
     elif platform == "instagram":
         raw = list_instagram_posts(social["url"], POSTS_PER_PLATFORM)
+        # One extra fetch per post, here rather than in the fan player, so a
+        # broken/expired media URL only ever costs an admin-triggered
+        # refresh, never a fan's page load (og_scrape's own contract).
+        for item in raw:
+            media = scrape_instagram_post_media(item["url"])
+            item["mediaUrl"] = media["url"] if media else None
+            # The scrape's own answer wins — a reel with no og:video falls
+            # back to a still image, and the player has to know that to
+            # avoid handing a JPEG to a <video> tag.
+            item["mediaKind"] = media["kind"] if media else None
     elif platform == "x":
         raw = list_x_posts(social["url"], POSTS_PER_PLATFORM)
     else:

@@ -13,9 +13,10 @@ export default function FeedPage() {
   useEffect(() => {
     getPublicProfile().then((res) => {
       setProfile({
-        name: mockProfile.name,
+        name: res.displayName ?? mockProfile.name,
         bio: res.bio ?? mockProfile.bio,
         pfpUrl: res.pfpVersion != null ? publicPfpUrl(res.pfpVersion) : null,
+        pfpMime: res.pfpMime,
         bannerUrl: res.bannerVersion != null ? publicBannerUrl(res.bannerVersion) : null,
       })
     })

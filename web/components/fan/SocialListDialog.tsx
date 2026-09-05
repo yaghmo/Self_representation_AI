@@ -3,11 +3,9 @@
 import {
   Dialog,
   DialogContent,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { SocialRow } from "@/components/SocialRow";
 import type { PublicSocial } from "@/lib/socialApi";
 
@@ -44,11 +42,6 @@ export function SocialListDialog({
             </a>
           ))}
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
