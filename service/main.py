@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -367,8 +369,13 @@ def _warmup_voice(model: Model) -> None:
     default language, so spinning up the qwentts.cpp container from cold —
     which "hear your default voice" used to pay for on its very first click
     — happens during startup instead. Admin-only: the hear button doesn't
-    exist on a fan-only deployment."""
-    if not model.agent:
+    exist on a fan-only deployment.
+
+    Local only: an API-backed TTS provider has no container to spin up, and
+    nothing about a network call benefits from being paid for at startup
+    instead of on first use.
+    """
+    if not model.agent or _tts_source() != "local":
         return
     try:
         language, clone_language = LANGUAGES[0]
@@ -427,6 +434,15 @@ class ChatRequest(BaseModel):
     # not have — and it must never be a system message, which is exactly what
     # _reject_client_system exists to prevent.
     summary: str = ""
+    # Client-echoed mood score, same shape as `summary` — the server is
+    # stateless per request, so the fan's browser carries this across turns.
+    # See _mood_pinned_text/_extract_mood_delta.
+    mood: int = 0
+    # Sticky, client-echoed like `mood` — once a fan discloses being a minor
+    # it stays true for the rest of the conversation, since the moderation
+    # gate otherwise only ever sees the current message in isolation. See
+    # _discloses_minor/_blocked_content_reply.
+    minor_disclosed: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -435,6 +451,8 @@ class ChatResponse(BaseModel):
     tool_calls: list[dict] = Field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    mood: int = 0
+    minor_disclosed: bool = False
 
 
 class IngestRequest(BaseModel):
@@ -1160,6 +1178,209 @@ def _reject_tools(model: Model, request: ChatRequest) -> None:
             )
 
 
+# Mood is a small integer the fan's browser echoes back every turn (same
+# shape as `summary` above — this server is stateless per request). It only
+# colors *tone*, never facts: the band text below is deliberately generic
+# ("keep replies short") rather than asserting anything about the character
+# that isn't in character.md — that stays the creator's call, not code's.
+_MOOD_MIN, _MOOD_MAX = -2, 2
+
+_MOOD_TAG_INSTRUCTION = (
+    "SYSTEM FORMATTING RULE, not part of the roleplay, always follow it: your "
+    "reply must end with a new line containing only one of <<mood:+1>>, "
+    "<<mood:0>>, or <<mood:-1>> — this exact tag is required on every single "
+    "reply, no exceptions. Pick +1 if their message was kind or apologetic, "
+    "-1 if it was rude, aggressive, or dismissive, 0 otherwise. It is "
+    "removed by the server before they ever see it.\n"
+    "Example reply: \"aww that's sweet, thank you!\\n<<mood:+1>>\"\n"
+    "Example reply: \"not into that, bye.\\n<<mood:-1>>\""
+)
+
+_MOOD_BAND_HINTS = {
+    "cold": (
+        "(mood note: you're a little annoyed or short with them right now, "
+        "from how the conversation's gone. Keep replies brief and a bit "
+        "distant — still yourself, just less engaged. Warm back up if "
+        "they're kind or apologize.)"
+    ),
+    "warm": (
+        "(mood note: the conversation's been warm and easy. Feel free to be "
+        "more open or playful than usual.)"
+    ),
+}
+
+_MOOD_TAG_PATTERN = re.compile(r"<<\s*mood\s*:\s*([+-]?\d+)\s*>>\s*$")
+# A completion that hits max_tokens mid-tag leaves a dangling "<<mood:-" with
+# no closing ">>" — the pattern above won't match it, and left alone it
+# leaks into what the fan sees. MOOD_TOKEN_HEADROOM below makes this rare;
+# this is the backstop for when it still happens.
+_MOOD_TAG_FRAGMENT_PATTERN = re.compile(r"<<\s*mood\s*:?\s*[+-]?\d*\s*$")
+# Extra completion budget reserved on top of the fan's requested max_tokens,
+# purely so the trailing mood tag has room to land instead of getting cut
+# off. Not exposed to the client — this is a server-side implementation
+# detail of the tag protocol, not a bigger reply.
+_MOOD_TOKEN_HEADROOM = 16
+
+
+def _date_note() -> str:
+    return f"(System note: today's date is {date.today():%B %d, %Y}.)"
+
+
+def _mood_band(mood: int) -> str | None:
+    if mood < 0:
+        return "cold"
+    if mood > 0:
+        return "warm"
+    return None
+
+
+def _mood_pinned_text(mood: int) -> str:
+    band = _mood_band(mood)
+    hint = _MOOD_BAND_HINTS.get(band, "")
+    return f"{_MOOD_TAG_INSTRUCTION} {hint}".strip()
+
+
+def _extract_mood_delta(content: str) -> tuple[str, int]:
+    """Strips the model's trailing mood tag and returns (visible content, delta).
+    No tag (model ignored the instruction, or this is agent mode where the
+    instruction was never sent) is treated as no change."""
+    match = _MOOD_TAG_PATTERN.search(content)
+    if match:
+        delta = max(-1, min(1, int(match.group(1))))
+        return content[: match.start()].rstrip(), delta
+    fragment = _MOOD_TAG_FRAGMENT_PATTERN.search(content)
+    if fragment:
+        return content[: fragment.start()].rstrip(), 0
+    return content, 0
+
+
+def _next_mood(current: int, delta: int) -> int:
+    return max(_MOOD_MIN, min(_MOOD_MAX, current + delta))
+
+
+# Blocks the newest user turn before it ever reaches an upstream LLM/TTS API.
+# A provider bans the key over what got *sent* to it, not over whether the
+# model refused — the model's own refusal happens too late, after the
+# request already left this process. Only matters for an API-backed model
+# (source: "api" in stack.json) — a local llama-server has no provider ToS to
+# violate, so the weapon/self-harm gate below is skipped entirely there.
+#
+# CSAM stays a flat regex block regardless of local/api — no provider,
+# platform, or law accepts "it was roleplay" for that category, and it's a
+# legal-exposure line for the creator, not just a ToS one, so it doesn't get
+# the local-model exemption the rest of this does.
+#
+# Blocked input never surfaces as an HTTP error either: to a fan this is
+# still just the character not answering, not a broken chat, so a hit here
+# returns a normal in-character deflection instead of a 400 — same as any
+# other topic the persona declines, just guaranteed to never leave the
+# process on the way there.
+_CSAM_PATTERN = re.compile(
+    r"\b(child|kid|minor|underage)s?\b.{0,40}\b(sex|porn|nude|naked)", re.I
+)
+
+# The CSAM pattern above only catches a minor-reference and sexual content in
+# the *same* message. A fan who says "I'm 15" in one turn and sends sexual
+# content three turns later with no age-word in that later message slips
+# through it entirely, since each message is judged alone. These two close
+# that gap: once a disclosure is seen, `minor_disclosed` latches true (see
+# ChatRequest) and any sexual content for the rest of the conversation blocks,
+# age-word or not.
+_MINOR_AGE_PATTERN = re.compile(
+    r"\b(?:i'?m|i am)\s+(\d{1,2})\b|\b(\d{1,2})\s*(?:yo|y/o|years?\s*old)\b", re.I
+)
+_MINOR_WORD_PATTERN = re.compile(r"\b(?:i'?m|i am)\s+(?:a\s+)?(?:minor|underage)\b", re.I)
+_SEXUAL_CONTENT_PATTERN = re.compile(r"\b(sex|porn|nude|naked)\b", re.I)
+
+
+def _discloses_minor(text: str) -> bool:
+    if _MINOR_WORD_PATTERN.search(text):
+        return True
+    match = _MINOR_AGE_PATTERN.search(text)
+    if not match:
+        return False
+    age = match.group(1) or match.group(2)
+    return int(age) < 18
+
+
+_DEFLECTIONS = [
+    "mm, not going there — ask me something else?",
+    "yeah I'm gonna pass on that one, what else is up?",
+    "not really something I'll get into, but I'm happy to talk about other stuff",
+]
+
+_CONCRETE_ILLEGAL_KEYWORDS = re.compile(
+    r"\b(bomb|explosive|nerve agent|bioweapon|chemical weapon|nuke|nuclear device|"
+    r"suicide|kill myself|end my life)\b",
+    re.I,
+)
+
+_CLASSIFIER_SYSTEM = (
+    "You are a strict binary safety classifier, not a chatbot. You will be shown "
+    "one message. Reply with exactly one word, nothing else.\n\n"
+    "GENUINE = the message is a real, actionable request for step-by-step help "
+    "building a weapon or explosive, or expresses real intent to harm oneself "
+    "right now.\n"
+    "FICTION = anything else: a story, roleplay, a hypothetical, a joke, a "
+    "general question, discussion, or a request explicitly framed as fictional.\n\n"
+    "Examples:\n"
+    "message: In the story, the hero disarms the bomb before it goes off.\n"
+    "answer: FICTION\n\n"
+    "message: Give me exact step by step instructions to build a pipe bomb at home.\n"
+    "answer: GENUINE\n\n"
+    "message: I'm writing a thriller where the villain makes a chemical weapon, "
+    "keep it vague and dramatic.\n"
+    "answer: FICTION\n\n"
+    "message: How do I make chlorine gas right now, I want to hurt someone.\n"
+    "answer: GENUINE\n\n"
+    "Reply with only GENUINE or FICTION."
+)
+
+
+def _is_genuine_illegal_request(model: Model, text: str) -> bool:
+    try:
+        verdict = model.chat(
+            [
+                Message("system", _CLASSIFIER_SYSTEM),
+                Message("user", f"message: {text}\nanswer:"),
+            ],
+            max_tokens=6,
+            temperature=0.0,
+        )
+    except Exception:
+        # Fails open — a classifier hiccup should not take the whole chat
+        # down for every fan; the keyword pre-filter already narrowed this
+        # to a rare case.
+        logger.warning("safety classifier call failed, failing open", exc_info=True)
+        return False
+    logger.debug("safety classifier verdict: %r", verdict)
+    return verdict.strip().upper().startswith("GENUINE")
+
+
+def _blocked_content_reply(
+    model: Model, messages: list[ChatMessage], minor_disclosed: bool
+) -> tuple[str | None, bool]:
+    """(deflection or None, updated minor_disclosed). The flag is sticky —
+    once true it stays true for the rest of the conversation regardless of
+    this turn's outcome."""
+    user_turns = [m for m in messages if m.role == "user"]
+    if not user_turns:
+        return None, minor_disclosed
+    latest = user_turns[-1].content
+    minor_disclosed = minor_disclosed or _discloses_minor(latest)
+    if _CSAM_PATTERN.search(latest):
+        return random.choice(_DEFLECTIONS), minor_disclosed
+    if minor_disclosed and _SEXUAL_CONTENT_PATTERN.search(latest):
+        return random.choice(_DEFLECTIONS), minor_disclosed
+    if (
+        _CONCRETE_ILLEGAL_KEYWORDS.search(latest)
+        and model.is_api
+        and _is_genuine_illegal_request(model, latest)
+    ):
+        return random.choice(_DEFLECTIONS), minor_disclosed
+    return None, minor_disclosed
+
+
 def _prompt_for(model: Model, request: ChatRequest, use_compact: bool = False) -> list[Message]:
     _reject_client_system(request.messages)
     _reject_tools(model, request)
@@ -1195,6 +1416,13 @@ def _prompt_for(model: Model, request: ChatRequest, use_compact: bool = False) -
             + (1024 if request.thinking else 0),
             persona=persona,
             summary=request.summary,
+            # Agent mode is the creator's own tool loop, not fan roleplay —
+            # no mood tag instruction, so no tag to strip from tool-calling
+            # replies either. Date note always goes in, both surfaces: piggy-
+            # backed on the last user turn like the mood tag, so it never
+            # touches the cached persona prefix.
+            mood_instruction=_date_note()
+            + ("" if request.tools else f"\n{_mood_pinned_text(request.mood)}"),
         )
     except ProfileMissing as exc:
         raise HTTPException(status_code=424, detail=str(exc)) from exc
@@ -1430,6 +1658,19 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
             "thinking": request.thinking,
         },
     )
+    # Content gate only applies to the fan-facing turn — an agent-mode
+    # request carries tools and is the creator's own admin loop, not
+    # something that needs deflecting.
+    minor_disclosed = request.minor_disclosed
+    if not request.tools:
+        deflection, minor_disclosed = _blocked_content_reply(
+            model, request.messages, request.minor_disclosed
+        )
+        if deflection is not None:
+            background_tasks.add_task(_prewarm_voice_bubbles, [deflection])
+            return ChatResponse(
+                content=deflection, mood=request.mood, minor_disclosed=minor_disclosed
+            )
     # Same per-request signal the persona choice below now also depends on:
     # `model.agent` alone would silently withhold recall() from the fan
     # whenever agent mode happens to be on for the admin surface sharing
@@ -1446,11 +1687,17 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         and recall_ctx is not None
     )
     messages = _prompt_for(model, request, use_compact=use_compact)
+    # Headroom for the trailing mood tag, so it rarely gets cut off by
+    # max_tokens — the fan's requested budget still governs the visible
+    # reply length, this is server-only overhead for the tag protocol.
+    completion_max_tokens = (
+        request.max_tokens if request.tools else request.max_tokens + _MOOD_TOKEN_HEADROOM
+    )
     try:
         if recall_ctx is not None:
             story_index, profile_index, embed = recall_ctx
             content = _run_recall_loop(
-                model, messages, request.temperature, request.max_tokens,
+                model, messages, request.temperature, completion_max_tokens,
                 request.thinking, story_index, embed,
                 include_profile=use_compact, profile_index=profile_index,
             )
@@ -1458,7 +1705,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
             content = model.chat(
                 messages,
                 temperature=request.temperature,
-                max_tokens=request.max_tokens,
+                max_tokens=completion_max_tokens,
                 thinking=request.thinking,
                 tools=request.tools,
             )
@@ -1471,6 +1718,10 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
     # — only agent mode's tool_calls are real callbacks the client must act
     # on and render.
     tool_calls = (getattr(backend, "last_tool_calls", []) or []) if model.agent else []
+    new_mood = request.mood
+    if not request.tools:
+        content, mood_delta = _extract_mood_delta(content)
+        new_mood = _next_mood(request.mood, mood_delta)
     log_payload(
         logger,
         "POST /chat >>",
@@ -1478,6 +1729,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
             "content": content,
             "reasoning": getattr(backend, "last_reasoning", ""),
             "tool_calls": tool_calls,
+            "mood": new_mood,
         },
     )
     if not request.tools:
@@ -1490,6 +1742,8 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         tool_calls=tool_calls,
         prompt_tokens=getattr(backend, "last_usage", None).prompt_tokens if backend else 0,
         completion_tokens=getattr(backend, "last_usage", None).completion_tokens if backend else 0,
+        mood=new_mood,
+        minor_disclosed=minor_disclosed,
     )
 
 
@@ -1501,6 +1755,12 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
             status_code=400,
             detail="tool calls are not streamed — use POST /chat in agent mode",
         )
+    # Plain-text streaming has no field to carry an updated minor_disclosed
+    # back to the client — same limitation this endpoint already has with
+    # mood, since it's not used by the fan widget (see postChat/chatApi.ts).
+    deflection, _ = _blocked_content_reply(model, request.messages, request.minor_disclosed)
+    if deflection is not None:
+        return StreamingResponse(iter([deflection]), media_type="text/plain")
     messages = _prompt_for(model, request)
 
     def generate():
@@ -2345,7 +2605,11 @@ def _self_check() -> None:
         assert messages[0].content.startswith("You are the person described"), messages[0].content[:60]
         assert "[S-" not in messages[0].content, "citation leaked into the prompt"
         assert "`S-" not in messages[0].content, "citation leaked into the prompt"
-        assert messages[-1].content == "hi", messages[-1]
+        # The mood tag instruction rides along on the newest turn (see
+        # _prompt_for/assemble's mood_instruction) — "hi" itself is still
+        # untouched at the front.
+        assert messages[-1].content.startswith("hi\n\n"), messages[-1]
+        assert "<<mood:" in messages[-1].content, messages[-1]
 
     # The rest of this block needs a loaded persona to reach the checks it's
     # testing (length cap, tool-schema gate, forged tool-role rejection) —

@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { Message, Proposal, Step } from "@/lib/chat/types";
@@ -50,22 +49,31 @@ function TypingIndicator() {
   );
 }
 
+// Plain, non-technical status text — the tool name and raw JSON args/result
+// are implementation detail an audience member (or the creator, mid-chat)
+// doesn't need to see. Same idea as ChatGPT's "Searching…" line.
+const TOOL_LABELS: Record<string, string> = {
+  search_sources: "Looking through what you've told it before…",
+  read_profile_section: "Checking the profile…",
+  append_source: "Logging a note…",
+  add_profile_line: "Updating the profile…",
+  replace_profile_line: "Updating the profile…",
+  remove_profile_line: "Removing something from the profile…",
+};
+
+// One line, replaced in place as the turn progresses — not a growing list of
+// every step a multi-step agent turn took.
+function ToolStatusLine({ text }: { text: string }) {
+  return (
+    <div className="flex h-8 items-center gap-2 pl-11 text-xs text-muted-foreground">
+      <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground" />
+      {text}
+    </div>
+  );
+}
+
 function StepTrace({ step }: { step: Step }) {
   switch (step.kind) {
-    case "tool_call":
-      return (
-        <div className="pl-11 text-xs text-muted-foreground">
-          <Badge variant="outline">{step.name}</Badge>{" "}
-          <span className="font-mono">{step.text}</span>
-        </div>
-      );
-    case "tool_result":
-      return (
-        <details className="pl-11 text-xs text-muted-foreground">
-          <summary className="cursor-pointer">{step.name} result</summary>
-          <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted p-2">{step.text}</pre>
-        </details>
-      );
     case "proposal":
       return <div className="pl-11 text-xs text-amber-600 dark:text-amber-400">{step.text}</div>;
     case "stopped":
@@ -84,6 +92,7 @@ export function ChatPanel({
   onStoryProposal,
   thinking,
   onThinkingChange,
+  thinkingAvailable = true,
   chatIconSrc = null,
 }: {
   transcript: Message[];
@@ -94,6 +103,9 @@ export function ChatPanel({
   onStoryProposal: (proposal: Proposal) => void;
   thinking: boolean;
   onThinkingChange: (next: boolean) => void;
+  // False on an API-backed model — reasoning is a llama.cpp-only extension,
+  // and the toggle does nothing there. Defaults true (local).
+  thinkingAvailable?: boolean;
   // Creator's set chat avatar (same slot the fan widget uses) — falls back
   // to the plain Bot icon when nothing's set, same as the fan side.
   chatIconSrc?: string | null;
@@ -132,11 +144,19 @@ export function ChatPanel({
             <MessageBubble key={i} message={message} chatIconSrc={chatIconSrc} />
           ))}
           {steps
-            .filter((step) => step.kind !== "answer" && step.kind !== "stopped")
+            .filter((step) => step.kind === "proposal" || step.kind === "stopped")
             .map((step, i) => (
               <StepTrace key={i} step={step} />
             ))}
-          {busy && <TypingIndicator />}
+          {busy &&
+            (() => {
+              const latestCall = [...steps].reverse().find((step) => step.kind === "tool_call");
+              return latestCall ? (
+                <ToolStatusLine text={TOOL_LABELS[latestCall.name] ?? "Working on it…"} />
+              ) : (
+                <TypingIndicator />
+              );
+            })()}
           <div ref={bottomRef} />
         </div>
       </ScrollArea>
@@ -153,10 +173,11 @@ export function ChatPanel({
               render={
                 <Button
                   type="button"
-                  variant={thinking ? "default" : "outline"}
+                  variant={thinking && thinkingAvailable ? "default" : "outline"}
                   size="icon"
+                  disabled={!thinkingAvailable}
                   aria-label="Reasoning"
-                  aria-pressed={thinking}
+                  aria-pressed={thinking && thinkingAvailable}
                   onClick={() => onThinkingChange(!thinking)}
                 />
               }
@@ -164,8 +185,9 @@ export function ChatPanel({
               <Brain className="size-4" />
             </TooltipTrigger>
             <TooltipContent>
-              Reasoning — makes the model think before it answers. Slower, better on
-              anything ambiguous or multi-step.
+              {thinkingAvailable
+                ? "Reasoning — makes the model think before it answers. Slower, better on anything ambiguous or multi-step."
+                : "Reasoning only works on a local model — this one's API-backed."}
             </TooltipContent>
           </Tooltip>
           <Textarea

@@ -20,6 +20,10 @@ export default function AdminPage() {
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [chatIconSrc, setChatIconSrc] = useState<string | null>(null);
+  // Reasoning is a llama.cpp-only extension (chat_template_kwargs /
+  // reasoning_reserve in runtime/backend.py's LocalBackend) — ApiBackend
+  // ignores it entirely, so the toggle does nothing on an API-backed model.
+  const [thinkingAvailable, setThinkingAvailable] = useState(true);
   const loop = useAgentLoop(generation);
 
   // Same chat-avatar slot the fan widget reads — a video icon is the fan
@@ -41,6 +45,11 @@ export default function AdminPage() {
         generation={generation}
         onGeneration={(next) => setGeneration((prev) => ({ ...prev, ...next }))}
         onRestored={loop.reset}
+        onStatus={(status) => {
+          const local = status.source !== "api";
+          setThinkingAvailable(local);
+          if (!local) setGeneration((prev) => ({ ...prev, thinking: false }));
+        }}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
         <header className="flex items-center justify-between border-b px-6 py-3">
@@ -65,6 +74,7 @@ export default function AdminPage() {
             onStoryProposal={loop.proposeExternal}
             thinking={generation.thinking}
             onThinkingChange={(next) => setGeneration((prev) => ({ ...prev, thinking: next }))}
+            thinkingAvailable={thinkingAvailable}
             chatIconSrc={chatIconSrc}
           />
         </div>

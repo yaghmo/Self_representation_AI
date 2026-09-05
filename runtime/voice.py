@@ -168,7 +168,15 @@ def _clean_for_tts(text: str) -> str:
     text = _EMOJI_RE.sub("", text)
     text = _expand_abbreviations(text)
     text = re.sub(r"([!?.,])\1+", r"\1", text)
-    return re.sub(r"\s{2,}", " ", text).strip()
+    # Collapse runs of spaces/tabs on one line, but keep a blank line where
+    # one already separated two bubbles' worth of text — now that one TTS
+    # call covers a whole reply (see ChatWidget), that blank line is the only
+    # signal left telling the engine to pause between thoughts instead of
+    # reading straight through. Crushing it to a single space (the old
+    # behavior) is exactly what made a reply sound like one run-on sentence.
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{2,}", "\n\n", text)
+    return text.strip()
 
 
 def voice_status() -> Literal["clone", "design", "none"]:

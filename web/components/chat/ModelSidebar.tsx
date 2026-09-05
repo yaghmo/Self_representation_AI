@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getHealth,
   getModelStatus,
@@ -31,10 +31,12 @@ export function ModelSidebar({
   generation,
   onGeneration,
   onRestored,
+  onStatus,
 }: {
   generation: GenerationParams;
   onGeneration: (next: Partial<GenerationParams>) => void;
   onRestored: () => void;
+  onStatus?: (status: ModelStatus) => void;
 }) {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [status, setStatus] = useState<ModelStatus | null>(null);
@@ -42,11 +44,19 @@ export function ModelSidebar({
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A ref, not a dependency: `onStatus` is a fresh inline function on every
+  // parent render, and `refresh` below is relied on to keep a stable
+  // identity (it gates the polling effect further down).
+  const onStatusRef = useRef(onStatus);
+  useEffect(() => {
+    onStatusRef.current = onStatus;
+  }, [onStatus]);
 
   const refresh = useCallback(async () => {
     const [h, s] = await Promise.all([getHealth(), getModelStatus()]);
     setHealth(h);
     setStatus(s);
+    onStatusRef.current?.(s);
     // Snapshots need a loaded model (409 otherwise) — routine while the
     // backend's own autoload is still in flight, not a real failure, so it
     // shouldn't surface as one. Only worth showing once the model is
