@@ -84,15 +84,37 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
     function: {
       name: "replace_profile_line",
       description:
-        "Propose rewriting ONE existing line in a profile section. Read the section first. `find` must identify exactly one line — if it matches several the call is refused. Keep every [S-###] cite the old line carried; add the new one alongside. The creator must approve.",
+        "Propose rewriting ONE existing line in a profile section. Read the section first. `find` must identify exactly one line — if it matches several the call is refused. Keep every [S-###] cite the old line carried unless it's listed in `retracting`; add the new one alongside. The creator must approve.",
       parameters: {
         type: "object",
         properties: {
           heading: { type: "string", description: "Section heading, exactly as listed in the system prompt." },
           find: { type: "string", description: "Distinctive text from the line to replace, e.g. 'Where they're from'." },
           line: { type: "string", description: "The full replacement line, cites included." },
+          retracting: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "S-### cites this rewrite deliberately drops, e.g. ['S-075'] — use when the line carries more than one fact and only some are being retracted. Any cite missing from the new line that isn't listed here still refuses the edit.",
+          },
         },
         required: ["heading", "find", "line"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_profile_line",
+      description:
+        "Propose removing ONE existing line from a profile section — use when the creator wants a fact retracted, e.g. 'remove that I have siblings'. Read the section first. `find` must identify exactly one line — if it matches several the call is refused. The cited source entry is left in sources.md untouched; only the profile's line goes. The creator must approve.",
+      parameters: {
+        type: "object",
+        properties: {
+          heading: { type: "string", description: "Section heading, exactly as listed in the system prompt." },
+          find: { type: "string", description: "Distinctive text from the line to remove, e.g. 'Has a younger sister'." },
+        },
+        required: ["heading", "find"],
       },
     },
   },

@@ -432,7 +432,7 @@ def append_source(
 CITE = re.compile(r"S-\d+")
 
 
-def _guard_cites(old_text: str, new_text: str) -> None:
+def _guard_cites(old_text: str, new_text: str, retracting: set[str] | None = None) -> None:
     """Refuse a write that silently drops a cite.
 
     Every statement in the profile carries the entry it came from, and that
@@ -440,13 +440,21 @@ def _guard_cites(old_text: str, new_text: str) -> None:
     A model rewriting prose drops cites without noticing — this turns that
     into a refusal it can read and correct, rather than a diff someone has to
     catch by eye at 1am.
+
+    `retracting` names cites the caller is *deliberately* dropping — a line
+    that crams more than one fact under one label (e.g. a general "Family"
+    note and a specific sibling count sharing one bullet) needs a way to
+    retract just one of them without either refusing outright or silently
+    losing the other fact to a whole-line delete. Anything lost that isn't
+    named here still refuses, same as before.
     """
-    lost = sorted(set(CITE.findall(old_text)) - set(CITE.findall(new_text)))
+    lost = sorted(set(CITE.findall(old_text)) - set(CITE.findall(new_text)) - (retracting or set()))
     if lost:
         missing = ", ".join(lost)
         raise ValueError(
             f"this edit drops {missing} — every statement keeps the cite it came "
-            "from. Reproduce the cites, or edit a different line."
+            "from. Reproduce the cites, edit a different line, or if that cite's "
+            "fact is being retracted on purpose, pass it in `retracting`."
         )
 
 
@@ -579,13 +587,23 @@ def add_profile_line(heading: str, line: str, path: Path | None = None) -> Propo
 
 
 def replace_profile_line(
-    heading: str, find: str, line: str, path: Path | None = None
+    heading: str,
+    find: str,
+    line: str,
+    path: Path | None = None,
+    retracting: list[str] | None = None,
 ) -> Proposal:
     """Replace the one line in a section containing `find`.
 
     Matching more than one line is a refusal, not a guess: the lines in a
     section are statements about a person, and rewriting the wrong one is
     indistinguishable from inventing a fact.
+
+    `retracting` names cites this rewrite is deliberately dropping — a line
+    that carries more than one fact (e.g. "Family: ... [S-003] and has 1
+    older sister [S-075]") and only one of them is being retracted needs this
+    instead of `remove_profile_line`, which would take the whole line and the
+    unrelated fact with it.
     """
     path = path or PROFILE_PATH
     old = path.read_text(encoding="utf-8")
@@ -610,11 +628,42 @@ def replace_profile_line(
     if previous.lstrip().startswith("|") != body.startswith("|"):
         wanted = "a table row (| … | … |)" if previous.lstrip().startswith("|") else "a bullet"
         raise ValueError(f"that line is {wanted} — the replacement has to be one too")
-    _guard_cites(previous, body)
+    retract_set = {m.group(0) for item in (retracting or []) if (m := CITE.search(item))}
+    _guard_cites(previous, body, retracting=retract_set)
     lines[index] = body
     new = old[:start] + "\n".join(lines) + old[end:]
     return _propose(
         path, old, new, f"rewrite one line in {name!r}", before=previous.strip(), after=body
+    )
+
+
+def remove_profile_line(heading: str, find: str, path: Path | None = None) -> Proposal:
+    """Remove the one line in a section containing `find`.
+
+    Matching more than one line is a refusal, not a guess — same reasoning as
+    replace_profile_line. This retracts a line from the profile only; the
+    source entry it cited stays in sources.md untouched, since that log is
+    the append-only record and the creator may want the retraction itself on
+    record later, not a hole where the fact used to be.
+    """
+    path = path or PROFILE_PATH
+    old = path.read_text(encoding="utf-8")
+    name, start, end, lines = _section_lines(old, heading)
+    needle = find.strip().lower()
+    if not needle:
+        raise ValueError("`find` must name the line to remove")
+    hits = [i for i, existing in enumerate(lines) if needle in existing.lower()]
+    if not hits:
+        raise KeyError(f"no line in {name!r} contains {find!r}")
+    if len(hits) > 1:
+        matched = " | ".join(lines[i].strip()[:60] for i in hits)
+        raise KeyError(f"{find!r} matches {len(hits)} lines in {name!r}: {matched}. Be exact.")
+    index = hits[0]
+    removed = lines[index]
+    del lines[index]
+    new = old[:start] + "\n".join(lines) + old[end:]
+    return _propose(
+        path, old, new, f"remove one line from {name!r}", before=removed.strip(), after=""
     )
 
 
@@ -790,8 +839,8 @@ TOOL_SCHEMAS: list[dict] = [
                 "Propose rewriting ONE existing line in a profile section. Read "
                 "the section first. `find` must identify exactly one line — if "
                 "it matches several the call is refused. Keep every [S-###] cite "
-                "the old line carried; add the new one alongside. The creator "
-                "must approve."
+                "the old line carried unless it's listed in `retracting`; add the "
+                "new one alongside. The creator must approve."
             ),
             "parameters": {
                 "type": "object",
@@ -811,8 +860,51 @@ TOOL_SCHEMAS: list[dict] = [
                         "type": "string",
                         "description": "The full replacement line, cites included.",
                     },
+                    "retracting": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "S-### cites this rewrite deliberately drops, e.g. "
+                            "['S-075'] — use when the line carries more than one "
+                            "fact and only some are being retracted. Any cite "
+                            "missing from the new line that isn't listed here "
+                            "still refuses the edit."
+                        ),
+                    },
                 },
                 "required": ["heading", "find", "line"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_profile_line",
+            "description": (
+                "Propose removing ONE existing line from a profile section — "
+                "use when the creator wants a fact retracted, e.g. 'remove "
+                "that I have siblings'. Read the section first. `find` must "
+                "identify exactly one line — if it matches several the call "
+                "is refused. The cited source entry is left in sources.md "
+                "untouched; only the profile's line goes. The creator must "
+                "approve."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "heading": {
+                        "type": "string",
+                        "description": "Section heading, exactly as listed in the system prompt.",
+                    },
+                    "find": {
+                        "type": "string",
+                        "description": (
+                            "Distinctive text from the line to remove, e.g. "
+                            "'Has a younger sister'."
+                        ),
+                    },
+                },
+                "required": ["heading", "find"],
             },
         },
     },
@@ -842,6 +934,7 @@ WRITE_TOOLS = {
     "append_source": append_source,
     "add_profile_line": add_profile_line,
     "replace_profile_line": replace_profile_line,
+    "remove_profile_line": remove_profile_line,
 }
 
 # name -> declared argument names, from TOOL_SCHEMAS. `path` is deliberately
@@ -879,6 +972,12 @@ class ReplaceProfileLineArgs(BaseModel):
     heading: str
     find: str
     line: str
+    retracting: list[str] = []
+
+
+class RemoveProfileLineArgs(BaseModel):
+    heading: str
+    find: str
 
 
 # One model per TOOL_SCHEMAS entry, same field names and required-ness — the
@@ -892,6 +991,7 @@ TOOL_ARG_MODELS: dict[str, type[BaseModel]] = {
     "append_source": AppendSourceArgs,
     "add_profile_line": AddProfileLineArgs,
     "replace_profile_line": ReplaceProfileLineArgs,
+    "remove_profile_line": RemoveProfileLineArgs,
 }
 
 
