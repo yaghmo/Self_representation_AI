@@ -25,7 +25,11 @@ function toBackendRole(role: ChatMessage["role"]): "user" | "assistant" {
 // character profile already asks for.
 const FAN_MAX_TOKENS = 120
 
-export async function postChat(history: ChatMessage[]): Promise<string> {
+export async function postChat(
+  history: ChatMessage[],
+  mood: number = 0,
+  minorDisclosed: boolean = false
+): Promise<{ content: string; mood: number; minorDisclosed: boolean }> {
   const res = await fetch(`${CHAT_API_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -35,6 +39,8 @@ export async function postChat(history: ChatMessage[]): Promise<string> {
         content: m.text,
       })),
       max_tokens: FAN_MAX_TOKENS,
+      mood,
+      minor_disclosed: minorDisclosed,
       // Tried `thinking: true` for coherence — reverted. Persona alone is
       // 6601 tokens against an 8192 context; thinking's flat +1024 reserve
       // pushes the budget negative before the first message sends (507
@@ -54,8 +60,16 @@ export async function postChat(history: ChatMessage[]): Promise<string> {
     throw new ChatApiError(res.status, detail)
   }
 
-  const data = (await res.json()) as { content: string }
-  return data.content
+  const data = (await res.json()) as {
+    content: string
+    mood?: number
+    minor_disclosed?: boolean
+  }
+  return {
+    content: data.content,
+    mood: data.mood ?? mood,
+    minorDisclosed: data.minor_disclosed ?? minorDisclosed,
+  }
 }
 
 export async function postVoiceSpeak(text: string): Promise<Blob> {

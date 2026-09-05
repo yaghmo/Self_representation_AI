@@ -33,6 +33,7 @@ import {
   getDownloadStatus,
   getInstalled,
   getProbe,
+  getProviderKeys,
   postAutoFit,
   postConfig,
   postDownloadStart,
@@ -228,18 +229,20 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   // Set instead of a local llm placement — an API-backed LLM has no model/
   // device to pick, no download, no local footprint at all.
   const [llmProvider, setLlmProvider] = useState<string | null>(null)
-  // Same shape for tts — fish-audio via OpenRouter has no local model/device
-  // to pick either. Reuses llmProvider's api key box below: same env var,
-  // same OpenRouter key, tested once covers both roles.
+  // Same shape for tts — fish-audio direct has no local model/device to pick
+  // either.
   const [ttsProvider, setTtsProvider] = useState<string | null>(null)
   const [ttsVoiceGender, setTtsVoiceGender] = useState<"male" | "female" | null>(null)
   // Same shape again for embedding — Gemini's embedding models have no
   // local model/device to pick either.
   const [embeddingProvider, setEmbeddingProvider] = useState<string | null>(null)
-  const [apiKeyInput, setApiKeyInput] = useState("")
-  const [keyTest, setKeyTest] = useState<
+  // Keyed by role — llm/tts/embedding use different env vars (XKIRO_API_KEY,
+  // FISH_API_KEY, GOOGLE_API_KEY), so a shared box was echoing one role's
+  // key into another's field.
+  const [apiKeyInputByRole, setApiKeyInputByRole] = useState<Record<string, string>>({})
+  type KeyTestState =
     { state: "idle" } | { state: "testing" } | { state: "ok"; detail: string } | { state: "error"; detail: string }
-  >({ state: "idle" })
+  const [keyTestByRole, setKeyTestByRole] = useState<Record<string, KeyTestState>>({})
 
   // --------------------------------------------------------------------- config
   const [currentConfig, setCurrentConfig] = useState<Record<string, unknown> | null>(null)
@@ -248,17 +251,24 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
   const [writeError, setWriteError] = useState<string | null>(null)
   const [downloadStatus, setDownloadStatus] = useState<DownloadStatus | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  // provider id -> already has a key in .env that passed /api/provider/test
+  // when it was saved (that endpoint never writes an unverified key).
+  const [verifiedProviders, setVerifiedProviders] = useState<Record<string, boolean>>({})
+  // role -> user asked to enter a different key even though one is already
+  // verified.
+  const [keyOverrideByRole, setKeyOverrideByRole] = useState<Record<string, boolean>>({})
 
   // ------------------------------------------------------------------- loading
   useEffect(() => {
     let cancelled = false
-    Promise.all([getProbe(), getCatalogue(), getConfig(), getInstalled()])
-      .then(([p, c, cfg, inst]) => {
+    Promise.all([getProbe(), getCatalogue(), getConfig(), getInstalled(), getProviderKeys()])
+      .then(([p, c, cfg, inst, keys]) => {
         if (cancelled) return
         setProbe(p)
         setCatalogue(c)
         setCurrentConfig(cfg)
         setInstalled(new Set(inst))
+        setVerifiedProviders(keys)
       })
       .catch((e) => {
         if (!cancelled) setBootError(errorText(e))
@@ -1011,7 +1021,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                               checked={llmProvider !== null}
                               onCheckedChange={(c) => {
                                 setLlmProvider(c === true ? llmApiProvider.id : null)
-                                setKeyTest({ state: "idle" })
+                                setKeyTestByRole((prev) => ({ ...prev, [role]: { state: "idle" } }))
                               }}
                             />
                             <Label
@@ -1030,7 +1040,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                               checked={ttsProvider !== null}
                               onCheckedChange={(c) => {
                                 setTtsProvider(c === true ? ttsApiProvider.id : null)
-                                setKeyTest({ state: "idle" })
+                                setKeyTestByRole((prev) => ({ ...prev, [role]: { state: "idle" } }))
                               }}
                             />
                             <Label
@@ -1049,7 +1059,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                               checked={embeddingProvider !== null}
                               onCheckedChange={(c) => {
                                 setEmbeddingProvider(c === true ? embeddingApiProvider.id : null)
-                                setKeyTest({ state: "idle" })
+                                setKeyTestByRole((prev) => ({ ...prev, [role]: { state: "idle" } }))
                               }}
                             />
                             <Label
@@ -1086,7 +1096,39 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                           </div>
                         )}
                         <div className="flex flex-wrap items-center gap-4">
-                          {activeProvider && activeSelected !== null ? (
+                          {activeProvider && activeSelected !== null ? (() => {
+                            const apiKeyInput = apiKeyInputByRole[role] ?? ""
+                            const keyTest: KeyTestState = keyTestByRole[role] ?? { state: "idle" }
+                            const alreadyVerified =
+                              verifiedProviders[activeProvider.id] === true &&
+                              keyTest.state === "idle" &&
+                              !keyOverrideByRole[role]
+                            if (alreadyVerified) {
+                              return (
+                                <div className="flex w-full flex-col gap-2">
+                                  <p className="text-xs text-muted-foreground">
+                                    {activeProvider.label} · {activeProvider.default_model}
+                                  </p>
+                                  <div className="flex items-center gap-2">
+                                    <div className="flex h-9 flex-1 items-center gap-1.5 rounded-md border bg-muted/40 px-3 text-xs text-green-700">
+                                      <Check className="size-3.5" /> API active — verified (
+                                      {activeProvider.api_key_env})
+                                    </div>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() =>
+                                        setKeyOverrideByRole((prev) => ({ ...prev, [role]: true }))
+                                      }
+                                    >
+                                      Change key
+                                    </Button>
+                                  </div>
+                                </div>
+                              )
+                            }
+                            return (
                             <div className="flex w-full flex-col gap-2">
                               <p className="text-xs text-muted-foreground">
                                 {activeProvider.label} · {activeProvider.default_model}
@@ -1097,8 +1139,9 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                                   autoComplete="off"
                                   value={apiKeyInput}
                                   onChange={(e) => {
-                                    setApiKeyInput(e.target.value)
-                                    setKeyTest({ state: "idle" })
+                                    const value = e.target.value
+                                    setApiKeyInputByRole((prev) => ({ ...prev, [role]: value }))
+                                    setKeyTestByRole((prev) => ({ ...prev, [role]: { state: "idle" } }))
                                   }}
                                   placeholder={`${activeProvider.api_key_env}…`}
                                   className="h-9 flex-1 rounded-md border bg-background px-3 text-sm"
@@ -1109,19 +1152,30 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                                   size="sm"
                                   disabled={!apiKeyInput || keyTest.state === "testing"}
                                   onClick={async () => {
-                                    setKeyTest({ state: "testing" })
+                                    setKeyTestByRole((prev) => ({ ...prev, [role]: { state: "testing" } }))
                                     try {
                                       const res = await postProviderTest(
                                         activeProvider.id,
                                         apiKeyInput
                                       )
-                                      setKeyTest(
-                                        res.ok
+                                      setKeyTestByRole((prev) => ({
+                                        ...prev,
+                                        [role]: res.ok
                                           ? { state: "ok", detail: res.detail }
-                                          : { state: "error", detail: res.detail }
-                                      )
+                                          : { state: "error", detail: res.detail },
+                                      }))
+                                      if (res.ok) {
+                                        setVerifiedProviders((prev) => ({
+                                          ...prev,
+                                          [activeProvider.id]: true,
+                                        }))
+                                        setKeyOverrideByRole((prev) => ({ ...prev, [role]: false }))
+                                      }
                                     } catch (e) {
-                                      setKeyTest({ state: "error", detail: errorText(e) })
+                                      setKeyTestByRole((prev) => ({
+                                        ...prev,
+                                        [role]: { state: "error", detail: errorText(e) },
+                                      }))
                                     }
                                   }}
                                 >
@@ -1144,7 +1198,8 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
                                 </p>
                               )}
                             </div>
-                          ) : (
+                            )
+                          })() : (
                             <>
                               <Select
                                 value={pick.model}

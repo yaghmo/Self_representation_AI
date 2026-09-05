@@ -327,7 +327,15 @@ def api_config_write(body: ConfigIn) -> dict:
 def api_download_start() -> dict:
     global _download_models, _download_thread, _download_errors
     catalogue = load_catalogue()
-    models = models_from_config(catalogue)
+    try:
+        models = models_from_config(catalogue)
+    except SystemExit:
+        # An all-API-backed stack selects no local models — a no-op, not a
+        # failure. SystemExit is BaseException, not Exception, so it would
+        # otherwise skip Starlette's exception handling entirely and reach
+        # the client as a CORS-header-less 500 ("Failed to fetch" in the browser).
+        _download_models = []
+        return api_download_status()
     if _download_thread is None or not _download_thread.is_alive():
         _download_models = models
         _download_errors = {}
@@ -364,6 +372,30 @@ def _write_env_key(env_var: str, value: str) -> None:
     else:
         lines.append(f"{env_var}={value}")
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _env_keys_present() -> dict[str, bool]:
+    """Which provider env vars already have a non-empty value in .env.
+    `_write_env_key` below only ever writes a key after `/api/provider/test`
+    confirms it works, so presence here already means verified — no need to
+    re-hit every provider's API just to render the cookbook page."""
+    env_path = Path(".env")
+    if not env_path.exists():
+        return {}
+    present: dict[str, bool] = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if "=" not in line or line.strip().startswith("#"):
+            continue
+        key, _, value = line.partition("=")
+        present[key.strip()] = bool(value.strip())
+    return present
+
+
+@app.get("/api/provider/keys")
+def api_provider_keys() -> dict[str, bool]:
+    catalogue = load_catalogue()
+    env_present = _env_keys_present()
+    return {p.id: env_present.get(p.api_key_env, False) for p in catalogue.providers}
 
 
 @app.post("/api/provider/test")

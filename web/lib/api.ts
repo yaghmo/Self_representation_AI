@@ -121,3 +121,8 @@ export function postProviderTest(
     body: JSON.stringify({ provider_id, api_key }),
   });
 }
+
+// provider id -> already has a verified key saved in .env
+export function getProviderKeys(): Promise<Record<string, boolean>> {
+  return request("/api/provider/keys");
+}
