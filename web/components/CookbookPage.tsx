@@ -285,7 +285,7 @@ export default function CookbookPage({ onCancel }: { onCancel?: () => void } = {
     return r
   }, [useEmbedding, useTts])
 
-  // Only these two are wired up for the in-cookbook key test right now —
+  // Only these three are wired up for the in-cookbook key test right now —
   // other providers still work by hand-editing .env, just without the test.
   const llmApiProvider = catalogue?.providers.find((p) => p.id === "xkiro") ?? null
   const ttsApiProvider = catalogue?.providers.find((p) => p.id === "fish-audio") ?? null

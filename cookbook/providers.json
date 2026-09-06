@@ -21,28 +21,6 @@
       "notes": "Own message schema, hence its own adapter."
     },
     {
-      "id": "nvidia",
-      "label": "NVIDIA NIM (build.nvidia.com)",
-      "adapter": "openai",
-      "api_key_env": "NVIDIA_API_KEY",
-      "base_url": "https://integrate.api.nvidia.com/v1",
-      "default_model": "meta/llama-3.3-70b-instruct",
-      "context_tokens": 128000,
-      "free_tier": "~1000 credits with the free Developer Program, no card, ~40 RPM",
-      "notes": "OpenAI-compatible, so it costs no extra adapter. Verify the credit figure on NVIDIA's own pricing page before depending on it."
-    },
-    {
-      "id": "openrouter",
-      "label": "OpenRouter",
-      "adapter": "openai",
-      "api_key_env": "OPENROUTER_API_KEY",
-      "base_url": "https://openrouter.ai/api/v1",
-      "default_model": "minimax/minimax-m3:free",
-      "context_tokens": 128000,
-      "free_tier": "the :free model suffix routes to a rate-limited free pool — check openrouter.ai/minimax/minimax-m3 for current limits",
-      "notes": "context_tokens is the schema default, not a measured figure for this specific model — check the model's own OpenRouter page and correct it here if it differs. Single endpoint fronting many providers/models; change default_model to point at a different one."
-    },
-    {
       "id": "xkiro",
       "label": "xKiro",
       "adapter": "openai",

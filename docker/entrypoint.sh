@@ -17,19 +17,4 @@ if [ -n "$cuda_lib_path" ]; then
     export LD_LIBRARY_PATH="$cuda_lib_path:${LD_LIBRARY_PATH:-}"
 fi
 
-# The llama-server binary itself is a manual, one-time host step (its
-# release zip is platform/CUDA-version specific — see runtime/llamacpp.py's
-# own --setup message) and lives in the mounted vendor/ volume, not the
-# image. Warn clearly rather than let the first chat request fail with a
-# confusing error.
-if ! python -m runtime.llamacpp --setup >/tmp/llamacpp_setup.log 2>&1; then
-    echo "=================================================================="
-    echo "  llama-server not found in vendor/llama.cpp/ (mounted volume)."
-    echo "  Download the linux CUDA release zip from"
-    echo "  https://github.com/ggml-org/llama.cpp/releases into vendor/llama.cpp/"
-    echo "  on the host, then restart this container. The API will still"
-    echo "  come up, but any chat request will fail until that's done."
-    echo "=================================================================="
-fi
-
 exec "$@"

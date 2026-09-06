@@ -79,8 +79,6 @@ services:
       # The values themselves live in a gitignored .env, never here or in
       # stack.json (see providers.json's own comment on that).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       XKIRO_API_KEY: ${XKIRO_API_KEY:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       FISH_API_KEY: ${FISH_API_KEY:-}
@@ -121,8 +119,6 @@ services:
       # The values themselves live in a gitignored .env, never here or in
       # stack.json (see providers.json's own comment on that).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       XKIRO_API_KEY: ${XKIRO_API_KEY:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       FISH_API_KEY: ${FISH_API_KEY:-}
