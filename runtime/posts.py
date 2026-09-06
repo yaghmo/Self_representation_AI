@@ -12,12 +12,12 @@ import time
 from itertools import zip_longest
 
 from .bible import PROFILE_PATH
-from .og_scrape import list_instagram_posts, scrape_instagram_post_media
+from .scrape.og_scrape import list_instagram_posts, scrape_instagram_post_media
 from .social import list_socials
-from .tiktok_scrape import list_videos as list_tiktok_videos
-from .twitch_scrape import list_vods as list_twitch_vods
-from .x_scrape import list_posts as list_x_posts
-from .youtube_scrape import list_videos as list_youtube_videos
+from .scrape.tiktok_scrape import list_videos as list_tiktok_videos
+from .scrape.twitch_scrape import list_vods as list_twitch_vods
+from .scrape.x_scrape import list_posts as list_x_posts
+from .scrape.youtube_scrape import list_videos as list_youtube_videos
 
 _LOCK = threading.Lock()
 

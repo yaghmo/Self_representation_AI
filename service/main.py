@@ -111,14 +111,14 @@ from runtime.story_tools import (
 )
 from runtime.convert import ConversionFailed, to_markdown
 from runtime.stories import STORIES_DIR, load_story
-from runtime.discord_scrape import scrape_invite as scrape_discord_invite
-from runtime.og_scrape import scrape_profile as scrape_og_profile
-from runtime.og_scrape import resolve_instagram_handle
-from runtime.tiktok_scrape import resolve_handle as resolve_tiktok_handle
-from runtime.tiktok_scrape import scrape_profile as scrape_tiktok_profile
-from runtime.twitch_scrape import scrape_channel as scrape_twitch_channel
-from runtime.twitch_scrape import scrape_panel_links as scrape_twitch_panel_links
-from runtime.twitch_scrape import scrape_social_medias as scrape_twitch_social_medias
+from runtime.scrape.discord_scrape import scrape_invite as scrape_discord_invite
+from runtime.scrape.og_scrape import scrape_profile as scrape_og_profile
+from runtime.scrape.og_scrape import resolve_instagram_handle
+from runtime.scrape.tiktok_scrape import resolve_handle as resolve_tiktok_handle
+from runtime.scrape.tiktok_scrape import scrape_profile as scrape_tiktok_profile
+from runtime.scrape.twitch_scrape import scrape_channel as scrape_twitch_channel
+from runtime.scrape.twitch_scrape import scrape_panel_links as scrape_twitch_panel_links
+from runtime.scrape.twitch_scrape import scrape_social_medias as scrape_twitch_social_medias
 from runtime.tools import (
     SOURCES_PATH,
     STORY_NAME,
@@ -145,8 +145,8 @@ from runtime.voice import (
     warm_bubbles as voice_warm_bubbles,
 )
 from runtime.voice_sample import LANGUAGES, PHRASES, TEST_PHRASES, sample_status, save_sample
-from runtime.youtube_scrape import scrape_channel
-from runtime.linktree_scrape import scrape_links as scrape_linktree_links
+from runtime.scrape.youtube_scrape import scrape_channel
+from runtime.scrape.linktree_scrape import scrape_links as scrape_linktree_links
 from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
