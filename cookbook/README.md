@@ -101,10 +101,10 @@ The LLM can be served by API instead, in which case it has no local footprint
 and only embedding and TTS get checked — and the whole bible fits in context.
 
 Two adapters exist in code: `openai` (anything speaking the OpenAI schema) and
-`anthropic`. Every other provider is an entry in `providers.json`. NVIDIA NIM is
-listed because its free Developer Program tier is genuinely free — about 1000
-credits, no card, ~40 RPM — and it is OpenAI-compatible, so it costs no extra
-code.
+`anthropic`. Every other provider is an entry in `providers.json` — xKiro is
+listed for its free daily token allowance; anything else OpenAI-compatible
+(OpenRouter, NVIDIA NIM, Groq, ...) goes through the `custom` entry with its
+own `base_url` typed in by hand, since it costs no extra code either way.
 
 **Keys are read from the environment only.** `stack.json` records the *name* of
 the variable, never the value. Copy `.env.example` to `.env` at the repo root.
