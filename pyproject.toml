@@ -5,7 +5,6 @@ description = "Portfolio page and character chatbot for a content creator"
 requires-python = ">=3.10,<3.11"
 
 dependencies = [
-    "streamlit>=1.40",
     "psutil>=6.0",
     "nvidia-ml-py>=12.560",
     "huggingface-hub>=0.26",

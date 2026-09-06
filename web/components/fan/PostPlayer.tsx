@@ -32,9 +32,9 @@ function TwitchEmbed({ post }: { post: Post }) {
 }
 
 function TikTokEmbed({ post }: { post: Post }) {
-  // No crop, no scale hack — every platform's own natural size, cropping
-  // never matched consistently across all of them. This is TikTok's embed
-  // page rendered exactly as TikTok renders it, chrome and all.
+  // TikTok's embed page, rendered exactly as TikTok renders it — chrome,
+  // buttons, and all. Every platform here gets its own natural size rather
+  // than a shared crop, since no single crop fits all of them consistently.
   return (
     <iframe
       src={`https://www.tiktok.com/embed/v2/${post.embedId}`}

@@ -13,12 +13,12 @@ import type { Post } from "./types"
 // dialog around any of them is just empty space on the sides, not a bigger
 // video.
 //
-// dialog.tsx's own default carries a hardcoded `sm:max-w-md` — an unprefixed
-// override here (`max-w-sm`/`max-w-4xl`, as this used to read) does NOT
-// beat that: they're different responsive variants to Tailwind, both
-// survive the merge, and the breakpoint-scoped one wins on any screen ≥640px
-// regardless of what the unprefixed class says. Every override below is
-// `sm:`-prefixed to actually replace it.
+// dialog.tsx's own default carries a hardcoded `sm:max-w-md`. An unprefixed
+// class like `max-w-sm` does NOT beat that: they're different responsive
+// variants to Tailwind, both survive a `cn()` merge independently, and the
+// breakpoint-scoped one wins on any screen ≥640px regardless of what the
+// unprefixed class says. Every override below is `sm:`-prefixed so it
+// actually replaces the default instead of merely coexisting with it.
 const DIALOG_WIDTH: Record<string, string> = {
   tiktok: "sm:max-w-[325px]",
   x: "sm:max-w-[550px]",

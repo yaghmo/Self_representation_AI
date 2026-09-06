@@ -17,12 +17,30 @@ fact eventually falls out of context" for free.
 from __future__ import annotations
 
 import time
+from typing import Callable
 
 from service.logging_config import get_logger
 
 from .index import Embedder, Index
+from .stories import load_all, render_story
 
 logger = get_logger("runtime.recall")
+
+
+def stories_context_text() -> str:
+    """The whole story corpus, rendered and concatenated in id order —
+    id order (not score) so identical content serialises to identical
+    bytes turn to turn, same reason `stories.py`'s own module docstring
+    gives for ids in the first place. Only meant for the case where the
+    corpus is small enough to sit in context directly rather than behind
+    `recall()`; see service/main.py's tier decision."""
+    return "\n\n".join(render_story(story) for story in load_all())
+
+
+def total_story_tokens(count: Callable[[str], int]) -> int:
+    """Cost of inlining the whole corpus via `stories_context_text()`,
+    in whatever the caller's own tokenizer counts as a token."""
+    return count(stories_context_text())
 
 def recall_schema(include_profile: bool) -> dict:
     """The fan surface's one tool. Wording changes with the mode: in

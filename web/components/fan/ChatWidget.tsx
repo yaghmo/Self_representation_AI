@@ -184,13 +184,11 @@ function ChatWidget({
   const stuckOnTop = isOpen && !showFallbackIcon
   // Panel is anchored `bottom-16` (64px), flush against the bottom bar, so
   // its top edge sits at 64 + panel height from the viewport bottom. The
-  // panel's *actual* rendered height isn't just `size.height` though — its
-  // own `max-h-[calc(100dvh-8rem)]` class clamps it shorter on a short
-  // browser window. A plain `64 + size.height` here ignores that clamp and
-  // drifts away from the panel's real top edge once the window gets short
-  // enough to trigger it. Using CSS `min()` for the same clamp, natively,
-  // means this always matches the panel's true rendered height and updates
-  // live on resize — no resize listener needed.
+  // panel's own `max-h-[calc(100dvh-8rem)]` class can clamp its rendered
+  // height shorter than `size.height` on a short browser window, so this
+  // mirrors that same clamp with CSS `min()` rather than the raw state
+  // value — matches the panel's true rendered height and stays correct on
+  // resize with no listener needed, since the browser recomputes it live.
   const panelTop = `calc(4rem + min(${size.height}px, 100dvh - 8rem))`
 
   return (
@@ -207,10 +205,9 @@ function ChatWidget({
           className={cn(
             "fixed right-8 z-40 flex items-center justify-center text-primary-foreground transition-[transform,bottom] ease-out hover:scale-105 sm:right-10",
             isResizing ? "duration-0" : "duration-300",
-            // clamp(), not a single sm: breakpoint — a step function only
-            // ever changes at one exact width, so resizing the browser
-            // anywhere else (most of the time) looked like it wasn't
-            // rescaling at all. This scales continuously with viewport width.
+            // clamp() scales continuously with viewport width, unlike a
+            // single sm: breakpoint, which only ever changes size at one
+            // exact width and leaves every other resize doing nothing.
             showFallbackIcon
               ? "h-[clamp(2.5rem,9vw,3.5rem)] w-[clamp(4rem,15vw,6rem)] rounded-t-full bg-primary bottom-16 shadow-lg"
               : cn("size-[clamp(3.5rem,12vw,7.5rem)]", !stuckOnTop && "bottom-16")

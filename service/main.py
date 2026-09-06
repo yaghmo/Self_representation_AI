@@ -66,7 +66,7 @@ from runtime.embed import EmbeddingNotConfigured, embedder_from_config
 from runtime.index import Embedder, Index, all_chunks, build as build_index, load_index
 from runtime.model import Model, ModelNotDownloaded
 from runtime.posts import list_posts, refresh_posts
-from runtime.recall import recall, recall_schema
+from runtime.recall import recall, recall_schema, stories_context_text, total_story_tokens
 from runtime.social import (
     SocialAlreadyExists,
     SocialNotFound,
@@ -1381,7 +1381,54 @@ def _blocked_content_reply(
     return None, minor_disclosed
 
 
-def _prompt_for(model: Model, request: ChatRequest, use_compact: bool = False) -> list[Message]:
+def _reserve_tokens(request: ChatRequest) -> int:
+    # +1024 matches LocalBackend.reasoning_reserve — thinking bumps the
+    # actual completion request past max_tokens, so the prompt fit has to
+    # leave room for that too. Shared by _prompt_for's assemble() call and
+    # _persona_tier's budget math below — one formula, not two copies that
+    # can drift apart.
+    return max(1024, request.max_tokens * 2) + (1024 if request.thinking else 0)
+
+
+def _persona_tier(model: Model, request: ChatRequest) -> str:
+    """"inline" | "whole" | "compact" — whichever actually costs the fewest
+    tokens against *this* model's own context, not a fixed number: a small
+    local model and a huge-context API model measure the same bible and
+    story corpus against very different budgets, so the same content can
+    land in a different tier on each.
+
+    Measured fresh every request rather than decided once at cookbook fit
+    time: the corpus grows as the creator logs more sources and stories, so
+    a value written once would go stale. Supersedes bible_strategy's role as
+    the fan persona's size gate — the admin/agent surface never read that
+    field to begin with (build_procedure() is unconditional there).
+    """
+    reserve = _reserve_tokens(request)
+    budget = model.context_tokens - reserve
+    persona_tokens = model.count_tokens(build_persona())
+    stories_tokens = total_story_tokens(model.count_tokens)
+    if persona_tokens + stories_tokens <= budget:
+        # Whole bible and every story fit together — inlining both is
+        # cheaper than paying for the recall tool's schema and round-trip
+        # on a corpus small enough that there's nothing to save by
+        # searching it instead of just including it.
+        return "inline"
+    if persona_tokens <= budget:
+        # Bible fits alone; the story corpus doesn't. Whole persona, recall
+        # narrows the stories to what's actually relevant.
+        return "whole"
+    # Bible alone doesn't fit even without stories. Compact persona plus
+    # recall over both keeps every request small regardless of how large
+    # the corpus grows.
+    return "compact"
+
+
+def _prompt_for(
+    model: Model,
+    request: ChatRequest,
+    use_compact: bool = False,
+    inline_stories: bool = False,
+) -> list[Message]:
     _reject_client_system(request.messages)
     _reject_tools(model, request)
     override = [m for m in request.messages if m.role == "system"]
@@ -1400,20 +1447,18 @@ def _prompt_for(model: Model, request: ChatRequest, use_compact: bool = False) -
             # loop sends tool schemas every turn — `_reject_tools` above
             # already guarantees `request.tools` can't be truthy otherwise.
             emotion_tags = _tts_source() == "api"
+            whole = build_persona(emotion_tags=emotion_tags)
             persona = (
                 build_procedure() if request.tools
                 else build_compact_persona(emotion_tags=emotion_tags) if use_compact
-                else build_persona(emotion_tags=emotion_tags)
+                else f"{whole}\n\n{stories_context_text()}" if inline_stories
+                else whole
             )
         return assemble(
             history,
             context_tokens=model.context_tokens,
             count=model.count_tokens,
-            # +1024 matches LocalBackend.reasoning_reserve — thinking bumps the
-            # actual completion request past max_tokens, so the prompt fit has
-            # to leave room for that too.
-            reserve_tokens=max(1024, request.max_tokens * 2)
-            + (1024 if request.thinking else 0),
+            reserve_tokens=_reserve_tokens(request),
             persona=persona,
             summary=request.summary,
             # Agent mode is the creator's own tool loop, not fan roleplay —
@@ -1676,17 +1721,23 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
     # whenever agent mode happens to be on for the admin surface sharing
     # this model.
     recall_ctx = None if request.tools else _get_recall()
-    # bible_strategy="retrieval" only *permits* the compact persona — it
+    # The tier is measured fresh every request against this model's actual
+    # budget and the corpus's actual current size (see _persona_tier) —
+    # supersedes bible_strategy as a size gate for the fan surface. "compact"
     # still needs a working embedder (recall_ctx is not None) to actually
-    # use it. No embedder, no compact mode: falls back to today's whole
-    # persona automatically, every request, no restart required once the
-    # embedder becomes available.
-    use_compact = (
-        not request.tools
-        and model.bible_strategy == "retrieval"
-        and recall_ctx is not None
-    )
-    messages = _prompt_for(model, request, use_compact=use_compact)
+    # retrieve; no embedder falls back to "whole" persona automatically,
+    # every request, no restart required once the embedder becomes
+    # available — same fallback contract as before, just a different trigger.
+    try:
+        tier = "whole" if request.tools else _persona_tier(model, request)
+    except ProfileMissing:
+        # No data/character.md yet — _prompt_for below hits the exact same
+        # error immediately and converts it to the 424 a fan should see;
+        # which tier we picked in the meantime never matters.
+        tier = "whole"
+    use_compact = tier == "compact" and recall_ctx is not None
+    inline_stories = tier == "inline"
+    messages = _prompt_for(model, request, use_compact=use_compact, inline_stories=inline_stories)
     # Headroom for the trailing mood tag, so it rarely gets cut off by
     # max_tokens — the fan's requested budget still governs the visible
     # reply length, this is server-only overhead for the tag protocol.
@@ -1694,7 +1745,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         request.max_tokens if request.tools else request.max_tokens + _MOOD_TOKEN_HEADROOM
     )
     try:
-        if recall_ctx is not None:
+        if recall_ctx is not None and not inline_stories:
             story_index, profile_index, embed = recall_ctx
             content = _run_recall_loop(
                 model, messages, request.temperature, completion_max_tokens,
@@ -2766,6 +2817,21 @@ def _self_check() -> None:
     )
     _story_index, _story_embed, _story_unavailable = fixture_index, fake_embed, ""
     _profile_index = fixture_profile_index
+    real_context_tokens = _model.context_tokens
+    # Every recall-loop test below assumes "whole" tier — recall() gets
+    # tried for the story corpus, which is exactly what "whole" (and
+    # "compact") does but "inline" doesn't. Whatever real context_tokens
+    # this instance is actually configured with (an API model's can be
+    # huge enough to trivially fit bible+stories together) would otherwise
+    # land in "inline" and skip the tool loop these tests exist to exercise.
+    # Pin a "whole"-forcing size as this whole section's baseline; the
+    # tier-specific tests further down override it again for their own case.
+    if data_available:
+        persona_tokens = _model.count_tokens(build_persona())
+        stories_tokens = total_story_tokens(_model.count_tokens)
+        reserve = _reserve_tokens(ChatRequest(messages=[]))
+        if stories_tokens > 0:
+            _model.context_tokens = persona_tokens + reserve + stories_tokens // 2
 
     class FakeBackend:
         def __init__(self):
@@ -2862,21 +2928,25 @@ def _self_check() -> None:
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["content"] == "agent answer", response.text
 
-        # -- bible_strategy: compact persona + profile retrieval -------------
-        # bible_strategy="retrieval" + embedder available: compact persona
-        # sent, recall offered with the compact-mode wording, and a
-        # profile-section hit is reachable through it.
-        def compact_mode_reply(messages, **kwargs):
+        # -- _persona_tier: inline / whole / compact, chosen by size ---------
+        # Superseded bible_strategy as the size gate (see _persona_tier's own
+        # docstring) — every case below forces a tier by shrinking or
+        # growing _model.context_tokens around the real persona/story sizes,
+        # not by setting a config flag that no longer drives this decision.
+        def tier_reply(messages, **kwargs):
             fake_backend.last_tool_calls = []
             seen["messages"] = messages
             seen["tools"] = kwargs.get("tools")
-            return "compact reply"
+            return "tier reply"
 
-        _model.chat = compact_mode_reply
-        _model.bible_strategy = "retrieval"
-        seen.clear()
-        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
-        if response.status_code != 424:
+        _model.chat = tier_reply
+        if data_available:
+            # persona_tokens/stories_tokens/reserve computed once, above,
+            # alongside this section's "whole"-forcing baseline.
+            # "compact": persona alone doesn't fit even without stories.
+            _model.context_tokens = persona_tokens + reserve - 1
+            seen.clear()
+            response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
             assert response.status_code == 200, (response.status_code, response.text)
             system = seen["messages"][0].content
             assert len(system) < len(build_persona()), (
@@ -2888,62 +2958,79 @@ def _self_check() -> None:
                 "compact mode must offer the compact-mode wording of the recall schema"
             )
 
-        # bible_strategy="retrieval" + embedder UNAVAILABLE: falls back to
-        # today's whole-persona behavior exactly. This is the load-bearing
-        # fallback and needs its own explicit case, not inference from the
-        # cases above.
-        real_unavailable = _story_unavailable
-        _story_unavailable = "embedder not installed (simulated)"
-        seen.clear()
-        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
-        _story_unavailable = real_unavailable
-        if response.status_code != 424:
+            # Same too-small context, but the embedder is UNAVAILABLE: compact
+            # mode needs a working embedder to actually retrieve, so this has
+            # no tier left that fits — the same ProfileTooLarge refusal
+            # assemble() always gives when nothing fits, not a silent
+            # truncation. This is the load-bearing fallback case and needs
+            # its own explicit assertion, not inference from the case above.
+            real_unavailable = _story_unavailable
+            _story_unavailable = "embedder not installed (simulated)"
+            seen.clear()
+            response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+            _story_unavailable = real_unavailable
+            assert response.status_code == 507, (response.status_code, response.text)
+
+            # "whole": persona fits alone, but persona+stories together
+            # don't — recall covers the stories, not the profile (there's
+            # nothing compact about "whole").
+            if stories_tokens > 0:
+                _model.context_tokens = persona_tokens + reserve + stories_tokens // 2
+                seen.clear()
+                response = client.post(
+                    "/chat", json={"messages": [{"role": "user", "content": "hi"}]}
+                )
+                assert response.status_code == 200, (response.status_code, response.text)
+                system = seen["messages"][0].content
+                assert system.startswith("You are the person described")
+                assert seen["tools"] is not None and seen["tools"][0]["function"]["name"] == "recall"
+                assert "profile detail" not in seen["tools"][0]["function"]["description"], (
+                    "whole-persona mode must offer the story-only wording, not the "
+                    "compact-mode one — the profile is already fully in context"
+                )
+
+            # "inline": persona and every story fit together — no recall
+            # tool at all, the whole corpus is just in context.
+            _model.context_tokens = persona_tokens + stories_tokens + reserve + 1000
+            seen.clear()
+            response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
             assert response.status_code == 200, (response.status_code, response.text)
             system = seen["messages"][0].content
-            assert system.startswith("You are the person described"), (
-                "no embedder available must fall back to the full whole-persona build, "
-                "identical to bible_strategy='whole' or unset"
+            assert system.startswith("You are the person described")
+            assert len(system) > len(build_persona()), (
+                "the story corpus must be appended, not just the bare persona"
             )
-            # recall_ctx is None here, so chat() takes the plain model.chat(...,
-            # tools=request.tools) branch entirely — _run_recall_loop and
-            # recall_schema() are never reached, and the fan request itself
-            # carries no "tools" key, so this must be exactly None.
             assert seen["tools"] is None, (
-                "with no embedder, the recall tool must not be offered at all"
+                "with everything already in context, no tool is worth offering"
             )
 
-        # bible_strategy anything else: whole persona, regardless of embedder
-        # availability.
-        _model.bible_strategy = "whole"
-        seen.clear()
-        response = client.post("/chat", json={"messages": [{"role": "user", "content": "hi"}]})
-        if response.status_code != 424:
-            assert response.status_code == 200, (response.status_code, response.text)
-            assert seen["messages"][0].content.startswith("You are the person described")
+            _model.context_tokens = real_context_tokens
 
         # A whole-persona request with the embedder available still only
-        # searches stories — the two knobs (bible_strategy, embedder
-        # availability) must not leak into each other.
-        _model.bible_strategy = "whole"
-        recall_only_story = [{
-            "id": "call_2", "type": "function",
-            "function": {"name": "recall", "arguments": json.dumps({"query": "preference"})},
-        }]
-        script2 = iter([("", recall_only_story), ("no profile reach here.", [])])
-        seen_tool_messages: list = []
+        # searches stories — persona/story sizing and embedder availability
+        # must not leak into each other. Needs a real, non-empty corpus to
+        # force "whole" rather than "inline" the same way as above; skipped
+        # entirely otherwise, same tolerance as the no-profile case.
+        if data_available and stories_tokens > 0:
+            _model.context_tokens = persona_tokens + reserve + stories_tokens // 2
+            recall_only_story = [{
+                "id": "call_2", "type": "function",
+                "function": {"name": "recall", "arguments": json.dumps({"query": "preference"})},
+            }]
+            script2 = iter([("", recall_only_story), ("no profile reach here.", [])])
+            seen_tool_messages: list = []
 
-        def calls_recall_whole_mode(messages, **kwargs):
-            content, calls = next(script2)
-            if not calls:
-                seen_tool_messages.extend(messages)
-            fake_backend.last_tool_calls = calls
-            return content
+            def calls_recall_whole_mode(messages, **kwargs):
+                content, calls = next(script2)
+                if not calls:
+                    seen_tool_messages.extend(messages)
+                fake_backend.last_tool_calls = calls
+                return content
 
-        _model.chat = calls_recall_whole_mode
-        response = client.post(
-            "/chat", json={"messages": [{"role": "user", "content": "what do you prefer?"}]}
-        )
-        if response.status_code != 424:
+            _model.chat = calls_recall_whole_mode
+            response = client.post(
+                "/chat", json={"messages": [{"role": "user", "content": "what do you prefer?"}]}
+            )
             assert response.status_code == 200, (response.status_code, response.text)
             tool_messages = [m for m in seen_tool_messages if m.role == "tool"]
             assert tool_messages, "no tool-result message was appended"
@@ -2954,6 +3041,7 @@ def _self_check() -> None:
     finally:
         _model.chat = record
         _model._backend = None
+        _model.context_tokens = real_context_tokens
         _story_index, _story_embed, _story_unavailable = (
             real_story_index, real_story_embed, real_story_unavailable,
         )
@@ -3387,7 +3475,14 @@ def _self_check() -> None:
             # afterward, not returned by this route. Needs a real
             # data/character.md to read; `data_available` was already
             # computed earlier in this function against exactly that file.
-            if data_available:
+            # Also qwentts-only — the endpoint itself refuses with 422 on an
+            # api-backed TTS stack (no text-instruction synthesis there),
+            # correctly, regardless of what's mocked below.
+            if not data_available:
+                print("service self-check: voice design skipped (no data/character.md)")
+            elif _tts_source() == "api":
+                print("service self-check: voice design skipped (qwentts-only, tts source is api)")
+            else:
                 response = client.post("/admin/voice/design")
                 assert response.status_code == 200, (response.status_code, response.text)
                 assert response.json()["synthStatus"] == "clone", response.json()
@@ -3400,8 +3495,6 @@ def _self_check() -> None:
                 )
                 assert clone_calls.get("ref_text") == PHRASES["en"]
                 assert clone_calls.get("source") == "generated"
-            else:
-                print("service self-check: voice design skipped (no data/character.md)")
 
             response = client.post("/voice/speak", json={"text": "read this aloud"})
             assert response.status_code == 200, (response.status_code, response.text)
@@ -3409,13 +3502,15 @@ def _self_check() -> None:
             assert response.content == b"RIFFfake-wav-bytes"
 
             # Removing the sample falls back to whatever design left behind
-            # (or "none" if design was skipped above) — never removes it.
+            # (or "none" if design was skipped above, whether for missing
+            # data or an api-backed TTS stack) — never removes it.
             response = client.delete("/admin/voice/sample")
             assert response.status_code == 200, (response.status_code, response.text)
             assert response.json()["status"] is None
             assert not voice_module.SAMPLE_PATH.exists()
             assert not voice_synth_module.CLONE_META_PATH.exists()
-            expected_synth_status = "design" if data_available else "none"
+            design_ran = data_available and _tts_source() != "api"
+            expected_synth_status = "design" if design_ran else "none"
             assert response.json()["synthStatus"] == expected_synth_status, response.json()
             assert response.json()["cloneSource"] is None, response.json()
         finally:
@@ -3663,6 +3758,7 @@ def _self_check() -> None:
             original_scrape_twitch_panel_links = scrape_twitch_panel_links
             original_scrape_twitch_social_medias = scrape_twitch_social_medias
             original_scrape_og_profile_ig = scrape_og_profile
+            original_scrape_channel_twitch = scrape_channel
             scrape_twitch_channel = lambda username: {
                 "pfp_url": "https://example.com/twitch-pic.jpg",
                 "follower_count": 3000,
@@ -3679,6 +3775,16 @@ def _self_check() -> None:
             scrape_og_profile = lambda url: (
                 {"pfp_url": "https://example.com/ig-pic.jpg", "follower_count": 400, "bio": None}
                 if url == "https://instagram.com/realhandle"
+                else None
+            )
+            # The youtube mention surfaced via scrape_twitch_social_medias gets
+            # confirmed through scrape_channel (see _scrape_mention), same as
+            # any first-hop candidate — that must be mocked too, or the fake
+            # "@realchannel" handle hits the real network and 404s, and the
+            # mention gets correctly-but-unhelpfully dropped as a dead link.
+            scrape_channel = lambda url: (
+                {"pfp_url": "https://example.com/yt-pic.jpg", "follower_count": 500, "bio": None}
+                if url == "https://youtube.com/@realchannel"
                 else None
             )
             try:
@@ -3714,6 +3820,7 @@ def _self_check() -> None:
                 scrape_twitch_panel_links = original_scrape_twitch_panel_links
                 scrape_twitch_social_medias = original_scrape_twitch_social_medias
                 scrape_og_profile = original_scrape_og_profile_ig
+                scrape_channel = original_scrape_channel_twitch
 
             # Same join for the discord branch, against scrape_discord_invite
             # — takes the invite code (the "username"), not a url.
