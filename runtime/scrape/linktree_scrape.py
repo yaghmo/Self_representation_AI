@@ -20,14 +20,18 @@ from __future__ import annotations
 import json
 import re
 
-from curl_cffi import requests
-
 _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
 
 
 def scrape_links(url: str) -> list[str] | None:
     """Return the URLs a creator added to their Linktree page, or None."""
     try:
+        # Imported here, not at module level, like every other admin-only
+        # scraper's heavy dep (see og_scrape.py) — a fan-only build (no
+        # `admin` extra) must still be able to import service.main cleanly,
+        # since _require_agent() gates this route at runtime, not import time.
+        from curl_cffi import requests
+
         response = requests.get(url, impersonate="chrome", timeout=10)
         response.raise_for_status()
         match = _NEXT_DATA_RE.search(response.text)
