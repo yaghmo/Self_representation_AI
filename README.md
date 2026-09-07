@@ -1,10 +1,14 @@
 # self_presentation_AI
 
-A portfolio page for a content creator — links, socials, media — with a chatbot that answers audience questions as an AI representation of the creator, grounded in a character profile they write themselves. Local-first: the model, the embedder, and text-to-speech all run on your own machine by default, with a hosted API as a fallback for the LLM role only.
+A portfolio page for a content creator — links, socials, media — with a chatbot that answers audience questions as an AI representation of the creator, grounded in a character profile they write themselves. Local-first by default: the LLM, the embedder, and text-to-speech each run on your own machine — but each of those three roles can independently switch to a hosted API instead (an OpenAI-compatible/Anthropic endpoint for the LLM, Gemini for embeddings, Fish Audio for TTS), picked per-role by the cookbook and written to `config/stack.json`.
 
-![Screenshot](Screenshot.png)
+| Fan page + chat | Admin console |
+|---|---|
+| ![Fan page with chat open](screenshot-fan.jpg) | ![Admin console](screenshot-admin.jpg) |
 
-**Stack:** FastAPI · Next.js/React · llama.cpp · OpenAI-/Anthropic-compatible LLM adapters · retrieval-augmented character memory · Qwen TTS voice cloning · Docker Compose (multi-service, GPU-aware) · hardware-probed model fitting
+Shown with a fictional demo persona ("Aria Sundrop") and default placeholder avatars — not a real creator's data.
+
+**Stack:** FastAPI · Next.js/React · llama.cpp · OpenAI-/Anthropic-compatible LLM adapters (+ Gemini/Fish Audio API fallbacks for embedding/TTS) · retrieval-augmented character memory · Qwen TTS voice cloning · Docker Compose (multi-service, GPU-aware) · hardware-probed model fitting
 
 ## The one rule everything else follows
 
@@ -19,7 +23,7 @@ A statement in `character.md` with no cite is a bug, not a draft. The bot answer
 
 **Character bible.** `sources.md`/`character.md`, described above, plus a story corpus (`data/stories/`) for longer personal anecdotes — indexed and retrieved by keyword, not held in context whole.
 
-**Runtime.** An OpenAI-compatible backend talking to either a local `llama.cpp` server (models fitted and downloaded through the cookbook) or a hosted API, with the same two adapters (`openai`, `anthropic`) covering every provider. Prompt assembly adapts to what fits: the whole bible in context on a machine that can hold it, otherwise a compact persona plus a `recall` retrieval tool — decided fresh per request against the model's real context budget, never hardcoded.
+**Runtime.** An OpenAI-compatible backend talking to either a local `llama.cpp` server (models fitted and downloaded through the cookbook) or a hosted API, with the same two adapters (`openai`, `anthropic`) covering every LLM provider. Embedding and TTS get the same local-or-API choice independently — `roles.embedding.source`/`roles.tts.source` in `config/stack.json` — but through their own dedicated clients (`runtime/embed_api.py` for Gemini, `runtime/voice_api.py` for Fish Audio) rather than the generic LLM adapters, since neither is an OpenAI-compatible endpoint. Prompt assembly adapts to what fits: the whole bible in context on a machine that can hold it, otherwise a compact persona plus a `recall` retrieval tool — decided fresh per request against the model's real context budget, never hardcoded.
 
 **Two surfaces, different rules.**
 - **Admin** — the creator. Agentic: a client-side tool loop (`web/lib/chat/agentLoop.ts`) that can propose edits to the bible, gated behind an explicit confirm dialog before anything touches `data/`.
@@ -56,13 +60,9 @@ cd web && npm install && npm run dev            # :3000
 
 Python is pinned to `3.11`; torch comes from PyTorch's own `cu126` index (the plain PyPI wheel for Windows is CPU-only). An NVIDIA GPU is strongly recommended — CPU-only fits exist but are slow enough to notice.
 
-### Tests
+### CI
 
-```bash
-uv run pytest
-```
-
-Most scraper/model tests hit real network endpoints or a real local model rather than mocking — see `CLAUDE.md` for why.
+Every push runs a [GitHub Actions](.github/workflows/ci.yml) check: `tsc --noEmit` on `web/`, and a Python sanity job that imports `service.main`/`cookbook.api` cleanly with no extras installed — catches broken imports without needing a GPU or network access. The full `pytest` suite (scrapers, prompt assembly, redaction, story indexing) lives in `tests/` for local dev but isn't part of this tracked snapshot, since most of it hits real network endpoints or a real local model rather than mocking.
 
 ## Authoring a character
 

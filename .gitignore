@@ -19,7 +19,8 @@
 !.gitattributes
 !README.md
 !LICENSE
-!Screenshot.png
+!screenshot-fan.jpg
+!screenshot-admin.jpg
 !CLAUDE.md
 !pyproject.toml
 !uv.lock
