@@ -92,6 +92,68 @@ function RecordingWaveform({ stream }: { stream: MediaStream }) {
   );
 }
 
+/**
+ * Live output-level bars while a "Hear your voice" clip plays back, in place
+ * of a bare native audio player. createMediaElementSource takes over the
+ * element's audio graph, so the analyser is re-connected to the destination
+ * to keep it audible.
+ */
+function PlaybackWaveform({ audioEl }: { audioEl: HTMLAudioElement }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const AudioContextClass =
+      window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new AudioContextClass();
+    const source = ctx.createMediaElementSource(audioEl);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    analyser.connect(ctx.destination);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const step = Math.max(1, Math.floor(data.length / BAR_COUNT));
+    let frame = 0;
+
+    function draw() {
+      frame = requestAnimationFrame(draw);
+      const canvas = canvasRef.current;
+      const g = canvas?.getContext("2d");
+      if (!canvas || !g) return;
+      analyser.getByteFrequencyData(data);
+      const { width, height } = canvas;
+      g.clearRect(0, 0, width, height);
+      g.fillStyle = getComputedStyle(canvas).color;
+      const barWidth = width / BAR_COUNT;
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const level = data[i * step] / 255;
+        const barHeight = Math.max(3, level * height);
+        g.fillRect(i * barWidth + 1, (height - barHeight) / 2, barWidth - 2, barHeight);
+      }
+    }
+    draw();
+
+    return () => {
+      cancelAnimationFrame(frame);
+      source.disconnect();
+      analyser.disconnect();
+      void ctx.close();
+    };
+    // audioEl identity is stable across repeated "Hear" clicks (only its src
+    // changes), so this graph is built exactly once per mount.
+  }, [audioEl]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={480}
+      height={48}
+      className="h-12 w-full text-violet-600 dark:text-violet-400"
+      aria-label="Voice playback level"
+      role="img"
+    />
+  );
+}
+
 // Which voice is actually active right now, in plain terms — "clone" and
 // "designed" both live in the same clone.json/clone_ref.wav (see
 // runtime/voice.py's build_clone "source" field), only "default" means
@@ -128,11 +190,21 @@ export function VoiceRecorder() {
   // `.current` is off-limits there.
   const [liveStream, setLiveStream] = useState<MediaStream | null>(null);
   const [testClip, setTestClip] = useState<{ url: string } | null>(null);
+  const [testAudioEl, setTestAudioEl] = useState<HTMLAudioElement | null>(null);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
   const tier = voiceTier(synthStatus, cloneSource);
+
+  // The <audio> element stays mounted once created — its src just changes on
+  // each new clip — so re-load and play it explicitly instead of relying on
+  // the autoPlay attribute, which only fires on first mount.
+  useEffect(() => {
+    if (!testClip || !testAudioEl) return;
+    testAudioEl.load();
+    void testAudioEl.play().catch(() => {});
+  }, [testClip, testAudioEl]);
 
   useEffect(() => {
     getVoiceStatus()
@@ -362,7 +434,8 @@ export function VoiceRecorder() {
           </Button>
         )}
 
-        {testClip && <audio controls autoPlay src={testClip.url} className="w-full" />}
+        <audio ref={setTestAudioEl} src={testClip?.url} className="hidden" />
+        {testClip && testAudioEl && <PlaybackWaveform audioEl={testAudioEl} />}
       </CardContent>
 
       <Dialog open={open} onOpenChange={(next) => (next ? setOpen(true) : handleCancel())}>

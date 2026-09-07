@@ -2,6 +2,10 @@
 
 A portfolio page for a content creator — links, socials, media — with a chatbot that answers audience questions as an AI representation of the creator, grounded in a character profile they write themselves. Local-first: the model, the embedder, and text-to-speech all run on your own machine by default, with a hosted API as a fallback for the LLM role only.
 
+![Screenshot](Screenshot.png)
+
+**Stack:** FastAPI · Next.js/React · llama.cpp · OpenAI-/Anthropic-compatible LLM adapters · retrieval-augmented character memory · Qwen TTS voice cloning · Docker Compose (multi-service, GPU-aware) · hardware-probed model fitting
+
 ## The one rule everything else follows
 
 **The creator is the sole author of the character.** Whatever they say about themselves is canon — factual, invented, or any mix; that's entirely their call. Everything downstream only transcribes.
@@ -50,7 +54,15 @@ uv run uvicorn service.main:app --port 8000     # then the chat backend
 cd web && npm install && npm run dev            # :3000
 ```
 
-Python is pinned to `3.10`; torch comes from PyTorch's own `cu126` index (the plain PyPI wheel for Windows is CPU-only). An NVIDIA GPU is strongly recommended — CPU-only fits exist but are slow enough to notice.
+Python is pinned to `3.11`; torch comes from PyTorch's own `cu126` index (the plain PyPI wheel for Windows is CPU-only). An NVIDIA GPU is strongly recommended — CPU-only fits exist but are slow enough to notice.
+
+### Tests
+
+```bash
+uv run pytest
+```
+
+Most scraper/model tests hit real network endpoints or a real local model rather than mocking — see `CLAUDE.md` for why.
 
 ## Authoring a character
 

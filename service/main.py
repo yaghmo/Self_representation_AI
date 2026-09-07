@@ -147,6 +147,7 @@ from runtime.voice import (
 from runtime.voice_sample import LANGUAGES, PHRASES, TEST_PHRASES, sample_status, save_sample
 from runtime.scrape.youtube_scrape import scrape_channel
 from runtime.scrape.linktree_scrape import scrape_links as scrape_linktree_links
+from runtime.scrape.throne_scrape import scrape_profile as scrape_throne_profile
 from service.logging_config import log_payload, setup_logging
 
 logger = setup_logging("service")
@@ -615,6 +616,7 @@ _CANONICAL_DOMAIN = {
     "youtube": "youtube.com",
     "twitch": "twitch.tv",
     "discord": "discord.gg",
+    "throne": "throne.com",
 }
 
 
@@ -795,8 +797,8 @@ def _dedupe_mentions(mentions: list[SocialMention]) -> list[SocialMention]:
 
 
 # Only these platforms have a scrape that can tell "gone" apart from
-# "worked" — telegram/throne/other have none.
-_VERIFIABLE_MENTION_PLATFORMS = {"tiktok", "x", "youtube", "twitch", "discord", "instagram"}
+# "worked" — telegram/other have none.
+_VERIFIABLE_MENTION_PLATFORMS = {"tiktok", "x", "youtube", "twitch", "discord", "instagram", "throne"}
 
 
 def _scrape_mention(mention: SocialMention) -> dict | None:
@@ -807,6 +809,9 @@ def _scrape_mention(mention: SocialMention) -> dict | None:
         return scrape_twitch_channel(mention.value)
     if mention.platform == "discord":
         return scrape_discord_invite(mention.value)
+    if mention.platform == "throne":
+        url = _build_social_url("throne", mention.value)
+        return scrape_throne_profile(url) if url else None
     url = _build_social_url(mention.platform, mention.value)
     if not url:
         return None
@@ -895,7 +900,7 @@ def _filter_mentions(
     guessed profile 404s, search resolution finds nothing, no shared link —
     is dropped outright: with a full resolve pass and a second hop both
     behind it now, whatever's left really is noise. An unscrapeable
-    platform (telegram, throne, ...) still can't be checked at all, so
+    platform (telegram, ...) still can't be checked at all, so
     those stay kept-but-flagged "unverified" — dropping them would lose a
     real mention the creator could still find manually."""
     existing = list_socials()
@@ -2468,6 +2473,8 @@ def admin_social_preview(request: SocialPreviewRequest) -> SocialPreviewResponse
         scraped = scrape_twitch_channel(username)
     elif platform == "discord":
         scraped = scrape_discord_invite(username)
+    elif platform == "throne":
+        scraped = scrape_throne_profile(request.url)
     elif platform == "linktree":
         # A Linktree page isn't itself a social profile worth storing — it's
         # a list of the creator's other links. Skip the pfp/bio scrape and

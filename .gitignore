@@ -18,6 +18,8 @@
 !.gitignore
 !.gitattributes
 !README.md
+!LICENSE
+!Screenshot.png
 !CLAUDE.md
 !pyproject.toml
 !uv.lock

@@ -13,13 +13,26 @@ import { StoryComposer } from "@/components/chat/StoryComposer";
 import { HelpDialog } from "@/components/chat/HelpDialog";
 import { MarkdownMessage } from "@/components/chat/Markdown";
 
-function MessageBubble({ message, chatIconSrc }: { message: Message; chatIconSrc: string | null }) {
+function MessageBubble({
+  message,
+  chatIconSrc,
+  userPfpSrc,
+}: {
+  message: Message;
+  chatIconSrc: string | null;
+  userPfpSrc: string | null;
+}) {
   const isUser = message.role === "user";
   return (
     <div className={cn("flex gap-3", isUser && "flex-row-reverse")}>
       <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted">
         {isUser ? (
-          <User className="h-4 w-4" />
+          userPfpSrc ? (
+            // eslint-disable-next-line @next/next/no-img-element -- proxied, arbitrary-origin image, same as SocialRow's
+            <img src={userPfpSrc} alt="" className="h-full w-full object-cover" />
+          ) : (
+            <User className="h-4 w-4" />
+          )
         ) : chatIconSrc ? (
           // eslint-disable-next-line @next/next/no-img-element -- proxied, arbitrary-origin image, same as SocialRow's
           <img src={chatIconSrc} alt="" className="h-full w-full object-cover" />
@@ -94,6 +107,7 @@ export function ChatPanel({
   onThinkingChange,
   thinkingAvailable = true,
   chatIconSrc = null,
+  userPfpSrc = null,
 }: {
   transcript: Message[];
   steps: Step[];
@@ -109,6 +123,8 @@ export function ChatPanel({
   // Creator's set chat avatar (same slot the fan widget uses) — falls back
   // to the plain Bot icon when nothing's set, same as the fan side.
   chatIconSrc?: string | null;
+  // Creator's own profile pfp — falls back to the plain User icon.
+  userPfpSrc?: string | null;
 }) {
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -141,7 +157,7 @@ export function ChatPanel({
             </div>
           )}
           {transcript.map((message, i) => (
-            <MessageBubble key={i} message={message} chatIconSrc={chatIconSrc} />
+            <MessageBubble key={i} message={message} chatIconSrc={chatIconSrc} userPfpSrc={userPfpSrc} />
           ))}
           {steps
             .filter((step) => step.kind === "proposal" || step.kind === "stopped")

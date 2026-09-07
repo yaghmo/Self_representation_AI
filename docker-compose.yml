@@ -31,6 +31,12 @@ services:
       - "8081:8080"
     volumes:
       - ./docker/searxng:/etc/searxng:rw
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   cookbook:
     build:
@@ -97,6 +103,9 @@ services:
       context: .
       args:
         INSTALL_ADMIN: "true"
+    depends_on:
+      searxng:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:

@@ -10,7 +10,7 @@ uv run uvicorn cookbook.api:app --port 8001     # backend
 cd web && npm install && npm run dev   # web UI — http://localhost:3000
 ```
 
-Python is pinned to 3.10 and torch comes from PyTorch's cu126 index — the PyPI
+Python is pinned to 3.11 and torch comes from PyTorch's cu126 index — the PyPI
 wheel for Windows is CPU-only, which would make every GPU placement the fitter
 recommends a lie.
 

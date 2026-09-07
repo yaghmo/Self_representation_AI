@@ -8,6 +8,11 @@ render.
 The scrape can fail for any reason (network, markup changes, blocking) and
 must never block adding the link: every caller treats None as "no scrape
 data available", the same as any other platform that never had a scraper.
+
+Linktree's edge WAF fingerprints the TLS handshake, not just headers — a
+plain httpx/urllib3 request 403s even with a full browser header set, while
+curl (and curl_cffi's Chrome impersonation) pass. curl_cffi is already an
+installed transitive dependency, so no new package is needed.
 """
 
 from __future__ import annotations
@@ -15,18 +20,7 @@ from __future__ import annotations
 import json
 import re
 
-import httpx
-
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
-    # Linktree's edge WAF 403s a bare User-Agent with no other browser
-    # headers — these are what a real navigation sends alongside it.
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+from curl_cffi import requests
 
 _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
 
@@ -34,7 +28,7 @@ _NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re
 def scrape_links(url: str) -> list[str] | None:
     """Return the URLs a creator added to their Linktree page, or None."""
     try:
-        response = httpx.get(url, headers=_HEADERS, follow_redirects=True, timeout=10)
+        response = requests.get(url, impersonate="chrome", timeout=10)
         response.raise_for_status()
         match = _NEXT_DATA_RE.search(response.text)
         if not match:

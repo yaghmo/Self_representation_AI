@@ -9,7 +9,7 @@ import { ModelSidebar } from "@/components/chat/ModelSidebar";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import CookbookPage from "@/components/CookbookPage";
-import { getSocials, chatIconUrl } from "@/lib/admin/socialApi";
+import { getSocials, chatIconUrl, pfpUrl } from "@/lib/admin/socialApi";
 import { isVideo } from "@/lib/introSplash";
 
 export default function AdminPage() {
@@ -20,6 +20,7 @@ export default function AdminPage() {
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [chatIconSrc, setChatIconSrc] = useState<string | null>(null);
+  const [userPfpSrc, setUserPfpSrc] = useState<string | null>(null);
   // Reasoning is a llama.cpp-only extension (chat_template_kwargs /
   // reasoning_reserve in runtime/backend.py's LocalBackend) — ApiBackend
   // ignores it entirely, so the toggle does nothing on an API-backed model.
@@ -34,6 +35,9 @@ export default function AdminPage() {
       .then((res) => {
         if (res.chatIconVersion != null && !isVideo(res.chatIconMime)) {
           setChatIconSrc(chatIconUrl(res.chatIconVersion));
+        }
+        if (res.pfpVersion != null && !isVideo(res.pfpMime)) {
+          setUserPfpSrc(pfpUrl(res.pfpVersion));
         }
       })
       .catch(() => {});
@@ -76,6 +80,7 @@ export default function AdminPage() {
             onThinkingChange={(next) => setGeneration((prev) => ({ ...prev, thinking: next }))}
             thinkingAvailable={thinkingAvailable}
             chatIconSrc={chatIconSrc}
+            userPfpSrc={userPfpSrc}
           />
         </div>
       </div>

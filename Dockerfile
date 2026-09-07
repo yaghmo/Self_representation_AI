@@ -24,7 +24,7 @@ FROM ghcr.io/ggml-org/llama.cpp:server-cuda AS llama-cuda
 
 # trixie, not bookworm: the llama-server binary above (built on Ubuntu 24.04)
 # needs GLIBC_2.38 / GLIBCXX_3.4.32 — bookworm's glibc 2.36 can't satisfy that.
-FROM python:3.10-slim-trixie
+FROM python:3.11-slim-trixie
 
 # libsndfile1: soundfile (TTS wav encode) needs it at runtime on *both*
 # images — voice synth is on the fan path too, /voice/speak has no agent gate.

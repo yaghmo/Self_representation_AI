@@ -38,6 +38,11 @@ import { CheckCircle2, CircleHelp, Loader2, Mail, Pencil, Search, Trash2, X } fr
 // of the primary link's scrape — needs more time than one scrape alone.
 const SCRAPE_TIMEOUT_MS = 20_000;
 
+// Mirrors service/main.py's _VERIFIABLE_MENTION_PLATFORMS complement — these
+// have no scrape at all, so an empty result means "can't check", not "dead
+// account". Gating them on hasData below would silently drop every one.
+const UNVERIFIABLE_MENTION_PLATFORMS = new Set(["telegram"]);
+
 const COMMON_PLATFORMS = [
   "instagram",
   "tiktok",
@@ -290,18 +295,21 @@ export function SocialDialog({ onClose }: { onClose: () => void }) {
           // An empty scrape (no pfp/bio/follower count) means the profile
           // doesn't exist on the platform — most often a dead/renamed
           // account behind a mention pulled off a Linktree page. Don't add
-          // a link that would just 404 for fans.
+          // a link that would just 404 for fans. Doesn't apply to platforms
+          // with no scrape at all (throne, telegram) — there, empty is the
+          // only possible result, not a signal the account is dead.
+          const unverifiable = UNVERIFIABLE_MENTION_PLATFORMS.has(m.platform);
           const hasData =
             scraped && (scraped.pfpUrl || scraped.bio || scraped.followerCount != null);
-          if (!hasData) return;
+          if (!unverifiable && !hasData) return;
           await addSocial({
             platform: m.platform,
             username: m.value,
             url,
-            bio: scraped.bio ?? undefined,
-            followerCount: scraped.followerCount ?? undefined,
-            pfpUrl: scraped.pfpUrl ?? undefined,
-            isAlt: scraped.isAlt,
+            bio: scraped?.bio ?? undefined,
+            followerCount: scraped?.followerCount ?? undefined,
+            pfpUrl: scraped?.pfpUrl ?? undefined,
+            isAlt: scraped?.isAlt ?? false,
           });
         }),
         // Contact email is a single field, not a list — last kept
