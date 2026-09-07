@@ -27,6 +27,7 @@
 !.dockerignore
 !docker-compose.yml
 !docker/**
+!.github/**
 !templates/**
 !.claude/**
 
