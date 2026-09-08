@@ -81,6 +81,9 @@ venv/
 # graphify's own tool cache/index — local-only, matches at any depth like logs/.
 graphify-out/
 
+# impeccable skill's tool cache — local-only, matches at any depth.
+.impeccable/
+
 # Model weights. Tens of GB of binaries — never in git, whatever else changes.
 models/
 

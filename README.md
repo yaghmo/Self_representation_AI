@@ -60,9 +60,6 @@ cd web && npm install && npm run dev            # :3000
 
 Python is pinned to `3.11`; torch comes from PyTorch's own `cu126` index (the plain PyPI wheel for Windows is CPU-only). An NVIDIA GPU is strongly recommended — CPU-only fits exist but are slow enough to notice.
 
-### CI
-
-Every push runs a [GitHub Actions](.github/workflows/ci.yml) check: `tsc --noEmit` on `web/`, and a Python sanity job that imports `service.main`/`cookbook.api` cleanly with no extras installed — catches broken imports without needing a GPU or network access. The full `pytest` suite (scrapers, prompt assembly, redaction, story indexing) lives in `tests/` for local dev but isn't part of this tracked snapshot, since most of it hits real network endpoints or a real local model rather than mocking.
 
 ## Authoring a character
 
