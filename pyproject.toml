@@ -13,6 +13,13 @@ dependencies = [
     "httpx>=0.27",
     "python-dotenv>=1.0",
     "msgpack>=1.0",
+    # fastapi's UploadFile routes need this to even register at import time
+    # (service/main.py's /admin/story/convert-file), not just when called.
+    "python-multipart>=0.0.20",
+    # service.main imports runtime.embed/index/story_tools unconditionally
+    # (fan and admin share one module), so numpy is load-bearing on every
+    # deployment, not just the heavy local-inference path.
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -20,7 +27,6 @@ dependencies = [
 runtime = [
     "torch>=2.5",
     "transformers>=4.45",
-    "numpy>=1.24",
     # Extras, not bare markitdown: 0.1.x moved per-format support out of the
     # base package, so the bare install converts nothing /story would be given.
     "markitdown[docx,pdf]>=0.1.7",

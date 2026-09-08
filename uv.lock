@@ -1717,9 +1717,11 @@ dependencies = [
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "msgpack" },
+    { name = "numpy" },
     { name = "nvidia-ml-py" },
     { name = "psutil" },
     { name = "python-dotenv" },
+    { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1731,7 +1733,6 @@ admin = [
 ]
 runtime = [
     { name = "markitdown", extra = ["docx", "pdf"] },
-    { name = "numpy" },
     { name = "qwen-tts" },
     { name = "soundfile" },
     { name = "torch" },
@@ -1751,10 +1752,11 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.26" },
     { name = "markitdown", extras = ["docx", "pdf"], marker = "extra == 'runtime'", specifier = ">=0.1.7" },
     { name = "msgpack", specifier = ">=1.0" },
-    { name = "numpy", marker = "extra == 'runtime'", specifier = ">=1.24" },
+    { name = "numpy", specifier = ">=1.24" },
     { name = "nvidia-ml-py", specifier = ">=12.560" },
     { name = "psutil", specifier = ">=6.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "qwen-tts", marker = "extra == 'runtime'", specifier = ">=0.1.1" },
     { name = "scrapling", extras = ["fetchers"], marker = "extra == 'admin'", specifier = ">=0.4.15" },
     { name = "soundfile", marker = "extra == 'runtime'", specifier = ">=0.14" },
