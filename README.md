@@ -2,11 +2,9 @@
 
 A portfolio page for a content creator — links, socials, media — with a chatbot that answers audience questions as an AI representation of the creator, grounded in a character profile they write themselves. Local-first by default: the LLM, the embedder, and text-to-speech each run on your own machine — but each of those three roles can independently switch to a hosted API instead (an OpenAI-compatible/Anthropic endpoint for the LLM, Gemini for embeddings, Fish Audio for TTS), picked per-role by the cookbook and written to `config/stack.json`.
 
-[![25-second overview: a cited answer, an honest "I don't know", and auto socials](overview.gif)](overview.mp4)
+https://github.com/user-attachments/assets/33a710ed-97fe-4efa-bbda-47c93158f649
 
-*Click the video for the version with sound.*
-
-Shown with a fictional demo persona ("Aria Sundrop") and default placeholder avatars — not a real creator's data.
+Shown with a fictional demo persona ("Aria Sundrop") and default placeholder avatars — not a real creator's data. Same video as a file: [overview.mp4](overview.mp4).
 
 **Stack:** FastAPI · Next.js/React · llama.cpp · OpenAI-/Anthropic-compatible LLM adapters (+ Gemini/Fish Audio API fallbacks for embedding/TTS) · retrieval-augmented character memory · Qwen TTS voice cloning · Docker Compose (multi-service, GPU-aware) · hardware-probed model fitting
 
