@@ -21,6 +21,8 @@
 !LICENSE
 !screenshot-fan.jpg
 !screenshot-admin.jpg
+!overview.mp4
+!overview.jpg
 !pyproject.toml
 !uv.lock
 !Dockerfile
@@ -100,3 +102,6 @@ character.md
 # even though .claude/** is allowed above.
 .claude/worktrees/
 
+
+# /brag output — local-only render artifacts (the README video is allowed by name above).
+brag-output*/
