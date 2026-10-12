@@ -2,9 +2,9 @@
 
 A portfolio page for a content creator — links, socials, media — with a chatbot that answers audience questions as an AI representation of the creator, grounded in a character profile they write themselves. Local-first by default: the LLM, the embedder, and text-to-speech each run on your own machine — but each of those three roles can independently switch to a hosted API instead (an OpenAI-compatible/Anthropic endpoint for the LLM, Gemini for embeddings, Fish Audio for TTS), picked per-role by the cookbook and written to `config/stack.json`.
 
-[![Watch the 22-second overview](overview.jpg)](overview.mp4)
+[![Watch the 25-second overview](overview.jpg)](overview.mp4)
 
-*22-second overview with sound. Click to play.*
+*25-second overview with sound. Click to play.*
 
 | Fan page + chat | Admin console |
 |---|---|
